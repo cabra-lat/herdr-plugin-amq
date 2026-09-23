@@ -7,79 +7,124 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Proudly Vibe Coded - Plasma Mix](https://vibecoded.fyi/badges/flat/main/proudly-vibe-coded-plasma-mix.svg)](https://vibecoded.fyi/)
 
-Autonomous Agent Message Queue (AMQ) bridge daemon, mailbox monitor, decentralized task bus, CAS blobstore, and AGmail dashboard for Herdr & AI coding agents.
+> **The asynchronous nervous system for autonomous AI agent swarms in [Herdr](https://herdr.dev/).**  
+> Combines native pure-JS Maildir inter-agent messaging, an autonomous **Doorbell Bridge**, decentralized file-based task coordination, and the **AGmail** webmail dashboard.
 
-## Overview
+---
 
-AMQ provides reliable, durable, asynchronous message queuing between AI agents. Herdr provides terminal workspaces, pane management, and real-time agent status tracking.
+## The Origin & The Problem
 
-This plugin ties them together into a unified workflow:
-- **Autonomous Bridge**: Automatically checks agent inboxes and rings doorbells via `herdr agent prompt` whenever an agent is idle or finished with its turn.
-- **Agent Presence & Healing**: Auto-reconnects and renames panes if agent session titles get desynced.
-- **Blocked State Alerts**: Logs alerts when an agent with unread mail becomes blocked on external user input.
-- **Mailbox Status Action**: Inspects unread message counts across all agents directly inside Herdr.
-- **AGmail Dashboard**: Opens the full webmail dashboard or an interactive terminal inbox peek in a Herdr pane.
+> *"If you follow AI news, you have probably seen endless hype around 'multi-agent swarms' talking to each other... That is cute for a 30-second screen recording. In a real codebase with actual physics, compiler errors, and Git history, it is a complete disaster."*  
+> — Read the full story: [**My AI Agents Send Me Emails: Office Drama in a Godot Repo**](https://cabra.pw/my-ai-agents-send-me-emails.html)
+
+When coordinating swarms of AI coding agents across complex codebases, synchronous chat rooms and blocking `wait` loops fall apart:
+1. **Context Window Bloat**: Group chats flood agent context with irrelevant noise, burning hundreds of thousands of tokens per hour.
+2. **Turn-Based Nature of LLMs**: AI models are turn-based; when an agent says *"Yeah I'll do that"* or finishes its tool execution, **it terminates its turn and goes to sleep**. It cannot run a busy-wait loop.
+3. **Dead Mailboxes Without a Doorbell**: Having asynchronous inboxes (AMQ) solves decoupled storage, but mail sitting in a directory is inert. If an agent is asleep, incoming messages sit unread forever.
+
+### The Missing Piece: The Doorbell Bridge
+
+This plugin bridges **AMQ** (the persistent storage) and **Herdr** (the terminal multiplexer and agent lifecycle supervisor).
+
+The **Bridge Daemon** continuously inspects agent inboxes. When an agent is `idle` or `done` in its Herdr terminal pane and has unread transmissions, the bridge **rings the doorbell** via `herdr agent prompt`. The sleeping agent wakes up, drains its inbox, performs its work, sends an asynchronous reply, and goes back to sleep.
+
+```mermaid
+flowchart TD
+    subgraph Storage ["Persistent Transport Layer"]
+        AMQ[".agent-mail/ (Maildir + RFC 5322)<br/>Decoupled Markdown Transmissions"]
+        BUS[".opencode/bus/ (Decentralized Task Cards)<br/>backlog/ → doing/ → blocked/ → done/"]
+        CAS[".agent-mail/blobs/ (CAS Blobstore)<br/>SHA-256 Render Strips & Proofs"]
+    end
+
+    subgraph Bridge ["The Autonomous Nervous System"]
+        DAEMON["Bridge Daemon (herdr-amq bridge-daemon)<br/>Watches mailboxes & checks Herdr agent states"]
+        DOORBELL{"Agent Status in Herdr?"}
+    end
+
+    subgraph Execution ["Herdr PTY / Terminal Swarm"]
+        H_BUSY["working → Leave alone (no spam)"]
+        H_BLOCKED["blocked → Alert coordinator / human"]
+        H_IDLE["idle / done → RING DOORBELL<br/>(herdr agent prompt)"]
+        AGENT["Awakened Agent<br/>1. herdr-amq drain --me <handle><br/>2. Executes task in isolated worktree<br/>3. herdr-amq send / reply --id ...<br/>4. Goes back to sleep"]
+    end
+
+    subgraph Oversight ["Human-in-the-Loop & Mission Control"]
+        AGMAIL["AGmail Webmail & Kanban Dashboard<br/>http://127.0.0.1:8505 (Strictly Local)"]
+    end
+
+    AMQ -->|New mail arrives| DAEMON
+    DAEMON --> DOORBELL
+    DOORBELL -->|working| H_BUSY
+    DOORBELL -->|blocked| H_BLOCKED
+    DOORBELL -->|idle/done| H_IDLE
+    H_IDLE --> AGENT
+    AGENT -->|Sends mail + CAS attachments| AMQ
+    AGENT -->|Claims / updates tasks| BUS
+    AGENT -->|Pins render artifacts| CAS
+    AMQ -.->|Monitored & inspected by| AGMAIL
+    BUS -.->|Rendered live in Kanban| AGMAIL
+```
+
+---
+
+## Key Features
+
+### 1. The Autonomous Doorbell Bridge
+- **Lifecycle-Aware Wakeups**: Rings doorbells (`herdr agent prompt`) only when agents are `idle` or `done`, preventing command interleaving during active turns.
+- **De-duplication**: Tracks delivered message IDs in persistent state (`bridge-state.json`) so agents are never doorbelled twice for the same mail.
+- **Self-Healing Panes**: Automatically detects and renames desynced terminal titles back to their canonical agent handles (`herdr agent rename`).
+- **Blocked State Alerts**: When an agent with unread mail is blocked on external input, logs actionable alert directives for human intervention.
+
+### 2. Pure-JS Maildir & RFC 5322 Engine (Zero Runtime Dependencies)
+- **100% Self-Contained ESM**: No external Go binary, Python scripts, or npm supply-chain dependencies required.
+- **DJB Atomic Delivery**: Uses classic `tmp/` -> `new/` atomic filesystem renames to prevent partial reads or race conditions between concurrent agents.
+- **RFC 5322 In-Reply-To & References**: Full thread tracking and conversation reconstruction from standard message headers.
+
+### 3. AGmail Dashboard (Mission Control)
+- **Authentic Webmail Interface**: Real folders (Inbox, Sent, Drafts, Starred, Trash) powered by live Maildir storage.
+- **Rich Visual Attachment Cards**: Previews render strips, PNG contact sheets, and test output generated by headless tools (like Godot via VirtualGL) directly in email threads.
+- **Interactive Kanban Board**: Visual task lane tracking (`backlog/`, `doing/`, `blocked/`, `done/`) with real-time SSE updates.
+- **Human-in-the-Loop Interventions**: Compose and inject executive orders directly into the swarm's queue from your browser.
+- **Fuzzy Search & Filtering**: Fast multi-attribute filtering (`from:spotter with-images:true kind:status`).
+
+### 4. Git Worktree Isolation & Task Bus
+- **Multi-Lane Isolation**: Automatically provisions and manages dedicated Git worktrees (`.worktrees/<agent>`) so parallel agents never step on each other's unstaged files.
+- **Decentralized File-Based Task Cards**: Directory-based task bus (`.opencode/bus/`) immune to concurrent merge conflicts.
+
+---
 
 ## Requirements
 
-- Node.js >= 18
-- Herdr >= 0.7.0 *(optional, only if using Herdr terminal workspaces & panes)*
-- **Zero runtime dependencies** — 100% self-contained ESM with native pure-JS Maildir & RFC 5322 engine (external `amq` Go binary is NOT required).
+- **Node.js** >= 18
+- **[Herdr](https://herdr.dev/)** >= 0.7.0 *(Terminal workspace manager & agent lifecycle supervisor)*
+- **Zero npm runtime dependencies**
+
+---
 
 ## Installation & Linking
 
-For Herdr plugin integration:
+Link the plugin into your local Herdr configuration:
 
 ```bash
-# Link plugin from local repository clone
+# Clone or navigate to the repository
+cd herdr-plugin-amq
+
+# Link into Herdr
 herdr plugin link .
 ```
 
-Verify that the plugin is recognized:
+Verify that the plugin and its actions are active:
 
 ```bash
 herdr plugin list
 herdr plugin action list --plugin cabra.amq
 ```
 
-## Available Actions
+---
 
-Invoke any action using the Herdr CLI:
+## Herdr Actions & Keybindings
 
-```bash
-# Check queue status and unread mail per agent
-herdr plugin action invoke cabra.amq.bridge-status
-
-# Start background bridge daemon
-herdr plugin action invoke cabra.amq.bridge-start
-
-# Stop background bridge daemon
-herdr plugin action invoke cabra.amq.bridge-stop
-
-# Trigger an immediate one-shot doorbell check
-herdr plugin action invoke cabra.amq.doorbell-check
-
-# Open AGmail pure JS dashboard in your browser
-herdr plugin action invoke cabra.amq.open-dashboard
-```
-
-## Panes
-
-Open the inbox peek popup in a modal terminal pane:
-
-```bash
-herdr plugin pane open --plugin cabra.amq --entrypoint inbox-popup
-```
-
-Open the AGmail dashboard server in a Herdr pane:
-
-```bash
-herdr plugin pane open --plugin cabra.amq --entrypoint dashboard
-```
-
-## Recommended Herdr Keybindings
-
-Add keybindings to your `~/.config/herdr/config.toml` to control the bridge and peek into your mail quickly:
+Add keybindings to `~/.config/herdr/config.toml` for instant access:
 
 ```toml
 [[keys.command]]
@@ -95,69 +140,124 @@ command = "cabra.amq.doorbell-check"
 description = "Ring AMQ doorbells for idle agents"
 ```
 
-## File Structure
-
-```text
-herdr-plugin-amq/
-├── herdr-plugin.toml   # Herdr plugin manifest
-├── package.json        # NPM package metadata
-├── README.md           # Documentation
-├── bin/
-│   └── herdr-amq.mjs   # Main executable CLI dispatcher
-└── src/
-    ├── index.mjs       # Module exports
-    ├── config.mjs      # AMQ root discovery & Herdr environment helpers
-    ├── store.mjs       # Mailbox reader, writer & parser
-    ├── bridge.mjs      # Bridge engine, daemon loop & state management
-    ├── server.mjs      # Lightweight HTTP server & Server-Sent Events (SSE)
-    ├── actions.mjs     # Herdr action handlers
-    ├── panes.mjs       # Herdr pane entrypoint launchers
-    └── web/
-        ├── index.html  # Authentic Gmail clone frontend
-        ├── style.css   # Material 3 & Google style styling
-        └── app.js      # Client app, search, compose, smart replies & SSE
-```
-
-## Testing & Code Coverage
-
-Zero external testing dependencies — uses Node.js native test runner and experimental test coverage reporting:
+### Available Plugin Actions
 
 ```bash
-# Run 80 automated unit & integration tests
+# Check queue status, active daemon, and unread mail per agent
+herdr plugin action invoke cabra.amq.bridge-status
+
+# Start background bridge daemon
+herdr plugin action invoke cabra.amq.bridge-start
+
+# Stop background bridge daemon
+herdr plugin action invoke cabra.amq.bridge-stop
+
+# Trigger an immediate one-shot doorbell check
+herdr plugin action invoke cabra.amq.doorbell-check
+
+# Launch the AGmail webmail dashboard
+herdr plugin action invoke cabra.amq.open-dashboard
+```
+
+### Herdr Terminal Panes
+
+Open modal terminal panes inside Herdr:
+
+```bash
+# Fast terminal inbox peek popup
+herdr plugin pane open --plugin cabra.amq --entrypoint inbox-popup
+
+# Dashboard server in dedicated pane
+herdr plugin pane open --plugin cabra.amq --entrypoint dashboard
+```
+
+---
+
+## CLI Reference (`herdr-amq`)
+
+The plugin ships an executable CLI dispatcher (`bin/herdr-amq.mjs`) used by both agents and operators:
+
+```bash
+# Start AGmail webmail dashboard (default: http://127.0.0.1:8505)
+herdr-amq dashboard
+
+# Start the continuous bridge daemon
+herdr-amq bridge-daemon
+
+# Messaging
+herdr-amq send --to spotter --subject "Check ADS alignment" --body @/tmp/prompt.txt
+herdr-amq reply --id 20260922-120000-001@swarm --body "Approved. Commit with explicit pathspec."
+herdr-amq drain --me coordinator
+
+# Decentralized Kanban Task Bus
+herdr-amq task list
+herdr-amq task claim TSK-402 --me worker-alpha
+herdr-amq task done TSK-402 --proof "Proof of Sabotage: INV-29 passed with non-zero exit on mutation"
+herdr-amq task block TSK-402 --reason "Waiting on asset import lock"
+
+# Print or install the agentic skill
+herdr-amq --skill
+herdr-amq --skill --install .opencode/skills/herdr-amq
+```
+
+---
+
+## Agentic Skill Integration
+
+AI coding agents (Antigravity, Claude Code, OpenCode, Aider) can consume the skill definition directly to learn the protocol without human instruction:
+
+```bash
+# Output full YAML-frontmattered SKILL.md
+herdr-amq --skill
+
+# Auto-install directly into your workspace
+herdr-amq --skill --install .opencode/skills/herdr-amq/SKILL.md
+```
+
+---
+
+## Security & Threat Model (Strictly Local-Only)
+
+> [!CAUTION]
+> **The AGmail dashboard and AMQ bridge are strictly local development tools.**
+> Because agent communications contain source code, system prompts, execution logs, and orchestration commands, **this interface must never be exposed to public networks, WANs, or untrusted LANs.**
+
+By design, `herdr-plugin-amq` implements strict defense-in-depth protections verified by continuous red-team exploit tests:
+
+* **Exclusive Loopback Binding**: The HTTP server strictly binds to `127.0.0.1` IPv4 loopback (dropping non-local external TCP requests at the OS level).
+* **DNS Rebinding Protection**: Inspects the HTTP `Host` header on every request. Any foreign domain (e.g. `attacker.com` pointing to 127.0.0.1) receives immediate `403 Forbidden`.
+* **Null-Byte Injection Neutralization**: Any request containing `%00` or `\0` is blocked with `403 Forbidden`.
+* **Mandatory Security Headers**: Injected on all HTTP responses:
+  - `X-Content-Type-Options: nosniff` (prevents MIME-type confusion attacks)
+  - `X-Frame-Options: DENY` (anti-clickjacking)
+  - `Referrer-Policy: no-referrer` (prevents URL leakage)
+  - `Content-Security-Policy: frame-ancestors 'none';`
+* **Path Traversal Jailing**: Strict `isPathSafe` resolution disallows reading outside authorized workspace/scratch trees and strictly forbids access to `.ssh`, `.env`, `/etc/passwd`, credentials, or `.git/config`.
+
+---
+
+## Testing & Quality Assurance
+
+Our test suite adheres to high-rigor standards with zero external test runners:
+
+```bash
+# Run 95 automated unit, integration, simulation & security tests
 npm test
 
-# Run tests with experimental coverage and export standard lcov
+# Run red-team security penetration audit suite
+npm run test:security
+
+# Run tests with experimental coverage reporting (80%+ lines and functions)
 npm run test:coverage
 
-# Run JavaScript module syntax check
+# Validate JavaScript module syntax across all files
 npm run check
 ```
 
-## Agentic Skill
+Automated GitHub Actions CI validates compatibility across **Node 18.x, 20.x, and 22.x** on both **Ubuntu** and **macOS**, alongside a dedicated **Security Compliance & Red-Team Audit** workflow.
 
-Introspect or install the machine-readable `SKILL.md` for AI coding agents (Herdr, OpenCode, Antigravity, Claude Code):
-
-```bash
-# Print skill to stdout
-herdr-amq --skill
-
-# Install into .opencode/skills/herdr-amq/SKILL.md
-herdr-amq --skill --install
-```
-
-## Security & Threat Model (Local-Only Architecture)
-
-> **IMPORTANT**: The AGmail dashboard is strictly a **local development tool** for inspecting agent communication. **It must never be exposed to public networks or untrusted LANs.**
-
-By default, `herdr-amq` implements strict defense-in-depth protections:
-
-- **Loopback Interface Binding**: The HTTP server explicitly binds only to `127.0.0.1` (never `0.0.0.0`), dropping all non-local incoming TCP connections at the OS network stack.
-- **DNS Rebinding Protection**: All incoming HTTP requests validate the `Host` header. Requests claiming external domain names or remote IPs receive immediate `403 Forbidden`.
-- **System Path Traversal Defense**: The `/api/file` and `/api/git-file` endpoints strictly enforce jail roots (`isPathSafe`), denying access to `.ssh`, `.env`, `/etc`, credentials, dotfiles, or paths outside the workspace/temp trees.
-- **Null-Byte Injection Neutralization**: Any URL or path containing `%00` or `\0` is blocked before file resolution.
-- **Strict Browser Headers**: Enforces `X-Frame-Options: DENY` (anti-clickjacking), `X-Content-Type-Options: nosniff`, and restrictive `Content-Security-Policy` with `frame-ancestors 'none'`.
-- **Zero Runtime Dependencies**: No npm supply-chain vulnerabilities or third-party tracking scripts.
+---
 
 ## License
 
-MIT
+MIT © [Cabra](https://cabra.pw)
