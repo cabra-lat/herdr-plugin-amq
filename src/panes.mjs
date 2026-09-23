@@ -18,11 +18,15 @@ export function launchDashboardPane() {
   const port = parseInt(process.env.AGMAIL_PORT || "8505", 10);
   const server = startWebServer({ port, amqRoot });
 
-  // Open browser in background if xdg-open exists
-  try {
-    const opener = process.platform === "darwin" ? "open" : "xdg-open";
-    spawn(opener, [`http://localhost:${port}`], { stdio: "ignore", detached: true }).unref();
-  } catch {}
+  // Open browser in background if display is available and not disabled
+  if (process.env.NO_OPEN !== "1" && process.env.DISPLAY) {
+    server.once("listening", () => {
+      try {
+        const opener = process.platform === "darwin" ? "open" : "xdg-open";
+        spawn(opener, [`http://127.0.0.1:${port}`], { stdio: "ignore", detached: true }).unref();
+      } catch {}
+    });
+  }
 
   console.log("\nPress Ctrl+C to stop the dashboard server.");
 }
