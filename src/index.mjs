@@ -2,3 +2,8 @@ export * from "./config.mjs";
 export * from "./bridge.mjs";
 export * from "./actions.mjs";
 export * from "./panes.mjs";
+export * from "./blobs.mjs";
+export * from "./migration.mjs";
+export * from "./briefs.mjs";
+export * from "./worktrees.mjs";
+export * from "./fleet.mjs";

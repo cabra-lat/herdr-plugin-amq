@@ -242,6 +242,8 @@ export function pinGitRef(repoRoot, relativePath, commit = "HEAD") {
         }).trim();
         headCommitCache.set(repoRoot, { sha: commitSha, at: now });
       }
+    } else if (/^[a-f0-9]{40}$/i.test(commit)) {
+      commitSha = commit;
     } else {
       commitSha = execFileSync("git", ["rev-parse", commit], {
         cwd: repoRoot,

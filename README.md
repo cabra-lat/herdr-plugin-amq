@@ -158,6 +158,9 @@ herdr plugin action invoke cabra.amq.doorbell-check
 
 # Launch the AGmail webmail dashboard
 herdr plugin action invoke cabra.amq.open-dashboard
+
+# Migrate legacy message attachments into immutable CAS blobs or pinned Git commits
+herdr plugin action invoke cabra.amq.migrate
 ```
 
 ### Herdr Terminal Panes
@@ -196,10 +199,48 @@ herdr-amq task claim TSK-402 --me worker-alpha
 herdr-amq task done TSK-402 --proof "Proof of Sabotage: INV-29 passed with non-zero exit on mutation"
 herdr-amq task block TSK-402 --reason "Waiting on asset import lock"
 
+# Attachment Migration (historical CAS blob / Git pinning)
+herdr-amq migrate [--dry-run] [--verbose]
+
+# Fleet Discovery & Cold Start (unions .opencode, .agents, .pi, AGENTS.md)
+herdr-amq fleet status
+herdr-amq fleet prepopulate
+herdr-amq fleet up [--kind agy|opencode|pi] [--agents a,b,c] [--dry-run]
+
+# Instant One-Shot Swarm Cold-Start (prepopulate + launch + daemon + doorbell)
+herdr-amq bootstrap [--kind agy]
+
 # Print or install the agentic skill
 herdr-amq --skill
 herdr-amq --skill --install .opencode/skills/herdr-amq
 ```
+
+---
+
+## Onboarding & Swarm Cold Start
+
+When onboarding a new repository or recovering after all Herdr panes were lost (e.g. machine reboot or closed panes):
+
+### 1. Instant Automated Bootstrap
+Run a single command to discover external tool personas, provision isolated worktrees, and launch interactive agent sessions:
+
+```bash
+herdr-amq bootstrap [--kind agy|opencode|pi]
+```
+
+Under the hood, this pipeline automatically:
+1. **Unifies Personas**: Scans `.opencode/agents/`, `.agents/`, `.pi/agents/`, `.claude/agents/`, rule declarations in `AGENTS.md` (e.g. `Handles: coordinator, ...`), and established `.worktrees/`.
+2. **Prepopulates Storage & Worktrees**: Generates clean Maildir queues (`.agent-mail/agents/<handle>/`) and dedicated Git worktrees (`.worktrees/<handle>`) on `agent/<handle>`.
+3. **Pre-authorizes Workspace Trust**: Injects worktree paths into `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json` so `agy` bypasses interactive TUI trust confirmation dialogs.
+4. **Environment Sanitation**: Seeds child PTYs with robust PATH resolution (`~/.local/bin`, Nix profiles) so agent CLIs and local binaries are found unconditionally.
+5. **Supervised Lifecycle**: Launches Herdr terminal tabs with shell-boot backoff, starts the Doorbell Bridge daemon, and executes an initial doorbell pass.
+
+### 2. Context Resilience (Do agents lose context on cold start?)
+**No.** Context is completely decoupled from the terminal scrollback:
+* **Persistent Transmissions**: All messages, decisions, reviews, and CAS/Git attachments live as RFC 5322 markdown files in `.agent-mail/`.
+* **Decentralized Task Bus**: Tasks live in `.opencode/bus/{backlog,doing,blocked,done}/`.
+* **Code Branch Isolation**: Staged and uncommitted edits remain intact in `.worktrees/<handle>` on the agent's branch.
+* **Turn-Based Epistolary Execution**: When an agent wakes up, it drains its inbox (`herdr-amq mail drain --me <handle>`), reads its assigned task card, inspects `git status`, and resumes work without relying on monolithic LLM chat memory.
 
 ---
 

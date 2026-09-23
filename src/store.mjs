@@ -164,6 +164,20 @@ export function resolveAttachmentPath(ref, amqRoot) {
  * verifying presence on disk and providing existence flags.
  */
 export function extractAttachments(body = "", metaAttachments = [], amqRoot = null, meta = {}) {
+  // If attachments are already structured and resolved (e.g. via migration or sendMaildirMessage), return directly
+  if (Array.isArray(metaAttachments) && metaAttachments.length > 0) {
+    const isStructured = metaAttachments.every(
+      (a) => typeof a === "object" && a !== null && (a.type === "blob" || a.type === "git" || a.exists !== undefined)
+    );
+    if (isStructured) {
+      return metaAttachments.map((a) => ({
+        ...a,
+        originalRef: a.originalRef || a.path || a.name,
+        sizeDisplay: a.sizeDisplay || (a.exists ? formatFileSize(a.sizeBytes || 0) : "Missing on disk"),
+      }));
+    }
+  }
+
   const attachments = [];
   const seen = new Set();
   const repoRoot = getRepoRootFromAmq(amqRoot);
@@ -171,7 +185,11 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
   function addCandidate(rawRef) {
     if (!rawRef) return;
     let clean = typeof rawRef === "string" ? rawRef.trim().replace(/^["'<(\[]+|[>"')\],;:]+$/g, "") : "";
-    if (typeof rawRef === "object") {
+    if (typeof rawRef === "object" && rawRef !== null) {
+      if (rawRef.type === "git" || rawRef.type === "blob") {
+        attachments.push(rawRef);
+        return;
+      }
       clean = rawRef.path || rawRef.sha256 || rawRef.name || "";
     }
     if (!clean || seen.has(clean) || clean.startsWith("http://") || clean.startsWith("https://")) {
@@ -184,49 +202,69 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
       return;
     }
 
-    // 1. Try hybrid CAS ingestion / Git pinning (Option A + B) with timestamp
-    if (amqRoot) {
-      try {
-        const ingested = ingestAttachment(rawRef, amqRoot, repoRoot, {
-          timestamp: meta?.created || null,
-          text: body,
-        });
-        if (ingested && ingested.exists) {
-          attachments.push({
-            ...ingested,
-            originalRef: typeof rawRef === "string" ? clean : (rawRef.name || clean),
-            sizeDisplay: formatFileSize(ingested.sizeBytes || 0),
-          });
-          return;
-        }
-      } catch {}
-    }
-
-    // 2. Fallback to disk resolution
     const ext = path.extname(clean).toLowerCase();
     const isImage = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"].includes(ext);
     const isLog = [".log", ".txt", ".csv", ".json", ".out", ".diff", ".patch"].includes(ext);
 
+    // 1. Check disk resolution first (sub-millisecond)
     const resolved = resolveAttachmentPath(clean, amqRoot);
-    const exists = Boolean(resolved);
-    let sizeBytes = 0;
-    if (exists) {
+    if (resolved) {
+      let sizeBytes = 0;
       try {
         sizeBytes = fs.statSync(resolved).size;
       } catch {}
+
+      attachments.push({
+        path: resolved,
+        originalRef: clean,
+        name: base,
+        ext,
+        isImage,
+        isLog,
+        exists: true,
+        sizeBytes,
+        sizeDisplay: formatFileSize(sizeBytes),
+        url: `/api/file?path=${encodeURIComponent(resolved)}`,
+      });
+      return;
     }
 
+    // 2. Check CAS Blobstore if hash
+    if (amqRoot) {
+      const hashMatch = clean.match(/^(?:blob:)?([a-f0-9]{64})$/i);
+      if (hashMatch) {
+        const stored = getBlob(hashMatch[1], amqRoot);
+        if (stored) {
+          attachments.push({
+            type: "blob",
+            sha256: stored.sha256,
+            name: stored.name,
+            ext: stored.ext,
+            mime: stored.mime,
+            sizeBytes: stored.sizeBytes,
+            isImage,
+            isLog,
+            exists: true,
+            sizeDisplay: formatFileSize(stored.sizeBytes),
+            url: `/api/blob/${stored.sha256}${stored.ext ? `?ext=${encodeURIComponent(stored.ext)}` : ""}`,
+          });
+          return;
+        }
+      }
+    }
+
+    // 3. Fallback: missing on disk (unmigrated legacy reference)
     attachments.push({
-      path: resolved || clean,
+      path: clean,
       originalRef: clean,
       name: base,
       ext,
       isImage,
       isLog,
-      exists,
-      sizeBytes,
-      sizeDisplay: exists ? formatFileSize(sizeBytes) : "Missing on disk",
-      url: exists ? `/api/file?path=${encodeURIComponent(resolved || clean)}` : null,
+      exists: false,
+      sizeBytes: 0,
+      sizeDisplay: "Missing on disk",
+      url: null,
     });
   }
 
@@ -236,8 +274,8 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
     }
   }
 
-  // Auto-scan body for referenced files (/tmp/..., paths with slashes, or image/log basenames)
-  const regex = /(?:(?:(?:\/|\.\/|[a-zA-Z0-9_.-]+\/)[a-zA-Z0-9_./-]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|log|txt|csv|json|diff|patch|out|gd|tres|tscn|sh|md))|(?:\b[a-zA-Z0-9_.-]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|log|diff|patch|out)\b))/gi;
+  // Auto-scan body for referenced media/logs (strictly excludes code files like .gd/.tscn)
+  const regex = /(?:(?:(?:\/|\.\/|[a-zA-Z0-9_.-]+\/)[a-zA-Z0-9_./-]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|log|txt|csv|json|diff|patch|out))|(?:\b[a-zA-Z0-9_.-]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|log|diff|patch|out)\b))/gi;
   const matches = body.match(regex) || [];
 
   for (const m of matches) {

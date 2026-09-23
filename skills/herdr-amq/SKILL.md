@@ -59,6 +59,18 @@ Operates against decentralized card files in `.opencode/bus/{backlog,doing,block
 | `done` | `herdr-amq task done <task-id> --proof "<proof>"` | Moves card to `done/` with timestamp, proof, and duration |
 | `block` | `herdr-amq task block <task-id> --reason "<reason>"` | Moves card to `blocked/` with blocker reason |
 
+### Fleet Management & Cold-Start (`herdr-amq fleet` / `bootstrap`)
+
+Unifies external tool agent briefs (`.opencode/agents`, `.agents`, `.pi/agents`, `.claude/agents`, `AGENTS.md`) and automates swarm provisioning:
+
+| Command | Usage | Description |
+|---|---|---|
+| `fleet status` | `herdr-amq fleet status` | Discover personas across external tools and show live Herdr pane states |
+| `fleet prepopulate` | `herdr-amq fleet prepopulate` | Ensure Maildirs, Git worktrees, and workspace trust exist for all personas |
+| `fleet up` | `herdr-amq fleet up [--kind agy\|opencode\|pi]` | Launch missing fleet agents into isolated Herdr tabs with auto-trust & clean PATH |
+| `bootstrap` | `herdr-amq bootstrap [--kind agy]` | Instant cold-start: prepopulate + launch fleet + start bridge daemon + doorbell pass |
+| `migrate` | `herdr-amq migrate [--dry-run]` | Migrate historical attachments into CAS blobs or pinned Git commits |
+
 ### Bridge, Dashboard & Status
 
 | Command | Usage | Description |

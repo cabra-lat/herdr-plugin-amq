@@ -9,6 +9,9 @@ import {
   handleTaskCommand,
   handleMailCommand,
   handleSkillCommand,
+  handleMigrateCommand,
+  handleFleetCommand,
+  handleBootstrapCommand,
 } from "../src/actions.mjs";
 import { startDaemonLoop } from "../src/bridge.mjs";
 import { launchDashboardPane, launchInboxPeekPane } from "../src/panes.mjs";
@@ -67,8 +70,18 @@ switch (cmd) {
   case "skill":
     handleSkillCommand(process.argv.slice(3));
     break;
+  case "migrate":
+    handleMigrateCommand(process.argv.slice(3));
+    break;
+  case "fleet":
+    await handleFleetCommand(process.argv[3], process.argv.slice(4));
+    break;
+  case "bootstrap":
+  case "cold-start":
+    await handleBootstrapCommand(process.argv.slice(3));
+    break;
   default:
     console.error(`Unknown command: ${cmd}`);
-    console.log("Available commands: status, start, stop, doorbell, startup, pane-dashboard, pane-inbox, task, mail, send, reply, drain, --skill");
+    console.log("Available commands: status, start, stop, doorbell, startup, pane-dashboard, pane-inbox, task, mail, send, reply, drain, migrate, fleet, bootstrap, --skill");
     process.exit(1);
 }

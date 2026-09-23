@@ -26,6 +26,13 @@ import {
   replyMaildirMessage,
   drainMaildir,
 } from "./protocol.mjs";
+import { migrateMessageAttachments } from "./migration.mjs";
+import {
+  discoverFleetPersonas,
+  prepopulateFleet,
+  launchFleet,
+} from "./fleet.mjs";
+import { getHerdrAgents } from "./herdr.mjs";
 
 export function handleStatus() {
   const amqRoot = findAmqRoot();
@@ -568,6 +575,188 @@ export function handleSkillCommand(args = []) {
   }
 
   process.stdout.write(content + (content.endsWith("\n") ? "" : "\n"));
+}
+
+export function handleMigrateCommand(args = []) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(`
+📦 AMQ Attachment Migration
+──────────────────────────────────────────────
+Usage: herdr-amq migrate [options]
+
+Scan messages across all agent mailboxes and migrate legacy attachments into
+immutable Content-Addressed Storage (CAS) blobs or pinned Git commits.
+
+Options:
+  --dry-run      Preview changes without modifying message files
+  --verbose, -v  Log individual errors or details during processing
+  --help, -h     Show this help message
+`);
+    return;
+  }
+
+  const amqRoot = findAmqRoot();
+  if (!amqRoot) {
+    console.error("❌ No active .agent-mail directory found.");
+    process.exit(1);
+  }
+
+  const dryRun = args.includes("--dry-run");
+  const verbose = args.includes("--verbose") || args.includes("-v");
+
+  console.log("\n📦 \x1b[1mAMQ Attachment Migration\x1b[0m");
+  console.log("──────────────────────────────────────────────");
+  console.log(`AMQ Root: \x1b[36m${amqRoot}\x1b[0m`);
+  console.log(`Mode:     ${dryRun ? "\x1b[33mDry Run (no changes written)\x1b[0m" : "\x1b[32mActive (in-place frontmatter migration)\x1b[0m"}`);
+  console.log("──────────────────────────────────────────────\n");
+  console.log("🔍 Scanning messages across all agent mailboxes...");
+
+  const startTime = Date.now();
+  const stats = migrateMessageAttachments(amqRoot, {
+    dryRun,
+    verbose,
+    onProgress: (p) => {
+      process.stdout.write(`\rProgress: ${p.current}/${p.totalScanned} messages processed...`);
+    },
+  });
+
+  const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
+  process.stdout.write("\r" + " ".repeat(60) + "\r");
+
+  console.log("✨ \x1b[1mMigration Summary:\x1b[0m");
+  console.log(`   Total messages scanned:    ${stats.totalScanned.toLocaleString()}`);
+  console.log(`   Already migrated:          ${stats.alreadyMigrated.toLocaleString()}`);
+  console.log(`   Messages updated:          \x1b[32m${stats.migrated.toLocaleString()}\x1b[0m`);
+  console.log(`   Git objects pinned:        \x1b[36m${stats.gitPinned.toLocaleString()}\x1b[0m`);
+  console.log(`   CAS blobs stored:          \x1b[35m${stats.blobsStored.toLocaleString()}\x1b[0m`);
+  if (stats.errors > 0) {
+    console.log(`   Errors encountered:        \x1b[31m${stats.errors}\x1b[0m`);
+  }
+  console.log(`   Duration:                  ${durationSec}s`);
+  console.log("\n✅ All messages are now self-contained with frozen/pinned attachments.\n");
+  return stats;
+}
+
+export async function handleFleetCommand(subcommand = "status", rawArgs = []) {
+  const amqRoot = findAmqRoot();
+  if (!amqRoot) {
+    console.error("❌ No active .agent-mail directory found.");
+    process.exit(1);
+  }
+  const repoRoot = path.resolve(path.dirname(amqRoot));
+
+  if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+    console.log(`
+🚀 Herdr AMQ Fleet Management
+──────────────────────────────────────────────
+Usage: herdr-amq fleet <command> [options]
+
+Commands:
+  status, list     Show discovered fleet personas, worktrees, and Herdr status
+  prepopulate      Create AMQ maildirs and worktrees for all fleet personas
+  up               Launch missing fleet agents into Herdr terminal tabs
+
+Options:
+  --kind <kind>    Agent kind to launch (default: agy, options: agy, opencode, pi)
+  --agents <list>  Comma-separated handles to target (default: all)
+  --dry-run        Preview actions without creating tabs or starting agents
+  --help, -h       Show this help message
+`);
+    return;
+  }
+
+  if (subcommand === "status" || subcommand === "list") {
+    const personas = discoverFleetPersonas(repoRoot);
+    const herdrAgents = await getHerdrAgents();
+    const liveMap = new Map(herdrAgents.map((a) => [a.name, a]));
+
+    console.log(`\n🚀 \x1b[1mFleet Status & Personas (${personas.size} discovered)\x1b[0m`);
+    console.log("────────────────────────────────────────────────────────────────────────────");
+    for (const [handle, p] of personas.entries()) {
+      const live = liveMap.get(handle);
+      const liveBadge = live
+        ? `\x1b[32m● ${live.agent_status} (${live.pane_id})\x1b[0m`
+        : `\x1b[90m○ offline\x1b[0m`;
+      const wtExists = fs.existsSync(path.join(repoRoot, ".worktrees", handle));
+      const wtBadge = wtExists ? "worktree: ok" : "\x1b[33mno worktree\x1b[0m";
+      console.log(` • \x1b[1m${handle.padEnd(16)}\x1b[0m [${p.sourceType}] ${liveBadge.padEnd(30)} ${wtBadge}`);
+      if (p.role) console.log(`   \x1b[90m↳ ${p.role.slice(0, 70)}\x1b[0m`);
+    }
+    console.log("────────────────────────────────────────────────────────────────────────────\n");
+    return;
+  }
+
+  if (subcommand === "prepopulate") {
+    console.log("\n📦 Prepopulating fleet personas and worktrees...");
+    const results = prepopulateFleet(amqRoot, repoRoot);
+    for (const r of results) {
+      console.log(` • \x1b[1m${r.handle.padEnd(16)}\x1b[0m maildir: ${r.maildirOk ? "✓" : "✗"}  worktree: ${r.worktreeExisted ? "exists" : "created"}`);
+    }
+    console.log(`\n✅ Prepopulated ${results.length} fleet agents.\n`);
+    return;
+  }
+
+  if (subcommand === "up") {
+    const kindIdx = rawArgs.indexOf("--kind");
+    const kind = kindIdx !== -1 && rawArgs[kindIdx + 1] ? rawArgs[kindIdx + 1] : "agy";
+    const agentsIdx = rawArgs.indexOf("--agents");
+    const agents = agentsIdx !== -1 && rawArgs[agentsIdx + 1] ? rawArgs[agentsIdx + 1] : null;
+    const dryRun = rawArgs.includes("--dry-run");
+
+    console.log(`\n🚀 \x1b[1mLaunching Fleet via Herdr (kind: ${kind})\x1b[0m`);
+    console.log("──────────────────────────────────────────────");
+    if (dryRun) console.log("Mode: \x1b[33mDry Run (preview only)\x1b[0m\n");
+
+    const res = await launchFleet(amqRoot, repoRoot, { kind, agents, dryRun });
+    if (res.alreadyRunning.length > 0) {
+      console.log(`\x1b[36m● Already running (${res.alreadyRunning.length}):\x1b[0m ${res.alreadyRunning.join(", ")}`);
+    }
+    if (dryRun && res.wouldLaunch.length > 0) {
+      console.log(`\x1b[33m⚡ Would launch into Herdr (${res.wouldLaunch.length}):\x1b[0m ${res.wouldLaunch.join(", ")}`);
+    }
+    if (res.launched.length > 0) {
+      console.log(`\x1b[32m✔ Launched agents (${res.launched.length}):\x1b[0m`);
+      for (const l of res.launched) {
+        console.log(`   • ${l.handle} -> pane ${l.paneId} (${l.kind})`);
+      }
+    }
+    if (res.failed.length > 0) {
+      console.log(`\x1b[31m✖ Failed to launch:\x1b[0m`);
+      for (const f of res.failed) {
+        console.log(`   • ${f.handle}: ${f.error}`);
+      }
+    }
+    console.log("\n✅ Fleet launch pass complete.\n");
+    return res;
+  }
+
+  console.error(`Unknown fleet command: ${subcommand}`);
+  console.log("Run 'herdr-amq fleet --help' for usage.");
+}
+
+export async function handleBootstrapCommand(args = []) {
+  const amqRoot = findAmqRoot();
+  if (!amqRoot) {
+    console.error("❌ No active .agent-mail directory found.");
+    process.exit(1);
+  }
+  const repoRoot = path.resolve(path.dirname(amqRoot));
+
+  console.log("\n🌟 \x1b[1mCold Start / Bootstrap Swarm\x1b[0m");
+  console.log("──────────────────────────────────────────────");
+  console.log("1. Prepopulating agent personas, maildirs & worktrees...");
+  prepopulateFleet(amqRoot, repoRoot);
+
+  console.log("2. Launching fleet into Herdr panes...");
+  await handleFleetCommand("up", args);
+
+  console.log("3. Ensuring AMQ Doorbell Bridge daemon is active...");
+  handleStart();
+
+  console.log("4. Performing initial doorbell sweep...");
+  handleDoorbell();
+
+  console.log("\n🚀 \x1b[32mSwarm is live and operational!\x1b[0m\n");
 }
 
 
