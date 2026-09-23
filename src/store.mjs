@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { execCmd, getHerdrBin, getAgentHandles } from "./config.mjs";
 import { scanAgentBriefs, getAgentBrief, saveAgentBrief } from "./briefs.mjs";
 import { ingestAttachment } from "./blobs.mjs";
+import { sendMaildirMessage, replyMaildirMessage, drainMaildir } from "./protocol.mjs";
 
 const PALETTE = [
   "#1a73e8", "#ea4335", "#fbbc05", "#34a853", "#ff6d00",
@@ -952,10 +953,13 @@ function normalizeAmqKind(rawKind) {
 /**
  * Send an AMQ message using amq CLI or fallback to file creation
  */
-export function sendAmqMessage(amqRoot, { from, to, subject, body, thread, priority, kind }) {
+/**
+ * Send an AMQ message using amq CLI or fallback to atomic Maildir delivery
+ */
+export function sendAmqMessage(amqRoot, { from, to, subject, body, thread, priority, kind, attachments }) {
   const recipients = Array.isArray(to) ? to : [to];
   const safeFrom = from || "coordinator";
-  const safeThread = thread || `task/${Date.now()}`;
+  const safeThread = thread || computeCanonicalThread(safeFrom, recipients);
   const safePriority = priority || "normal";
   const safeKind = normalizeAmqKind(kind);
   const safeSubject = subject || "(no subject)";
@@ -977,7 +981,7 @@ export function sendAmqMessage(amqRoot, { from, to, subject, body, thread, prior
   if (safeKind) args.push("--kind", safeKind);
 
   // Write body via temp file or arg
-  const tmpFile = path.join("/tmp", `amq_msg_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
+  const tmpFile = path.join(os.tmpdir(), `amq_msg_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
   try {
     fs.writeFileSync(tmpFile, body || "", "utf8");
     args.push("--body", `@${tmpFile}`);
@@ -988,30 +992,22 @@ export function sendAmqMessage(amqRoot, { from, to, subject, body, thread, prior
   } catch (err) {
     try { fs.unlinkSync(tmpFile); } catch {}
 
-    // Fallback: write directly to disk in AMQ Maildir structure
+    // Pure JavaScript atomic Maildir delivery (DJB tmp -> new rename)
     if (amqRoot && fs.existsSync(amqRoot)) {
       try {
-        const nowIso = new Date().toISOString();
-        const randId = crypto.randomBytes(4).toString("hex");
-        const msgId = `${nowIso.replace(/[:.]/g, "-")}_pid${process.pid}_${randId}`;
-        const kindField = safeKind ? `,\n  "kind": "${safeKind}"` : "";
-        const fileContent = `---json\n{\n  "schema": 1,\n  "id": "${msgId}",\n  "from": "${safeFrom}",\n  "to": ${JSON.stringify(recipients)},\n  "thread": "${safeThread}",\n  "subject": ${JSON.stringify(safeSubject)},\n  "created": "${nowIso}",\n  "priority": "${safePriority}"${kindField}\n}\n---\n${body || ""}\n`;
-
-        // Write to recipients' inbox/new
-        for (const r of recipients) {
-          const inboxDir = path.join(amqRoot, "agents", r, "inbox", "new");
-          fs.mkdirSync(inboxDir, { recursive: true });
-          fs.writeFileSync(path.join(inboxDir, `${msgId}.md`), fileContent, "utf8");
-        }
-
-        // Write to sender outbox/sent
-        const sentDir = path.join(amqRoot, "agents", safeFrom, "outbox", "sent");
-        fs.mkdirSync(sentDir, { recursive: true });
-        fs.writeFileSync(path.join(sentDir, `${msgId}.md`), fileContent, "utf8");
-
-        return { ok: true, msgId, method: "fallback" };
+        const result = sendMaildirMessage(amqRoot, {
+          from: safeFrom,
+          to: recipients,
+          subject: safeSubject,
+          body: body || "",
+          thread: safeThread,
+          priority: safePriority,
+          kind: safeKind,
+          attachments: attachments || [],
+        });
+        return { ok: true, msgId: result.id, method: "maildir_native" };
       } catch (fallbackErr) {
-        return { ok: false, error: `${err.message} (fallback failed: ${fallbackErr.message})` };
+        return { ok: false, error: `${err.message} (native fallback failed: ${fallbackErr.message})` };
       }
     }
 
@@ -1022,8 +1018,8 @@ export function sendAmqMessage(amqRoot, { from, to, subject, body, thread, prior
 /**
  * Reply to an AMQ message by ID
  */
-export function replyAmqMessage(amqRoot, { from, replyToId, body }) {
-  const tmpFile = path.join("/tmp", `amq_reply_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
+export function replyAmqMessage(amqRoot, { from, replyToId, body, subject, kind, attachments }) {
+  const tmpFile = path.join(os.tmpdir(), `amq_reply_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
   try {
     fs.writeFileSync(tmpFile, body || "", "utf8");
     const args = [
@@ -1040,9 +1036,27 @@ export function replyAmqMessage(amqRoot, { from, replyToId, body }) {
 
     const out = execCmd("amq", args);
     try { fs.unlinkSync(tmpFile); } catch {}
-    return { ok: true, output: out };
+    return { ok: true, output: out, method: "cli" };
   } catch (err) {
     try { fs.unlinkSync(tmpFile); } catch {}
+
+    // Pure JavaScript RFC 5322 In-Reply-To chaining
+    if (amqRoot && fs.existsSync(amqRoot)) {
+      try {
+        const result = replyMaildirMessage(amqRoot, {
+          from,
+          replyToId,
+          body,
+          subject,
+          kind,
+          attachments,
+        });
+        return { ok: true, msgId: result.id, method: "maildir_native" };
+      } catch (nativeErr) {
+        return { ok: false, error: `${err.message} (native reply failed: ${nativeErr.message})` };
+      }
+    }
+
     return { ok: false, error: err.message };
   }
 }

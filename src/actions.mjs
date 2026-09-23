@@ -20,6 +20,11 @@ import {
   updateBoardTask,
   deleteBoardTask,
 } from "./board.mjs";
+import {
+  sendMaildirMessage,
+  replyMaildirMessage,
+  drainMaildir,
+} from "./protocol.mjs";
 
 export function handleStatus() {
   const amqRoot = findAmqRoot();
@@ -378,6 +383,157 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       console.log("  done <id> [--me <h>] [--proof <evidence>]     Complete a task with proof");
       console.log("  block <id> [--me <h>] [--reason <reason>]     Mark task blocked with reason");
       console.log("  show <id>                                     View task details");
+      console.log("────────────────────────────────────────────────────────────────────────────\n");
+      break;
+  }
+}
+
+export function handleMailCommand(subcmd, args = []) {
+  const action = subcmd || "help";
+
+  if (action === "help" || action === "--help" || action === "-h" || (args && (args.includes("--help") || args.includes("-h")))) {
+    console.log(`\n✉️  \x1b[1mAMQ Maildir Native Engine CLI\x1b[0m`);
+    console.log("────────────────────────────────────────────────────────────────────────────");
+    console.log("Usage: herdr-amq mail <command> [options]");
+    console.log("       herdr-amq send --to <h> --subject <s> --body <b> [--attach <p>]");
+    console.log("       herdr-amq reply --id <id> --body <b> [--attach <p>]");
+    console.log("       herdr-amq drain --me <handle> [--include-body]");
+    console.log("\nCommands:");
+    console.log("  send --to <handle> --subject <subj> --body <text|@file> [--from <h>] [--attach <p>]");
+    console.log("  reply --id <msg_id> --body <text|@file> [--from <h>] [--attach <p>]");
+    console.log("  drain --me <handle> [--include-body]");
+    console.log("────────────────────────────────────────────────────────────────────────────\n");
+    return;
+  }
+
+  const amqRoot = findAmqRoot();
+  if (!amqRoot) {
+    console.error("❌ No .agent-mail queue found in workspace or current directory.");
+    process.exit(1);
+  }
+
+  function getArg(flag, alias) {
+    const idx = args.findIndex((a) => a === flag || (alias && a === alias));
+    return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
+  }
+
+  function getMultiArg(flag, alias) {
+    const val = getArg(flag, alias);
+    return val ? val.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  }
+
+  switch (action) {
+    case "send": {
+      const from = getArg("--from", "--me") || process.env.AM_ME || "coordinator";
+      const to = getMultiArg("--to");
+      const subject = getArg("--subject", "-s") || "(no subject)";
+      const bodyArg = getArg("--body", "-b");
+      let body = bodyArg || "";
+      if (bodyArg && bodyArg.startsWith("@")) {
+        const filePath = bodyArg.slice(1);
+        if (fs.existsSync(filePath)) body = fs.readFileSync(filePath, "utf8");
+      }
+      const kind = getArg("--kind");
+      const priority = getArg("--priority") || "normal";
+      const attach = getMultiArg("--attach");
+
+      if (!to.length) {
+        console.error("❌ Missing required --to recipient.");
+        process.exit(1);
+      }
+
+      try {
+        const res = sendMaildirMessage(amqRoot, {
+          from,
+          to,
+          subject,
+          body,
+          kind,
+          priority,
+          attachments: attach,
+        });
+        console.log(`✉️  Sent ${res.id} to ${to.join(", ")} (from: ${from}) [maildir native]`);
+      } catch (err) {
+        console.error(`❌ Send failed: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "reply": {
+      const from = getArg("--from", "--me") || process.env.AM_ME;
+      const id = getArg("--id");
+      const bodyArg = getArg("--body", "-b");
+      let body = bodyArg || "";
+      if (bodyArg && bodyArg.startsWith("@")) {
+        const filePath = bodyArg.slice(1);
+        if (fs.existsSync(filePath)) body = fs.readFileSync(filePath, "utf8");
+      }
+      const attach = getMultiArg("--attach");
+
+      if (!id) {
+        console.error("❌ Missing required --id of message to reply to.");
+        process.exit(1);
+      }
+      if (!from) {
+        console.error("❌ Missing required --from / --me handle.");
+        process.exit(1);
+      }
+
+      try {
+        const res = replyMaildirMessage(amqRoot, {
+          from,
+          replyToId: id,
+          body,
+          attachments: attach,
+        });
+        console.log(`✉️  Replied ${res.id} to ${res.to.join(", ")} (in-reply-to: ${id}) [maildir native]`);
+      } catch (err) {
+        console.error(`❌ Reply failed: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "drain": {
+      const me = getArg("--me", "--from") || process.env.AM_ME;
+      if (!me) {
+        console.error("❌ Missing required --me <handle>.");
+        process.exit(1);
+      }
+
+      const includeBody = args.includes("--include-body");
+      const drained = drainMaildir(amqRoot, me);
+      if (!drained.length) {
+        return;
+      }
+
+      console.log(`[AMQ] ${drained.length} new message(s) for ${me}:`);
+      for (const m of drained) {
+        const h = m.header || {};
+        console.log(`\n- From: ${h.from}`);
+        console.log(`  Thread: ${h.thread || ""}`);
+        console.log(`  ID: ${m.id}`);
+        console.log(`  Subject: ${h.subject || ""}`);
+        console.log(`  Priority: ${h.priority || "normal"}`);
+        if (h.kind) console.log(`  Kind: ${h.kind}`);
+        console.log(`  Created: ${h.created || ""}`);
+        if (includeBody && m.body) {
+          console.log(`  Body:\n${m.body.trim()}`);
+        }
+      }
+      console.log("");
+      break;
+    }
+
+    default:
+      console.log(`\n✉️  \x1b[1mAMQ Maildir Native Engine CLI\x1b[0m`);
+      console.log("────────────────────────────────────────────────────────────────────────────");
+      console.log("Usage: herdr-amq mail <command> [options]");
+      console.log("\nCommands:");
+      console.log("  send --to <handle> --subject <subj> --body <text|@file> [--from <h>] [--attach <p>]");
+      console.log("  reply --id <msg_id> --body <text|@file> [--from <h>] [--attach <p>]");
+      console.log("  drain --me <handle> [--include-body]");
       console.log("────────────────────────────────────────────────────────────────────────────\n");
       break;
   }

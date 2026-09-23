@@ -7,6 +7,7 @@ import {
   handleStartup,
   handleAgentStatusChanged,
   handleTaskCommand,
+  handleMailCommand,
 } from "../src/actions.mjs";
 import { startDaemonLoop } from "../src/bridge.mjs";
 import { launchDashboardPane, launchInboxPeekPane } from "../src/panes.mjs";
@@ -48,8 +49,20 @@ switch (cmd) {
   case "board":
     handleTaskCommand(process.argv[3], process.argv.slice(4));
     break;
+  case "mail":
+    handleMailCommand(process.argv[3], process.argv.slice(4));
+    break;
+  case "send":
+    handleMailCommand("send", process.argv.slice(3));
+    break;
+  case "reply":
+    handleMailCommand("reply", process.argv.slice(3));
+    break;
+  case "drain":
+    handleMailCommand("drain", process.argv.slice(3));
+    break;
   default:
     console.error(`Unknown command: ${cmd}`);
-    console.log("Available commands: status, start, stop, doorbell, startup, pane-dashboard, pane-inbox, task [list|assign|claim|done|block|show]");
+    console.log("Available commands: status, start, stop, doorbell, startup, pane-dashboard, pane-inbox, task, mail, send, reply, drain");
     process.exit(1);
 }
