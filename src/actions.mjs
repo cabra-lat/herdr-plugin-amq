@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   findAmqRoot,
   getAgentHandles,
@@ -538,4 +539,35 @@ export function handleMailCommand(subcmd, args = []) {
       break;
   }
 }
+
+export function handleSkillCommand(args = []) {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const skillFile = path.resolve(currentDir, "../skills/herdr-amq/SKILL.md");
+  let content = "";
+  if (fs.existsSync(skillFile)) {
+    content = fs.readFileSync(skillFile, "utf-8");
+  } else {
+    console.error("❌ Skill file not found.");
+    process.exit(1);
+  }
+
+  const installIndex = args.findIndex((a) => a === "--install" || a === "install" || a === "-i");
+  if (installIndex !== -1) {
+    let destDir = args[installIndex + 1];
+    if (!destDir || destDir.startsWith("-")) {
+      destDir = path.resolve(process.cwd(), ".opencode/skills/herdr-amq");
+    } else {
+      destDir = path.resolve(process.cwd(), destDir);
+    }
+
+    fs.mkdirSync(destDir, { recursive: true });
+    const targetFile = path.join(destDir, "SKILL.md");
+    fs.writeFileSync(targetFile, content, "utf-8");
+    console.log(`✅ Successfully installed herdr-amq skill to ${targetFile}`);
+    return targetFile;
+  }
+
+  process.stdout.write(content + (content.endsWith("\n") ? "" : "\n"));
+}
+
 
