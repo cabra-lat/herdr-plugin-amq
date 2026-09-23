@@ -182,10 +182,59 @@ export function listInbox(amqRoot, handle) {
       "--json",
     ]);
     const parsed = JSON.parse(out);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (e) {
-    const s = (e.stdout || "").trim();
-    if (!s || s === "[]" || /No messages/i.test(s)) return [];
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // Fall through to native pure-JS Maildir reader
+  }
+
+  try {
+    const newDir = path.join(amqRoot, "agents", handle, "inbox", "new");
+    if (!fs.existsSync(newDir)) return [];
+    const files = fs.readdirSync(newDir).filter((f) => !f.startsWith("."));
+    const msgs = [];
+    for (const f of files) {
+      const fullPath = path.join(newDir, f);
+      const content = fs.readFileSync(fullPath, "utf8");
+      const jsonMatch = content.match(/^---json\r?\n([\s\S]*?)\r?\n---/);
+      if (jsonMatch) {
+        try {
+          const header = JSON.parse(jsonMatch[1]);
+          msgs.push({
+            id: header.id || f,
+            from: header.from,
+            to: header.to,
+            subject: header.subject,
+            thread: header.thread,
+            created: header.created,
+          });
+          continue;
+        } catch {}
+      }
+      const yamlMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (yamlMatch) {
+        const header = {};
+        for (const line of yamlMatch[1].split("\n")) {
+          const colon = line.indexOf(":");
+          if (colon !== -1) {
+            const k = line.slice(0, colon).trim();
+            const v = line.slice(colon + 1).trim();
+            header[k] = v;
+          }
+        }
+        msgs.push({
+          id: header.id || f,
+          from: header.from,
+          to: header.to ? [header.to] : [],
+          subject: header.subject,
+          thread: header.thread,
+          created: header.created,
+        });
+        continue;
+      }
+      msgs.push({ id: f, from: "unknown", subject: "(raw mail)" });
+    }
+    return msgs;
+  } catch {
     return [];
   }
 }

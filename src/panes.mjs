@@ -37,7 +37,7 @@ export function launchInboxPeekPane() {
   renderInboxSummary(amqRoot);
 }
 
-function renderInboxSummary(amqRoot) {
+export function renderInboxSummary(amqRoot) {
   const handles = getAgentHandles(amqRoot);
   console.log(`\x1b[1m📫 AMQ Mailbox Overview\x1b[0m: \x1b[36m${amqRoot}\x1b[0m\n`);
 

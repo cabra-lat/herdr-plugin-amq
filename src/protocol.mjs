@@ -226,6 +226,8 @@ export function sendMaildirMessage(amqRoot, options = {}) {
     from,
     to: recipients,
     subject,
+    thread,
+    refs,
     created,
     attachmentsCount: processedAttachments.length,
   };
