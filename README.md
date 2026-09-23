@@ -1,5 +1,6 @@
 # Herdr AMQ Plugin
 
+[![npm version](https://img.shields.io/npm/v/herdr-plugin-amq.svg)](https://www.npmjs.com/package/herdr-plugin-amq)
 [![CI](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/ci.yml/badge.svg)](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/ci.yml)
 [![Security](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/security.yml/badge.svg)](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/security.yml)
 [![Tests](https://img.shields.io/badge/tests-95%20passing-brightgreen.svg)](https://github.com/cabra-lat/herdr-plugin-amq)
