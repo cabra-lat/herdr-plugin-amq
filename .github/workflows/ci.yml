@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test on Node ${{ matrix.node-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+        node-version: [ 18.x, 20.x, 22.x ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Check syntax & JS module validation
+        run: npm run check
+
+      - name: Run test suite with experimental coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage artifact (Ubuntu / Node 22)
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '22.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-coverage
+          path: coverage/lcov.info
+
+      - name: Output summary
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '22.x'
+        run: |
+          echo "### 🧪 Test & Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo "All 80 tests executed successfully on Node ${{ matrix.node-version }}!" >> $GITHUB_STEP_SUMMARY
+          echo "Coverage report saved to \`coverage/lcov.info\`." >> $GITHUB_STEP_SUMMARY

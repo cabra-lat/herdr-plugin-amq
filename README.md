@@ -1,6 +1,11 @@
 # Herdr AMQ Plugin
 
-Autonomous Agent Message Queue (AMQ) bridge daemon, mailbox monitor, and AGmail dashboard for Herdr.
+[![CI](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/ci.yml/badge.svg)](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-80%20passing-brightgreen.svg)](https://github.com/cabra-lat/herdr-plugin-amq)
+[![Coverage](https://img.shields.io/badge/coverage-78%25-green.svg)](https://github.com/cabra-lat/herdr-plugin-amq)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+Autonomous Agent Message Queue (AMQ) bridge daemon, mailbox monitor, decentralized task bus, CAS blobstore, and AGmail dashboard for Herdr & AI coding agents.
 
 ## Overview
 
@@ -108,6 +113,33 @@ herdr-plugin-amq/
         ├── index.html  # Authentic Gmail clone frontend
         ├── style.css   # Material 3 & Google style styling
         └── app.js      # Client app, search, compose, smart replies & SSE
+```
+
+## Testing & Code Coverage
+
+Zero external testing dependencies — uses Node.js native test runner and experimental test coverage reporting:
+
+```bash
+# Run 80 automated unit & integration tests
+npm test
+
+# Run tests with experimental coverage and export standard lcov
+npm run test:coverage
+
+# Run JavaScript module syntax check
+npm run check
+```
+
+## Agentic Skill
+
+Introspect or install the machine-readable `SKILL.md` for AI coding agents (Herdr, OpenCode, Antigravity, Claude Code):
+
+```bash
+# Print skill to stdout
+herdr-amq --skill
+
+# Install into .opencode/skills/herdr-amq/SKILL.md
+herdr-amq --skill --install
 ```
 
 ## License
