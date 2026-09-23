@@ -180,7 +180,7 @@ export function startWebServer({
 
 
 
-  const server = http.createServer(async (req, res) => {
+  const requestHandler = async (req, res) => {
     // ─── Compliance: Strict Security Headers ───────────────────────────────
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
@@ -191,12 +191,18 @@ export function startWebServer({
     res.setHeader("Referrer-Policy", "no-referrer");
 
     // ─── Compliance: Host Header & DNS Rebinding Protection ───────────────
-    const rawHost = req.headers.host || "";
-    const hostHeader = rawHost.split(":")[0].toLowerCase();
+    const rawHost = (req.headers.host || "").toLowerCase().trim();
+    let hostHeader = rawHost;
+    if (hostHeader.startsWith("[")) {
+      const closeBracket = hostHeader.indexOf("]");
+      hostHeader = closeBracket !== -1 ? hostHeader.slice(1, closeBracket) : hostHeader;
+    } else {
+      hostHeader = hostHeader.split(":")[0];
+    }
+
     const isLocalHost =
       hostHeader === "localhost" ||
       hostHeader === "127.0.0.1" ||
-      hostHeader === "[::1]" ||
       hostHeader === "::1" ||
       !rawHost; // In-memory or direct tests without host header
 
@@ -718,24 +724,60 @@ export function startWebServer({
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("File not found");
     }
-  });
+  };
+
+  const server = http.createServer(requestHandler);
+  let server6 = null;
 
   server.listen(port, host, () => {
-    console.log(`\x1b[32m● AGmail Webmail Server running at:\x1b[0m \x1b[1mhttp://${host}:${port}\x1b[0m (local only)`);
+    const boundPort = server.address()?.port || port;
+    console.log(`\x1b[32m● AGmail Webmail Server running at:\x1b[0m \x1b[1mhttp://${host}:${boundPort}\x1b[0m (local only)`);
     console.log(`  Queue Root: \x1b[36m${amqRoot}\x1b[0m`);
     if (host !== "127.0.0.1" && host !== "localhost") {
       console.warn(`\x1b[33m⚠️  SECURITY WARNING: Server is listening on '${host}'. AGmail contains sensitive agent data and should strictly be local-only!\x1b[0m`);
     }
-    // Workspaces are the default: automatically isolate agents in worktrees silently
-    try {
-      const repoRoot = getRepoRootFromAmq(amqRoot);
-      const handles = getAgentHandles(amqRoot);
-      ensureAllWorktrees(repoRoot, handles);
-    } catch {}
+
+    // If host is loopback, also listen on ::1 so browser 'localhost' connects seamlessly in IPv6-first browsers (Firefox/Chrome)
+    if (host === "127.0.0.1" || host === "localhost") {
+      try {
+        server6 = http.createServer(requestHandler);
+        server6.listen(boundPort, "::1", () => {});
+        server6.on("error", () => {
+          // Graceful fallback if system does not support IPv6 loopback
+          server6 = null;
+        });
+      } catch {}
+    }
+
+    // Workspaces are the default: automatically isolate agents in worktrees in background
+    setImmediate(() => {
+      try {
+        const repoRoot = getRepoRootFromAmq(amqRoot);
+        const handles = getAgentHandles(amqRoot);
+        ensureAllWorktrees(repoRoot, handles);
+      } catch {}
+    });
   });
+
+  const originalCloseAll = server.closeAllConnections?.bind(server);
+  server.closeAllConnections = function () {
+    if (originalCloseAll) originalCloseAll();
+    if (server6 && typeof server6.closeAllConnections === "function") {
+      try { server6.closeAllConnections(); } catch {}
+    }
+  };
 
   server.on("close", () => {
     isClosing = true;
+    if (server6) {
+      try {
+        if (typeof server6.closeAllConnections === "function") {
+          server6.closeAllConnections();
+        }
+        server6.close();
+      } catch {}
+      server6 = null;
+    }
     if (herdrReconnectTimeout) clearTimeout(herdrReconnectTimeout);
     if (watchDebounce) clearTimeout(watchDebounce);
     if (herdrSubscription) {

@@ -34,30 +34,6 @@ export function formatAgentTitle(handle = "") {
 const filePathCache = new Map();
 let cacheTimestamp = 0;
 
-function findInTree(dir, targetName) {
-  const skip = new Set([".git", ".godot", "node_modules", ".agent-mail", "dist", "build"]);
-  const queue = [dir];
-  while (queue.length > 0) {
-    const current = queue.shift();
-    let entries;
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const ent of entries) {
-      if (ent.isDirectory()) {
-        if (!skip.has(ent.name)) {
-          queue.push(path.join(current, ent.name));
-        }
-      } else if (ent.name === targetName) {
-        return path.join(current, ent.name);
-      }
-    }
-  }
-  return null;
-}
-
 export function formatFileSize(bytes) {
   if (!bytes || bytes <= 0) return "0 B";
   if (bytes < 1024) return `${bytes} B`;
@@ -178,14 +154,7 @@ export function resolveAttachmentPath(ref, amqRoot) {
     if (candidate) return candidate;
   }
 
-  // 6. Fast tree walk in repoRoot for the basename
-  const found = findInTree(repoRoot, base);
-  if (found) {
-    const resolved = path.resolve(found);
-    filePathCache.set(cacheKey, resolved);
-    return resolved;
-  }
-
+  // 6. Not found in standard locations: cache null
   filePathCache.set(cacheKey, null);
   return null;
 }
@@ -264,8 +233,8 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
     }
   }
 
-  // Auto-scan body for referenced files (/tmp/..., /nix/..., or relative paths)
-  const regex = /(?:(?:\/(?:tmp|home|nix)[\w./-]+)|(?:[\w./-]+))\.(?:png|jpg|jpeg|gif|webp|svg|bmp|log|txt|csv|json|diff|patch|out|gd|tres|tscn|sh|md)\b/gi;
+  // Auto-scan body for referenced files (/tmp/..., paths with slashes, or image/log basenames)
+  const regex = /(?:(?:(?:\/|\.\/|[a-zA-Z0-9_.-]+\/)[a-zA-Z0-9_./-]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|log|txt|csv|json|diff|patch|out|gd|tres|tscn|sh|md))|(?:\b[a-zA-Z0-9_.-]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|log|diff|patch|out)\b))/gi;
   const matches = body.match(regex) || [];
 
   for (const m of matches) {

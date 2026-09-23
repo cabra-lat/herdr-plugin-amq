@@ -1,6 +1,6 @@
 id = "cabra.amq"
 name = "Herdr AMQ"
-version = "0.1.3"
+version = "0.1.4"
 min_herdr_version = "0.7.0"
 description = "Agent Message Queue (AMQ) bridge daemon, mailbox monitor, and dashboard for Herdr"
 platforms = ["linux", "macos"]

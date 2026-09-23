@@ -159,6 +159,14 @@ export function getBlob(sha256, amqRoot) {
 
 // ─── Option B: Git Commit & Object Pinning ────────────────────────────────────
 
+const gitRefCache = new Map();
+const headCommitCache = new Map();
+
+export function clearGitRefCache() {
+  gitRefCache.clear();
+  headCommitCache.clear();
+}
+
 /**
  * Pin a repository file to a specific commit or HEAD.
  * Returns immutable git ref descriptor.
@@ -166,14 +174,34 @@ export function getBlob(sha256, amqRoot) {
 export function pinGitRef(repoRoot, relativePath, commit = "HEAD") {
   if (!repoRoot || !relativePath) return null;
 
+  const cleanRel = relativePath.replace(/^[/\\]+/, "");
+  const cacheKey = `${repoRoot}:${commit}:${cleanRel}`;
+  if (gitRefCache.has(cacheKey)) {
+    return gitRefCache.get(cacheKey);
+  }
+
   try {
-    const cleanRel = relativePath.replace(/^[/\\]+/, "");
-    // Resolve commit SHA
-    const commitSha = execFileSync("git", ["rev-parse", commit], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    let commitSha;
+    if (commit === "HEAD") {
+      const cachedHead = headCommitCache.get(repoRoot);
+      const now = Date.now();
+      if (cachedHead && now - cachedHead.at < 5000) {
+        commitSha = cachedHead.sha;
+      } else {
+        commitSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        headCommitCache.set(repoRoot, { sha: commitSha, at: now });
+      }
+    } else {
+      commitSha = execFileSync("git", ["rev-parse", commit], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    }
 
     // Resolve git blob hash
     const blobSha = execFileSync("git", ["rev-parse", `${commitSha}:${cleanRel}`], {
@@ -194,7 +222,7 @@ export function pinGitRef(repoRoot, relativePath, commit = "HEAD") {
     const isImage = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"].includes(ext);
     const isLog = [".log", ".txt", ".csv", ".json", ".out", ".diff", ".patch"].includes(ext);
 
-    return {
+    const ref = {
       type: "git",
       commit: commitSha,
       shortCommit: commitSha.slice(0, 10),
@@ -209,7 +237,10 @@ export function pinGitRef(repoRoot, relativePath, commit = "HEAD") {
       exists: true,
       url: `/api/git-file?commit=${commitSha}&path=${encodeURIComponent(cleanRel)}`,
     };
+    gitRefCache.set(cacheKey, ref);
+    return ref;
   } catch {
+    gitRefCache.set(cacheKey, null);
     return null;
   }
 }
