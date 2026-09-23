@@ -45,7 +45,7 @@ Test body`
     server = startWebServer({ port: 0, amqRoot: tempRoot });
     await new Promise((resolve) => server.once("listening", resolve));
     const port = server.address().port;
-    baseUrl = `http://localhost:${port}`;
+    baseUrl = `http://127.0.0.1:${port}`;
   });
 
   after(async () => {
