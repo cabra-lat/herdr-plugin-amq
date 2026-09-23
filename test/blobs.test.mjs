@@ -11,6 +11,8 @@ import {
   pinGitRef,
   readGitRef,
   ingestAttachment,
+  getCommitAtTimestamp,
+  extractMentionedCommits,
   getMimeType,
 } from "../src/blobs.mjs";
 
@@ -113,5 +115,61 @@ test("Option B: Git commit & object pinning", () => {
     assert.equal(readGitRef(tmpRepo, "invalid-commit-hash", sampleFile), null);
   } finally {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
+  }
+});
+
+test("Option B: Historical git pinning by message timestamp & mentioned commit", () => {
+  const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), "amq-git-time-test-"));
+  const tmpAmq = fs.mkdtempSync(path.join(os.tmpdir(), "amq-root-time-"));
+  try {
+    execFileSync("git", ["init"], { cwd: tmpRepo });
+    execFileSync("git", ["config", "user.name", "AMQ Test"], { cwd: tmpRepo });
+    execFileSync("git", ["config", "user.email", "test@amq.local"], { cwd: tmpRepo });
+
+    // Commit 1: create old_asset.png
+    const assetPath = "old_asset.png";
+    fs.writeFileSync(path.join(tmpRepo, assetPath), "old-asset-bytes");
+    execFileSync("git", ["add", assetPath], { cwd: tmpRepo });
+    execFileSync("git", ["commit", "-m", "Add old_asset.png"], { cwd: tmpRepo });
+    const commit1Sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmpRepo, encoding: "utf8" }).trim();
+    const commit1Time = new Date().toISOString();
+
+    // Commit 2: delete old_asset.png
+    fs.unlinkSync(path.join(tmpRepo, assetPath));
+    execFileSync("git", ["rm", assetPath], { cwd: tmpRepo });
+    execFileSync("git", ["commit", "-m", "Delete old_asset.png"], { cwd: tmpRepo });
+
+    // File is physically missing on disk now!
+    assert.equal(fs.existsSync(path.join(tmpRepo, assetPath)), false);
+
+    // Pinning via HEAD should fail because it was deleted
+    const headPin = pinGitRef(tmpRepo, assetPath, "HEAD");
+    assert.equal(headPin, null);
+
+    // But with message timestamp from when it existed:
+    const timePin = ingestAttachment(assetPath, tmpAmq, tmpRepo, {
+      timestamp: commit1Time,
+      text: `Notice: old_asset.png was modified in commit ${commit1Sha.slice(0, 7)}`,
+    });
+
+    assert.ok(timePin);
+    assert.equal(timePin.exists, true);
+    assert.equal(timePin.type, "git");
+    assert.equal(timePin.commit, commit1Sha);
+    assert.match(timePin.url, new RegExp(`/api/git-file\\?commit=${commit1Sha}`));
+
+    // Read the historical file directly from git
+    const read = readGitRef(tmpRepo, timePin.commit, assetPath);
+    assert.ok(read);
+    assert.equal(read.buffer.toString("utf8"), "old-asset-bytes");
+
+    // extractMentionedCommits works on varied formats
+    const commits = extractMentionedCommits("FIXADO (75d5785 + 9a65b0d), commitado: fbdcab1");
+    assert.ok(commits.includes("75d5785"));
+    assert.ok(commits.includes("9a65b0d"));
+    assert.ok(commits.includes("fbdcab1"));
+  } finally {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    fs.rmSync(tmpAmq, { recursive: true, force: true });
   }
 });

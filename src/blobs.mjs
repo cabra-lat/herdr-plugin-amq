@@ -161,10 +161,57 @@ export function getBlob(sha256, amqRoot) {
 
 const gitRefCache = new Map();
 const headCommitCache = new Map();
+const timestampCommitCache = new Map();
 
 export function clearGitRefCache() {
   gitRefCache.clear();
   headCommitCache.clear();
+  timestampCommitCache.clear();
+}
+
+/**
+ * Resolve the git commit active before or at a given ISO timestamp.
+ */
+export function getCommitAtTimestamp(repoRoot, timestamp) {
+  if (!repoRoot || !timestamp) return null;
+  const iso = typeof timestamp === "string" ? timestamp.trim() : new Date(timestamp).toISOString();
+  const cacheKey = `${repoRoot}:${iso}`;
+  if (timestampCommitCache.has(cacheKey)) {
+    return timestampCommitCache.get(cacheKey);
+  }
+
+  try {
+    const commit = execFileSync("git", ["rev-list", "-n", "1", `--before=${iso}`, "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+
+    const result = commit && /^[a-f0-9]{7,40}$/i.test(commit) ? commit : null;
+    timestampCommitCache.set(cacheKey, result);
+    return result;
+  } catch {
+    timestampCommitCache.set(cacheKey, null);
+    return null;
+  }
+}
+
+/**
+ * Extract commit hashes explicitly mentioned in message text.
+ */
+export function extractMentionedCommits(text = "") {
+  if (!text || typeof text !== "string") return [];
+  const commits = [];
+  const regex = /\b(?:commit|commitado|commitada|fixado|merge|sha|rev)?[:\s*`"'(]*([0-9a-f]{7,40})\b/gi;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const hex = match[1].toLowerCase();
+    if (/^[0-9]+$/.test(hex) && hex.length < 40) continue;
+    if (!commits.includes(hex)) {
+      commits.push(hex);
+    }
+  }
+  return commits;
 }
 
 /**
@@ -290,7 +337,7 @@ export function readGitRef(repoRoot, commitSha, relativePath) {
  * - Committed files in repoRoot can be pinned to git HEAD.
  * - Already pinned/stored items retain their immutable URLs.
  */
-export function ingestAttachment(candidate, amqRoot, repoRoot) {
+export function ingestAttachment(candidate, amqRoot, repoRoot, { timestamp = null, text = "" } = {}) {
   if (!candidate) return null;
 
   // Already a structured descriptor
@@ -316,7 +363,7 @@ export function ingestAttachment(candidate, amqRoot, repoRoot) {
     }
 
     if (candidate.path) {
-      return ingestAttachment(candidate.path, amqRoot, repoRoot);
+      return ingestAttachment(candidate.path, amqRoot, repoRoot, { timestamp, text });
     }
   }
 
@@ -363,15 +410,46 @@ export function ingestAttachment(candidate, amqRoot, repoRoot) {
         return storeBlob(diskPath, amqRoot, path.basename(diskPath));
       }
 
-      // If it's inside repoRoot and git is present, try pinning to git
+      // If it's inside repoRoot and git is present, pin to commit at timestamp (or HEAD)
       if (repoRoot && diskPath.startsWith(repoRoot)) {
         const rel = path.relative(repoRoot, diskPath);
-        const gitRef = pinGitRef(repoRoot, rel, "HEAD");
+        const commit = (timestamp ? getCommitAtTimestamp(repoRoot, timestamp) : null) || "HEAD";
+        const gitRef = pinGitRef(repoRoot, rel, commit);
         if (gitRef) return gitRef;
       }
 
       // Default fallback for existing files: store into blobstore for guarantee
       return storeBlob(diskPath, amqRoot, path.basename(diskPath));
+    }
+
+    // ─── Historical Git Pinning Fallback ───
+    // If the file does not exist on disk right now (e.g. deleted or renamed in subsequent commits),
+    // check if it existed in Git at the time the message was created or at a commit mentioned in the message!
+    if (!diskPath && repoRoot) {
+      const cleanRel = raw.startsWith(repoRoot) ? path.relative(repoRoot, raw) : raw.replace(/^[/\\]+/, "");
+      if (!cleanRel.includes("..") && !path.isAbsolute(cleanRel)) {
+        const candidateCommits = [];
+        if (text) {
+          candidateCommits.push(...extractMentionedCommits(text));
+        }
+        if (timestamp) {
+          const atTime = getCommitAtTimestamp(repoRoot, timestamp);
+          if (atTime && !candidateCommits.includes(atTime)) {
+            candidateCommits.push(atTime);
+          }
+        }
+        candidateCommits.push("HEAD");
+
+        for (const commitSha of candidateCommits) {
+          const gitRef = pinGitRef(repoRoot, cleanRel, commitSha);
+          if (gitRef && gitRef.exists) {
+            return {
+              ...gitRef,
+              pinnedAt: timestamp || null,
+            };
+          }
+        }
+      }
     }
   }
 

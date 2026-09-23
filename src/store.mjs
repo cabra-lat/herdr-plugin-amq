@@ -163,7 +163,7 @@ export function resolveAttachmentPath(ref, amqRoot) {
  * Extract attachments and referenced images/logs from body or frontmatter,
  * verifying presence on disk and providing existence flags.
  */
-export function extractAttachments(body = "", metaAttachments = [], amqRoot = null) {
+export function extractAttachments(body = "", metaAttachments = [], amqRoot = null, meta = {}) {
   const attachments = [];
   const seen = new Set();
   const repoRoot = getRepoRootFromAmq(amqRoot);
@@ -184,10 +184,13 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
       return;
     }
 
-    // 1. Try hybrid CAS ingestion / Git pinning (Option A + B)
+    // 1. Try hybrid CAS ingestion / Git pinning (Option A + B) with timestamp
     if (amqRoot) {
       try {
-        const ingested = ingestAttachment(rawRef, amqRoot, repoRoot);
+        const ingested = ingestAttachment(rawRef, amqRoot, repoRoot, {
+          timestamp: meta?.created || null,
+          text: body,
+        });
         if (ingested && ingested.exists) {
           attachments.push({
             ...ingested,
@@ -394,7 +397,7 @@ export function parseMessageFile(filePath, amqRoot = null) {
     if (isOutbox) folder = "sent";
 
     const root = amqRoot || (filePath.includes("/agents/") ? filePath.split(path.sep + "agents" + path.sep)[0] : null);
-    const attachments = extractAttachments(body, meta.attachments, root);
+    const attachments = extractAttachments(body, meta.attachments, root, meta);
     const hasImage = attachments.some((a) => a.isImage);
     const hasAttachment = attachments.length > 0;
 
