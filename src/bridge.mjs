@@ -120,7 +120,7 @@ function healAgentName(handle, dryRun = false) {
 }
 
 function promptAgent(handle, text, dryRun = false) {
-  if (dryRun) {
+  if (dryRun || process.env.HERDR_DISABLE_PROMPT === "1" || process.env.NODE_ENV === "test") {
     console.log(`[bridge] DRY: would prompt ${handle}: ${text.slice(0, 60)}...`);
     return true;
   }

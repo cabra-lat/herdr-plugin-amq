@@ -42,6 +42,7 @@ describe("Autonomous Swarm Multi-Agent Simulation & Integration", () => {
     process.env.AM_ROOT = amqRoot;
     oldStateDir = process.env.HERDR_PLUGIN_STATE_DIR;
     process.env.HERDR_PLUGIN_STATE_DIR = path.join(tempRoot, "state");
+    process.env.HERDR_DISABLE_PROMPT = "1";
 
     // Create Maildir trees for 3 agents
     const agents = ["coordinator", "worker-alpha", "worker-beta"];
@@ -63,6 +64,7 @@ describe("Autonomous Swarm Multi-Agent Simulation & Integration", () => {
 
   after(() => {
     process.chdir(oldCwd);
+    delete process.env.HERDR_DISABLE_PROMPT;
     if (oldAmRoot !== undefined) {
       process.env.AM_ROOT = oldAmRoot;
     } else {
