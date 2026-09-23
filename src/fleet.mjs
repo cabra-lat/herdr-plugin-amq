@@ -345,18 +345,9 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
   const liveAgents = await getLiveAgents();
   const launcherRoots = new Set();
   let workspaceId = process.env.HERDR_WORKSPACE_ID || null;
+  let workspaceLookupAttempted = Boolean(workspaceId);
 
   try {
-    if (!dryRun && !workspaceId) {
-      try {
-        const workspaceOutput = runHerdr(["workspace", "list"], execHerdr);
-        const workspaceJson = JSON.parse(workspaceOutput);
-        const workspaces = workspaceJson?.result?.workspaces || [];
-        const matched = workspaces.find((workspace) => workspace.cwd === repoRoot || workspace.label === path.basename(repoRoot));
-        workspaceId = matched ? matched.workspace_id : (workspaces[0]?.workspace_id || null);
-      } catch {}
-    }
-
     for (const agent of targetFleet) {
       const handle = agent.handle;
       const panes = matchingFleetPanes(agent, liveAgents);
@@ -402,6 +393,17 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
       if (dryRun) {
         result.wouldLaunch.push(handle);
         continue;
+      }
+
+      if (!workspaceLookupAttempted) {
+        workspaceLookupAttempted = true;
+        try {
+          const workspaceOutput = runHerdr(["workspace", "list"], execHerdr);
+          const workspaceJson = JSON.parse(workspaceOutput);
+          const workspaces = workspaceJson?.result?.workspaces || [];
+          const matched = workspaces.find((workspace) => workspace.cwd === repoRoot || workspace.label === path.basename(repoRoot));
+          workspaceId = matched ? matched.workspace_id : (workspaces[0]?.workspace_id || null);
+        } catch {}
       }
 
       let paneId;
