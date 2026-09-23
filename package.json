@@ -1,0 +1,45 @@
+{
+  "name": "herdr-plugin-amq",
+  "version": "0.1.0",
+  "description": "Herdr plugin for AMQ (Agent Message Queue) autonomous bridge, status monitoring, and AGmail dashboard",
+  "type": "module",
+  "main": "src/index.mjs",
+  "bin": {
+    "herdr-amq": "bin/herdr-amq.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "herdr-plugin.toml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/**/*.test.mjs",
+    "status": "node bin/herdr-amq.mjs status",
+    "start": "node bin/herdr-amq.mjs start",
+    "stop": "node bin/herdr-amq.mjs stop"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cabra-lat/herdr-plugin-amq.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cabra-lat/herdr-plugin-amq/issues"
+  },
+  "homepage": "https://github.com/cabra-lat/herdr-plugin-amq#readme",
+  "keywords": [
+    "herdr",
+    "herdr-plugin",
+    "amq",
+    "multi-agent",
+    "autonomous-agents",
+    "cas-blobstore",
+    "agmail"
+  ],
+  "author": "cabra.lat",
+  "license": "MIT"
+}

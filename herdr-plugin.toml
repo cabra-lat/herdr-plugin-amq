@@ -1,0 +1,57 @@
+id = "cabra.amq"
+name = "Herdr AMQ"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Agent Message Queue (AMQ) bridge daemon, mailbox monitor, and dashboard for Herdr"
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["node", "bin/herdr-amq.mjs", "startup"]
+
+[[actions]]
+id = "bridge-status"
+title = "AMQ Bridge Status"
+contexts = ["workspace"]
+command = ["node", "bin/herdr-amq.mjs", "status"]
+
+[[actions]]
+id = "bridge-start"
+title = "Start AMQ Bridge Daemon"
+contexts = ["workspace"]
+command = ["node", "bin/herdr-amq.mjs", "start"]
+
+[[actions]]
+id = "bridge-stop"
+title = "Stop AMQ Bridge Daemon"
+contexts = ["workspace"]
+command = ["node", "bin/herdr-amq.mjs", "stop"]
+
+[[actions]]
+id = "doorbell-check"
+title = "Check AMQ Unread Mail and Ring Doorbells"
+contexts = ["workspace"]
+command = ["node", "bin/herdr-amq.mjs", "doorbell"]
+
+[[actions]]
+id = "open-dashboard"
+title = "Open AGmail Webmail Dashboard"
+contexts = ["workspace"]
+command = ["node", "bin/herdr-amq.mjs", "dashboard"]
+
+[[panes]]
+id = "dashboard"
+title = "AGmail Dashboard"
+placement = "overlay"
+command = ["node", "bin/herdr-amq.mjs", "pane-dashboard"]
+
+[[panes]]
+id = "inbox-popup"
+title = "AMQ Inbox Peek"
+placement = "popup"
+width = "80%"
+height = 24
+command = ["node", "bin/herdr-amq.mjs", "pane-inbox"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["node", "bin/herdr-amq.mjs", "on-agent-status-changed"]

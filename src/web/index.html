@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AGsuite: Autonomous Swarm Workspace</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>✉️</text></svg>">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&family=Product+Sans:wght@400;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="header-left">
+      <button class="icon-btn" id="toggle-sidebar" title="Main menu">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+      </button>
+      <div class="logo-container">
+        <span class="logo-agmail">
+          <span class="c-blue">A</span><span class="c-red">G</span><span class="c-yellow">s</span><span class="c-blue">u</span><span class="c-green">i</span><span class="c-red">t</span><span class="c-blue">e</span>
+        </span>
+        <span class="logo-sub">AGmail • AGboard</span>
+      </div>
+    </div>
+
+    <div class="header-center" id="header-search-container">
+      <div class="search-bar" id="search-bar">
+        <svg class="search-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <input type="text" id="search-input" placeholder="Search transmissions (e.g. has:image, from:spotter, to:me, bug)..." autocomplete="off">
+        <button class="clear-search-btn hidden" id="clear-search" title="Clear search">✕</button>
+      </div>
+      <!-- Google Search Autocomplete Suggestions Dropdown -->
+      <div class="search-autocomplete-dropdown hidden" id="search-autocomplete-dropdown">
+        <div class="search-suggestions-list" id="search-suggestions-list"></div>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div id="bridge-status-pill" class="status-pill status-stopped" title="Click to toggle bridge daemon">
+        <span class="status-dot"></span>
+        <span id="bridge-status-text">Bridge: Checking...</span>
+      </div>
+      <button class="icon-btn" id="refresh-btn" title="Refresh mailbox">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+      </button>
+
+      <!-- Google Account Switcher Trigger -->
+      <div class="account-menu-wrapper">
+        <button class="account-profile-btn" id="user-profile-btn" title="Switch active account / persona">
+          <span class="account-header-label" id="header-account-label">👑 God Mode</span>
+          <div class="user-badge" id="current-user-avatar">👑</div>
+        </button>
+
+        <!-- Google Style Account Popup Dropdown -->
+        <div class="account-dropdown hidden" id="account-dropdown">
+          <div class="account-dropdown-header">
+            <div class="large-avatar" id="dropdown-large-avatar">👑</div>
+            <div class="account-dropdown-user-info">
+              <strong id="dropdown-user-title">God Mode (All Transmissions)</strong>
+              <span class="account-dropdown-email" id="dropdown-user-email">amq://all-agents</span>
+              <span class="account-badge-pill">Active Persona</span>
+            </div>
+          </div>
+
+          <div class="account-dropdown-divider">
+            <span>SWITCH ACTIVE PERSONA</span>
+          </div>
+
+          <div class="account-dropdown-list" id="account-dropdown-list">
+            <!-- Populated dynamically with swarm handles -->
+          </div>
+
+          <div class="account-dropdown-footer">
+            <span class="account-footer-text">Switching persona filters inbox & sets default From: handle</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Application Body -->
+  <div class="app-layout">
+    <!-- Left Navigation Sidebar -->
+    <aside class="app-sidebar" id="sidebar">
+      <div class="compose-btn-wrap">
+        <button class="compose-btn" id="open-compose-btn">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+          <span>Compose</span>
+        </button>
+      </div>
+
+      <!-- Primary Mode: AGmail vs AGboard -->
+      <div class="sidebar-views-nav">
+        <button class="nav-item view-tab-btn active" id="nav-view-mail" data-view="mail">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+          <span class="nav-label">AGmail</span>
+        </button>
+        <button class="nav-item view-tab-btn" id="nav-view-board" data-view="board">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H6v-5h3v5zm5 0h-3V7h3v10zm5 0h-3v-8h3v8z"/></svg>
+          <span class="nav-label">AGboard</span>
+          <span class="badge" id="board-total-count" style="background:var(--google-blue);color:#fff;">0</span>
+        </button>
+      </div>
+
+      <!-- Mailbox Folders -->
+      <nav class="folder-list" id="sidebar-folder-list">
+
+        <button class="nav-item active" data-folder="inbox">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H4.99c-1.11 0-1.98.89-1.98 2L3 19c0 1.1.88 2 1.99 2H19c1.1 0 2-.9 2-2V5c0-1.11-.9-2-2-2zm0 12h-4c0 1.66-1.35 3-3 3s-3-1.34-3-3H4.99V5H19v10z"/></svg>
+          <span class="nav-label">Inbox</span>
+          <span class="badge" id="inbox-unread-count">0</span>
+        </button>
+        <button class="nav-item" data-folder="starred">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+          <span class="nav-label">Starred</span>
+        </button>
+        <button class="nav-item" data-folder="sent">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          <span class="nav-label">Sent</span>
+        </button>
+        <button class="nav-item" data-folder="all">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+          <span class="nav-label">All Mail</span>
+        </button>
+      </nav>
+
+      <!-- Agent Presence (Google Hangouts style) -->
+      <div class="sidebar-section-header">
+        <span>SWARM PRESENCE</span>
+        <div class="section-actions">
+          <button class="section-add-btn" id="open-register-agent-btn" title="Register new agent profile">+</button>
+        </div>
+      </div>
+      <div class="hangouts-list" id="presence-list">
+        <!-- Populated dynamically -->
+      </div>
+
+      <!-- Storage Usage Footer (Authentic Gmail Style) -->
+      <div class="sidebar-storage-footer">
+        <div class="storage-bar-track">
+          <div class="storage-bar-fill" id="storage-bar-fill" style="width: 5%;"></div>
+        </div>
+        <div class="storage-label">
+          <span id="storage-used-text">0.0 MB</span> of 100 MB used
+        </div>
+      </div>
+    </aside>
+    <div class="sidebar-backdrop hidden" id="sidebar-backdrop"></div>
+
+    <!-- Main Mail List and Viewer -->
+    <main class="app-main">
+      <!-- Pull / Scroll Down to Reload Indicator -->
+      <div class="pull-to-refresh-indicator" id="pull-to-refresh">
+        <div class="ptr-content">
+          <svg class="ptr-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          <span class="ptr-label" id="ptr-label">Puxe para atualizar</span>
+        </div>
+      </div>
+
+      <!-- Mail View Section -->
+      <div class="mail-view-section" id="mail-view-section">
+        <!-- Category Tabs (Gmail Primary, Updates, Brainstorms) -->
+        <div class="category-tabs" id="category-tabs">
+          <button class="category-tab active" data-category="all">
+            <span class="cat-icon">📬</span>
+            <span class="cat-title">Primary</span>
+          </button>
+          <button class="category-tab" data-category="gate">
+            <span class="cat-icon">🏷️</span>
+            <span class="cat-title">Gates & Updates</span>
+          </button>
+          <button class="category-tab" data-category="brainstorm">
+            <span class="cat-icon">💡</span>
+            <span class="cat-title">Brainstorms</span>
+          </button>
+        </div>
+
+        <!-- Action / Filter Toolbar -->
+        <div class="mail-toolbar">
+          <div class="toolbar-left">
+            <div class="view-mode-group">
+              <button class="view-mode-btn active" id="view-mode-threads" title="Conversation View (Grouped Threads)">
+                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/></svg>
+                <span>Threads</span>
+              </button>
+              <button class="view-mode-btn" id="view-mode-flat" title="Flat View (Individual Transmissions)">
+                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 14h4v-4H4v4zm0 5h4v-4H4v4zM4 9h4V5H4v4zm5 5h12v-4H9v4zm0 5h12v-4H9v4zM9 5v4h12V5H9z"/></svg>
+                <span>Messages</span>
+              </button>
+            </div>
+            <span class="toolbar-filter-info" id="filter-info">Showing all threads</span>
+          </div>
+          <div class="toolbar-right">
+            <span id="page-info" class="page-info">0 threads</span>
+            <div class="pagination-controls">
+              <button class="icon-btn-small" id="prev-page-btn" title="Previous page" disabled>
+                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+              </button>
+              <button class="icon-btn-small" id="next-page-btn" title="Next page" disabled>
+                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Split Layout: Mail List on Left, Thread Detail on Right -->
+        <div class="content-splitter" id="splitter-view">
+          <!-- List Container -->
+          <div class="mail-list-container" id="mail-list-view">
+            <div class="mail-list" id="mail-list">
+              <div class="loading-state">Loading transmissions from .agent-mail...</div>
+            </div>
+          </div>
+
+          <!-- Detail Reading View -->
+          <div class="mail-detail-container hidden" id="mail-detail-view">
+            <div class="detail-header">
+              <div class="detail-header-actions">
+                <button class="icon-btn-small" id="back-to-list-btn" title="Back to list">
+                  <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                </button>
+                <h2 id="detail-subject" class="detail-subject">Select a transmission</h2>
+                <span id="detail-thread-badge" class="thread-badge"></span>
+                <button class="icon-btn-small" id="expand-collapse-btn" title="Toggle expand / collapse all messages in thread">
+                  <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 5.83L15.17 9l1.41-1.41L12 3 7.41 7.59 8.83 9 12 5.83zm0 12.34L8.83 15l-1.41 1.41L12 21l4.59-4.59L15.17 15 12 18.17z"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="detail-body-wrapper">
+              <!-- Feed of all messages in this thread -->
+              <div class="thread-messages-list" id="thread-messages-list">
+                <!-- Rendered dynamically -->
+              </div>
+
+              <!-- Smart Replies (One-click suggestions) -->
+              <div class="smart-replies-container">
+                <span class="smart-reply-label">💡 AGmail Smart Reply:</span>
+                <div class="smart-replies-chips" id="smart-replies-chips">
+                  <button class="chip" data-text="Ack, on it.">Ack, on it.</button>
+                  <button class="chip" data-text="Ran verify-all.sh --quick: PASS.">Ran verify-all.sh --quick: PASS.</button>
+                  <button class="chip" data-text="Acknowledged, using tools/godot-lock.sh only.">Acknowledged, using tools/godot-lock.sh only.</button>
+                  <button class="chip" data-text="Confirmed, closing issue and updating STATUS.md.">Confirmed, closing issue and updating STATUS.md.</button>
+                </div>
+              </div>
+
+              <!-- In-page Quick Reply Form -->
+              <div class="quick-reply-box">
+                <div class="quick-reply-header">
+                  <strong>Reply to thread</strong> as <span class="current-reply-me" id="reply-as-user">user</span>
+                </div>
+                <textarea id="quick-reply-text" placeholder="Type your response here... (supports Markdown)" rows="4"></textarea>
+                <div class="quick-reply-actions">
+                  <button class="btn btn-primary" id="send-quick-reply-btn">
+                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                    <span>Send Reply (amq)</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Coordination Kanban Board Section -->
+      <div class="board-view-section hidden" id="board-view-section">
+        <!-- Board Header Toolbar -->
+        <div class="board-toolbar">
+          <div class="board-toolbar-left">
+            <div class="board-title-group">
+              <h2 class="board-title">AGboard</h2>
+              <span class="board-subtitle">Swarm Coordination &amp; Automailing</span>
+            </div>
+            <div class="board-stats-pills" id="board-stats-pills">
+              <span class="board-pill pill-total">Total: <strong id="stat-total">0</strong></span>
+              <span class="board-pill pill-progress">Em Voo: <strong id="stat-progress">0</strong></span>
+              <span class="board-pill pill-blocked">Bloqueios: <strong id="stat-blocked">0</strong></span>
+              <span class="board-pill pill-done">Concluído: <strong id="stat-done">0</strong></span>
+            </div>
+          </div>
+          <div class="board-toolbar-right">
+            <div class="board-search-wrap">
+              <svg class="board-search-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+              <input type="text" id="board-search-input" placeholder="Filter cards (e.g. gate, ik, spotter)...">
+            </div>
+            <button class="btn btn-secondary btn-sm" id="refresh-board-btn" title="Refresh board from disk">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+              <span>Sync</span>
+            </button>
+            <button class="btn btn-primary btn-sm" id="open-new-task-btn">
+              <span>+ New Task</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Agent Filter Chips Bar -->
+        <div class="board-agent-filter-bar" id="board-agent-filter-bar">
+          <!-- Populated dynamically with All, Coordinator, Range, Player-rig, etc. -->
+        </div>
+
+        <!-- Kanban Columns Grid -->
+        <div class="kanban-grid" id="kanban-grid">
+          <!-- Column 1: Backlog -->
+          <div class="kanban-column" data-col="backlog">
+            <div class="kanban-col-header">
+              <div class="col-title-wrap">
+                <span class="col-dot dot-backlog"></span>
+                <span class="col-title">Fila / Backlog</span>
+              </div>
+              <span class="col-badge" id="col-count-backlog">0</span>
+            </div>
+            <div class="kanban-cards-list" id="cards-backlog" data-col="backlog">
+              <div class="kanban-empty">No tasks in backlog</div>
+            </div>
+          </div>
+
+          <!-- Column 2: In Progress -->
+          <div class="kanban-column" data-col="in_progress">
+            <div class="kanban-col-header">
+              <div class="col-title-wrap">
+                <span class="col-dot dot-progress"></span>
+                <span class="col-title">Em Voo / Claimed</span>
+              </div>
+              <span class="col-badge" id="col-count-in_progress">0</span>
+            </div>
+            <div class="kanban-cards-list" id="cards-in_progress" data-col="in_progress">
+              <div class="kanban-empty">No tasks in flight</div>
+            </div>
+          </div>
+
+          <!-- Column 3: Blocked -->
+          <div class="kanban-column" data-col="blocked">
+            <div class="kanban-col-header">
+              <div class="col-title-wrap">
+                <span class="col-dot dot-blocked"></span>
+                <span class="col-title">Bloqueios / Review</span>
+              </div>
+              <span class="col-badge" id="col-count-blocked">0</span>
+            </div>
+            <div class="kanban-cards-list" id="cards-blocked" data-col="blocked">
+              <div class="kanban-empty">No blocked items</div>
+            </div>
+          </div>
+
+          <!-- Column 4: Done -->
+          <div class="kanban-column" data-col="done">
+            <div class="kanban-col-header">
+              <div class="col-title-wrap">
+                <span class="col-dot dot-done"></span>
+                <span class="col-title">Concluído / Done</span>
+              </div>
+              <span class="col-badge" id="col-count-done">0</span>
+            </div>
+            <div class="kanban-cards-list" id="cards-done" data-col="done">
+              <div class="kanban-empty">No completed tasks</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- Floating Compose Window -->
+  <div class="compose-modal hidden" id="compose-modal">
+    <div class="compose-header">
+      <span>New Transmission</span>
+      <div class="compose-header-btns">
+        <button id="close-compose-btn" title="Close">✕</button>
+      </div>
+    </div>
+    <form class="compose-form" id="compose-form">
+      <div class="compose-field">
+        <label for="compose-template">Template:</label>
+        <select id="compose-template">
+          <option value="">(Custom transmission)</option>
+          <option value="task">Task Request (todo)</option>
+          <option value="verify">Gate &amp; Verification Report (verify-all: PASS)</option>
+          <option value="question">Question / Consultation</option>
+          <option value="lock">Contention / Lock Notice</option>
+        </select>
+      </div>
+      <div class="compose-field">
+        <label for="compose-from">From:</label>
+        <select id="compose-from"></select>
+      </div>
+      <div class="compose-field">
+        <label for="compose-to">To:</label>
+        <select id="compose-to"></select>
+      </div>
+      <div class="compose-field">
+        <label for="compose-subject">Subject:</label>
+        <input type="text" id="compose-subject" placeholder="Subject..." required>
+      </div>
+      <div class="compose-field">
+        <label for="compose-thread">Thread:</label>
+        <input type="text" id="compose-thread" placeholder="e.g. p2p/user__coordinator or broadcast">
+      </div>
+      <div class="compose-textarea-wrap">
+        <textarea id="compose-body" placeholder="Transmission body..." rows="10" required></textarea>
+      </div>
+      <div class="compose-footer">
+        <button type="submit" class="btn btn-primary" id="compose-submit-btn">
+          <span>Send</span>
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Lightbox Modal for Image Previews -->
+  <div class="lightbox-modal hidden" id="lightbox-modal">
+    <div class="lightbox-backdrop" id="lightbox-backdrop"></div>
+    <div class="lightbox-box">
+      <div class="lightbox-topbar">
+        <span class="lightbox-title" id="lightbox-title">Image Preview</span>
+        <div class="lightbox-top-actions">
+          <a class="lightbox-btn" id="lightbox-download-link" href="#" target="_blank" download>Open Full Image ↗</a>
+          <button class="lightbox-close-btn" id="lightbox-close-btn">✕</button>
+        </div>
+      </div>
+      <div class="lightbox-img-wrapper">
+        <img id="lightbox-img" src="" alt="preview">
+      </div>
+    </div>
+  </div>
+
+  <!-- Right-Click Context Menu -->
+  <div class="context-menu hidden" id="chat-context-menu">
+    <div class="context-menu-header" id="ctx-header">
+      <span class="ctx-header-title" id="ctx-header-title">Context</span>
+      <span class="ctx-header-sub" id="ctx-header-sub"></span>
+    </div>
+    <div class="context-menu-divider"></div>
+    <div class="context-menu-item" id="ctx-reply">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
+      <span id="ctx-reply-text">Reply to transmission</span>
+    </div>
+    <div class="context-menu-item" id="ctx-quote">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z"/></svg>
+      <span id="ctx-quote-text">Quote in reply</span>
+    </div>
+    <div class="context-menu-item" id="ctx-filter-sender">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      <span id="ctx-filter-sender-text">View transmissions from author</span>
+    </div>
+    <div class="context-menu-item" id="ctx-copy-id">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+      <span id="ctx-copy-id-text">Copy message ID</span>
+    </div>
+    <div class="context-menu-divider"></div>
+    <div class="context-menu-item" id="ctx-register-agent">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+      <span id="ctx-register-text">Register new agent profile...</span>
+    </div>
+  </div>
+
+  <!-- Register Agent & Model Modal -->
+  <div class="modal-backdrop hidden" id="register-agent-backdrop">
+    <div class="agent-modal-card agent-modal-card-wide">
+      <div class="agent-modal-header">
+        <h3 id="agent-modal-title">Configure Agent Profile</h3>
+        <button class="icon-btn-small" id="close-register-agent-btn">✕</button>
+      </div>
+      <form id="register-agent-form">
+        <!-- Quick-load discovered agent brief chips -->
+        <div class="agent-field" id="brief-chips-field">
+          <label>Discovered on Disk (.opencode/agents, .agents, .pi):</label>
+          <div class="brief-chips-list" id="brief-chips-list">
+            <span class="brief-chips-loading">Scanning briefs...</span>
+          </div>
+        </div>
+
+        <div class="agent-field">
+          <div class="agent-field-header-row">
+            <label for="new-agent-handle">Agent Handle (unique ID):</label>
+            <button type="button" class="btn-text-action" id="pull-disk-brief-btn" title="Pull brief and prompt from disk">⬇ Pull from Disk</button>
+          </div>
+          <input type="text" id="new-agent-handle" placeholder="e.g. security-auditor, perf-eval" required pattern="[a-zA-Z0-9_-]+">
+          <span class="field-hint" id="new-agent-handle-hint">Used for Maildir routing and AMQ address</span>
+        </div>
+
+        <div class="agent-field">
+          <label for="new-agent-name">Display Name:</label>
+          <input type="text" id="new-agent-name" placeholder="e.g. Security Auditor">
+        </div>
+
+        <div class="agent-field">
+          <label for="new-agent-role">Specialty / Role:</label>
+          <input type="text" id="new-agent-role" placeholder="e.g. Vulnerability Scanner, Ballistics Physicist">
+        </div>
+
+        <div class="agent-field">
+          <label for="new-agent-model">Backend Model Profile:</label>
+          <input type="text" id="new-agent-model" list="model-suggestions" placeholder="e.g. claude-3-7-sonnet, gemini-2.5-flash, ollama/qwen2.5-coder..." autocomplete="off">
+          <datalist id="model-suggestions"></datalist>
+          <span class="field-hint">Specified model or custom endpoint for this persona</span>
+        </div>
+
+        <div class="agent-field">
+          <div class="agent-field-header-row">
+            <label for="new-agent-prompt">Agent Brief &amp; System Prompt:</label>
+            <span class="brief-source-badge" id="brief-source-badge"></span>
+          </div>
+          <textarea id="new-agent-prompt" rows="7" placeholder="Lane ownership, files, conventions, instructions..."></textarea>
+          <span class="field-hint">Loaded from .opencode/agents, .agents, or .pi/agents</span>
+        </div>
+
+        <div class="agent-modal-actions">
+          <button type="button" class="btn btn-secondary" id="cancel-register-agent-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="submit-register-agent-btn">Save Agent Profile</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- New Task Modal for Kanban Board -->
+  <div class="modal-backdrop hidden" id="task-modal-backdrop">
+    <div class="agent-modal-card">
+      <div class="agent-modal-header">
+        <h3>Create Coordination Task</h3>
+        <button class="icon-btn-small" id="close-task-modal-btn">✕</button>
+      </div>
+      <form id="new-task-form">
+        <div class="agent-field">
+          <label for="task-title-input">Task Title / Item *</label>
+          <input type="text" id="task-title-input" placeholder="e.g. Implement analytic arm IK Phase 2" required>
+        </div>
+        <div class="agent-field-row" style="display:flex;gap:12px;">
+          <div class="agent-field" style="flex:1;">
+            <label for="task-owner-select">Assigned Agent *</label>
+            <select id="task-owner-select"></select>
+          </div>
+          <div class="agent-field" style="flex:1;">
+            <label for="task-status-select">Initial Stage *</label>
+            <select id="task-status-select">
+              <option value="backlog">📥 Fila / Backlog</option>
+              <option value="in_progress">🚀 Em Voo / Claimed</option>
+              <option value="blocked">🛑 Bloqueio / Review</option>
+              <option value="done">✅ Concluído / Done</option>
+            </select>
+          </div>
+        </div>
+        <div class="agent-field">
+          <label for="task-desc-input">Description / Requirements / Evidence:</label>
+          <textarea id="task-desc-input" rows="4" placeholder="Detail the task objectives, constraints, or gate criteria..."></textarea>
+        </div>
+        <div class="agent-field" style="margin-top: 6px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;font-size:13px;user-select:none;">
+            <input type="checkbox" id="task-notify-checkbox" checked style="width:auto;cursor:pointer;">
+            <span>✉️ Dispatch automailing notification via AMQ to assigned agent</span>
+          </label>
+        </div>
+        <div class="agent-modal-actions">
+          <button type="button" class="btn btn-secondary" id="cancel-task-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="save-task-btn">Create Task</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Task Sheet (Ficha do Card / Dossier Drawer) -->
+  <div class="task-sheet-backdrop hidden" id="task-sheet-backdrop"></div>
+  <aside class="task-sheet-drawer hidden" id="task-sheet-drawer" role="dialog" aria-modal="true" aria-label="Ficha da Tarefa">
+    <div class="task-sheet-container">
+      <!-- Sheet Top Nav -->
+      <div class="task-sheet-top-bar">
+        <div class="task-sheet-top-left">
+          <button type="button" class="sheet-back-btn" id="sheet-back-btn" title="Fechar ficha e voltar ao Quadro Kanban (Esc)">
+            <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+            <span>Voltar ao Quadro</span>
+          </button>
+          <span class="task-sheet-id" id="sheet-task-id">#task-id</span>
+          <span class="kanban-source-badge" id="sheet-task-source">Source</span>
+        </div>
+        <div class="task-sheet-top-right">
+          <button class="sheet-action-btn" id="sheet-wide-btn" title="Alternar largura expandida">
+            <span id="sheet-wide-icon">↔️</span>
+            <span id="sheet-wide-text">Expandir Ficha</span>
+          </button>
+          <button class="sheet-action-btn" id="sheet-copy-id-btn" title="Copiar ID da Tarefa">
+            <svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            <span>Copiar ID</span>
+          </button>
+          <button class="icon-btn-small" id="close-task-sheet-btn" title="Fechar (Esc)">✕</button>
+        </div>
+      </div>
+
+      <!-- Sheet Header / Title -->
+      <div class="task-sheet-header">
+        <h2 class="task-sheet-title" id="sheet-task-title">Título da Tarefa</h2>
+      </div>
+
+      <!-- Stage Selector Bar -->
+      <div class="task-sheet-stage-section">
+        <span class="task-sheet-section-label">Estágio da Ficha:</span>
+        <div class="task-sheet-stage-buttons" id="sheet-stage-buttons">
+          <button type="button" class="sheet-stage-btn" data-stage="backlog">
+            <span class="col-dot dot-backlog"></span>
+            <span>Backlog</span>
+          </button>
+          <button type="button" class="sheet-stage-btn" data-stage="in_progress">
+            <span class="col-dot dot-progress"></span>
+            <span>Em Voo</span>
+          </button>
+          <button type="button" class="sheet-stage-btn" data-stage="blocked">
+            <span class="col-dot dot-blocked"></span>
+            <span>Bloqueio</span>
+          </button>
+          <button type="button" class="sheet-stage-btn" data-stage="done">
+            <span class="col-dot dot-done"></span>
+            <span>Concluído</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Meta Bar: Owner & Thread Reference -->
+      <div class="task-sheet-meta-grid">
+        <div class="sheet-meta-item">
+          <span class="task-sheet-section-label">Responsável / Owner:</span>
+          <div class="sheet-owner-selector-wrap">
+            <div class="sheet-owner-avatar" id="sheet-owner-avatar">?</div>
+            <select id="sheet-owner-select" class="sheet-owner-select"></select>
+          </div>
+        </div>
+        <div class="sheet-meta-item">
+          <span class="task-sheet-section-label">Thread AMQ Vinculada:</span>
+          <code class="sheet-thread-code" id="sheet-thread-id">agboard/...</code>
+        </div>
+      </div>
+
+      <!-- Ficha View Tabs -->
+      <div class="sheet-tabs-bar" id="sheet-tabs-bar">
+        <button type="button" class="sheet-tab-btn active" data-tab="all" id="sheet-tab-all">
+          <span>📜 Visão Integrada</span>
+        </button>
+        <button type="button" class="sheet-tab-btn" data-tab="desc" id="sheet-tab-desc">
+          <span>📋 Descrição Completa</span>
+        </button>
+        <button type="button" class="sheet-tab-btn" data-tab="transmissions" id="sheet-tab-transmissions">
+          <span>💬 Transmissões</span>
+          <span class="sheet-tab-count" id="sheet-tab-badge">0</span>
+        </button>
+      </div>
+
+      <!-- Description / Context Card -->
+      <div class="task-sheet-card" id="task-sheet-desc-card">
+        <div class="task-sheet-card-header">
+          <div class="sheet-card-header-left">
+            <span>📋 Descrição / Contexto da Tarefa</span>
+          </div>
+          <div class="sheet-card-header-right">
+            <button type="button" class="sheet-subtle-btn sheet-desc-back-btn" id="sheet-desc-back-btn" style="display:none;" title="Voltar para a visão integrada">
+              <span>← Sair do Foco</span>
+            </button>
+            <button type="button" class="sheet-subtle-btn" id="sheet-desc-expand-btn" title="Alternar foco exclusivo na descrição">
+              <span id="sheet-desc-expand-icon">📖</span>
+              <span id="sheet-desc-expand-text">Foco na Descrição</span>
+            </button>
+          </div>
+        </div>
+        <div class="task-sheet-card-body">
+          <div class="task-sheet-desc md-content" id="sheet-task-desc"></div>
+        </div>
+      </div>
+
+      <!-- Transmissions Feed Section ("Os cards são fichas tais quais os e-mails") -->
+      <div class="task-sheet-thread-section" id="task-sheet-thread-section">
+        <div class="task-sheet-thread-header">
+          <div class="sheet-thread-title-wrap">
+            <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+            <h3>Transmissões Vinculadas</h3>
+            <span class="col-badge" id="sheet-thread-badge">0</span>
+          </div>
+          <button type="button" class="sheet-refresh-thread-btn" id="sheet-refresh-thread-btn" title="Recarregar mensagens">↻ Atualizar</button>
+        </div>
+
+        <div class="sheet-thread-list" id="sheet-thread-list">
+          <!-- Transmissions cards injected here -->
+        </div>
+      </div>
+
+      <!-- In-Ficha AMQ Dispatch Form ("Fica tudo lá dentro") -->
+      <div class="task-sheet-dispatch-section" id="task-sheet-dispatch-section">
+        <div class="task-sheet-dispatch-header">
+          <span>✉️ Transmitir Mensagem nesta Ficha</span>
+        </div>
+        <div class="sheet-dispatch-form">
+          <div class="sheet-dispatch-row">
+            <div class="sheet-dispatch-field">
+              <label for="sheet-dispatch-from">De (Remetente):</label>
+              <select id="sheet-dispatch-from"></select>
+            </div>
+            <div class="sheet-dispatch-field">
+              <label for="sheet-dispatch-to">Para (Destinatário):</label>
+              <select id="sheet-dispatch-to"></select>
+            </div>
+          </div>
+
+          <!-- Quick action chips -->
+          <div class="sheet-dispatch-chips" id="sheet-dispatch-chips">
+            <button type="button" class="chip" data-tpl="status">📋 Pedir Status</button>
+            <button type="button" class="chip" data-tpl="block">🛑 Alertar Bloqueio</button>
+            <button type="button" class="chip" data-tpl="done">✅ Enviar Evidência</button>
+            <button type="button" class="chip" data-tpl="ack">🤝 Confirmar (ACK)</button>
+          </div>
+
+          <textarea id="sheet-dispatch-body" class="sheet-dispatch-textarea" rows="3" placeholder="Digite uma instrução, feedback ou relatório... (AMQ envia direto aos agentes)"></textarea>
+
+          <div class="sheet-dispatch-footer">
+            <span class="sheet-dispatch-hint">Thread: <span id="sheet-dispatch-thread-preview">agboard/...</span></span>
+            <button type="button" class="btn btn-primary" id="sheet-dispatch-send-btn">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+              <span>Enviar Transmissão (AMQ)</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <script src="app.js"></script>
+
+</body>
+</html>
