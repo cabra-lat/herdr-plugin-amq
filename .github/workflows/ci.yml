@@ -46,6 +46,12 @@ jobs:
       - name: Output summary
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == '22.x'
         run: |
-          echo "### 🧪 Test & Coverage Summary" >> $GITHUB_STEP_SUMMARY
-          echo "All 80 tests executed successfully on Node ${{ matrix.node-version }}!" >> $GITHUB_STEP_SUMMARY
-          echo "Coverage report saved to \`coverage/lcov.info\`." >> $GITHUB_STEP_SUMMARY
+          echo "## 🧪 Test & Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All 80 automated unit & integration tests executed successfully on Node ${{ matrix.node-version }}!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Coverage Breakdown" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          node tools/coverage-summary.mjs >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Full LCOV report uploaded as \`lcov-coverage\` artifact." >> $GITHUB_STEP_SUMMARY
