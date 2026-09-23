@@ -1,6 +1,6 @@
 {
   "name": "herdr-plugin-amq",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Herdr plugin for AMQ (Agent Message Queue) autonomous bridge, status monitoring, and AGmail dashboard",
   "type": "module",
   "main": "src/index.mjs",

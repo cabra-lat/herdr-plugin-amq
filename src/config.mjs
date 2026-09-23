@@ -1,13 +1,37 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export function getPluginVersion() {
+  try {
+    const pkgPath = path.resolve(__dirname, "../package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      return pkg.version || "unknown";
+    }
+  } catch {}
+  return "unknown";
+}
 
 export function getHerdrBin() {
   return process.env.HERDR_BIN_PATH || "herdr";
 }
 
 export function getStateDir() {
-  const dir = process.env.HERDR_PLUGIN_STATE_DIR || path.join(process.env.HOME || "/tmp", ".herdr-amq-state");
+  if (process.env.HERDR_PLUGIN_STATE_DIR) {
+    const dir = process.env.HERDR_PLUGIN_STATE_DIR;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  const legacyDir = path.join(process.env.HOME || "/tmp", ".herdr-amq-state");
+  if (fs.existsSync(legacyDir)) {
+    return legacyDir;
+  }
+  const base = process.env.XDG_STATE_HOME || path.join(process.env.HOME || "/tmp", ".local", "state");
+  const dir = path.join(base, "herdr-amq");
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -22,7 +46,17 @@ export function getRepoRootFromAmq(amqRoot) {
 }
 
 export function getConfigDir() {
-  const dir = process.env.HERDR_PLUGIN_CONFIG_DIR || path.join(process.env.HOME || "/tmp", ".herdr-amq-config");
+  if (process.env.HERDR_PLUGIN_CONFIG_DIR) {
+    const dir = process.env.HERDR_PLUGIN_CONFIG_DIR;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  const legacyDir = path.join(process.env.HOME || "/tmp", ".herdr-amq-config");
+  if (fs.existsSync(legacyDir)) {
+    return legacyDir;
+  }
+  const base = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "/tmp", ".config");
+  const dir = path.join(base, "herdr-amq");
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }

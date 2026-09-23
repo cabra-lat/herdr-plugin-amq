@@ -149,7 +149,7 @@ test("Option B: Historical git pinning by message timestamp & mentioned commit",
     // But with message timestamp from when it existed:
     const timePin = ingestAttachment(assetPath, tmpAmq, tmpRepo, {
       timestamp: commit1Time,
-      text: `Notice: old_asset.png was modified in commit ${commit1Sha.slice(0, 7)}`,
+      text: `Notice: old_asset.png was modified in commit ${commit1Sha}`,
     });
 
     assert.ok(timePin);

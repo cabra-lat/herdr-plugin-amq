@@ -53,6 +53,12 @@ switch (cmd) {
   case "board":
     handleTaskCommand(process.argv[3], process.argv.slice(4));
     break;
+  case "next":
+    handleTaskCommand("next", process.argv.slice(3));
+    break;
+  case "task-drain":
+    handleTaskCommand("drain", process.argv.slice(3));
+    break;
   case "mail":
     handleMailCommand(process.argv[3], process.argv.slice(4));
     break;

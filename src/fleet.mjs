@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { scanAgentBriefs } from "./briefs.mjs";
 import { ensureAgentWorktree } from "./worktrees.mjs";
 import { registerAgent, formatAgentTitle } from "./store.mjs";
@@ -173,7 +173,143 @@ export function buildFleetEnvPath() {
     process.env.PATH || "",
   ];
 
-  return Array.from(new Set(paths.filter(Boolean))).join(":");
+  return Array.from(new Set(paths.filter(Boolean))).join(path.delimiter);
+}
+
+function filterPersonas(fleet, filter) {
+  if (!filter) return fleet;
+  const selected = new Set(
+    (Array.isArray(filter) ? filter : filter.split(","))
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return fleet.filter((agent) => selected.has(agent.handle.toLowerCase()));
+}
+
+function pathsMatch(left, right) {
+  if (!left || !right) return false;
+  try {
+    return fs.realpathSync(left) === fs.realpathSync(right);
+  } catch {
+    return path.resolve(left) === path.resolve(right);
+  }
+}
+
+function matchingFleetPanes(agent, liveAgents) {
+  return liveAgents.filter((live) => (
+    live.name === agent.handle && pathsMatch(live.cwd, agent.worktree)
+  ));
+}
+
+function runHerdr(args, execHerdr) {
+  if (execHerdr) return execHerdr(args);
+  return execFileSync("herdr", args, { encoding: "utf8" });
+}
+
+function waitFor(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function defaultLaunchArgs(kind, handle) {
+  if (kind === "agy") return ["--dangerously-skip-permissions"];
+  if (kind === "opencode") return ["--agent", handle, "--auto"];
+  return [];
+}
+
+export function resolveExecutable(name, envPath = buildFleetEnvPath()) {
+  for (const dir of envPath.split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return fs.realpathSync(candidate);
+    } catch {}
+  }
+  return null;
+}
+
+function validModel(model) {
+  return typeof model === "string" && /^[^\s/]+\/[^\s/]+/.test(model) ? model : null;
+}
+
+export function readOpencodeModel(worktree) {
+  for (const relativePath of ["opencode.json", path.join(".opencode", "opencode.json")]) {
+    const configPath = path.join(worktree, relativePath);
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const model = validModel(config.model);
+      if (model) return model;
+    } catch {}
+  }
+  return null;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
+}
+
+export function createOpencodeLauncher(handle, model, executable) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-amq-opencode-"));
+  const binDir = path.join(root, handle.replace(/[^a-zA-Z0-9._-]/g, "_"));
+  fs.mkdirSync(binDir, { recursive: true });
+  const agentConfig = { mode: "all" };
+  const selectedModel = validModel(model);
+  if (selectedModel) agentConfig.model = selectedModel;
+  const config = JSON.stringify({ agent: { [handle]: agentConfig } });
+  const launcher = path.join(binDir, "opencode");
+  fs.writeFileSync(
+    launcher,
+    `#!/bin/sh\nexport OPENCODE_CONFIG_CONTENT=${shellQuote(config)}\nexec ${shellQuote(executable)} "$@"\n`,
+    { mode: 0o700 },
+  );
+  return { root, binDir, launcher, config };
+}
+
+export async function stopFleet(amqRoot, repoRoot, options = {}) {
+  const personas = discoverFleetPersonas(repoRoot);
+  const fleet = [...personas.values()].map((agent) => ({
+    ...agent,
+    worktree: path.join(repoRoot, ".worktrees", agent.handle),
+  }));
+  const targetFleet = filterPersonas(fleet, options.agents);
+  const kind = options.kind || null;
+  const dryRun = Boolean(options.dryRun);
+  const getLiveAgents = options.getLiveAgents || getHerdrAgents;
+  const execHerdr = options.execHerdr || null;
+  const liveAgents = await getLiveAgents();
+  const result = {
+    total: targetFleet.length,
+    stopped: [],
+    wouldStop: [],
+    skipped: [],
+    failed: [],
+    dryRun,
+  };
+
+  for (const agent of targetFleet) {
+    const panes = matchingFleetPanes(agent, liveAgents);
+    const selected = kind ? panes.filter((pane) => pane.agent === kind) : panes;
+    if (selected.length === 0) {
+      if (panes.length > 0) {
+        result.skipped.push({ handle: agent.handle, reason: `kind is ${panes.map((pane) => pane.agent).join(", ")}` });
+      }
+      continue;
+    }
+    if (dryRun) {
+      result.wouldStop.push(...selected.map((pane) => ({ handle: agent.handle, paneId: pane.pane_id, kind: pane.agent })));
+      continue;
+    }
+    for (const pane of selected) {
+      try {
+        runHerdr(["pane", "close", pane.pane_id], execHerdr);
+        result.stopped.push({ handle: agent.handle, paneId: pane.pane_id, kind: pane.agent });
+      } catch (error) {
+        result.failed.push({ handle: agent.handle, paneId: pane.pane_id, error: error.message });
+      }
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -183,135 +319,168 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
   const kind = options.kind || "agy";
   const dryRun = Boolean(options.dryRun);
   const timeoutMs = options.timeout || 25000;
-  const customArgs = options.args || (kind === "agy" ? ["--dangerously-skip-permissions"] : []);
-  const filterList = options.agents
-    ? (Array.isArray(options.agents) ? options.agents : options.agents.split(",")).map((s) => s.trim().toLowerCase())
-    : null;
-
-  // 1. Prepopulate maildirs and worktrees
-  const fleet = prepopulateFleet(amqRoot, repoRoot);
-  const targetFleet = filterList ? fleet.filter((f) => filterList.includes(f.handle)) : fleet;
-
+  const replace = options.replace !== false;
+  const prepopulate = options.prepopulate || prepopulateFleet;
+  const getLiveAgents = options.getLiveAgents || getHerdrAgents;
+  const execHerdr = options.execHerdr || null;
+  const sleep = options.sleep || waitFor;
+  const safePath = options.envPath || buildFleetEnvPath();
+  const configuredArgs = options.args == null
+    ? defaultLaunchArgs(kind, "")
+    : Array.isArray(options.args) ? options.args : [String(options.args)];
+  const fleet = prepopulate(amqRoot, repoRoot);
+  const targetFleet = filterPersonas(fleet, options.agents);
   const result = {
     total: targetFleet.length,
-    prepopulated: targetFleet.map((t) => t.handle),
+    prepopulated: targetFleet.map((agent) => agent.handle),
     alreadyRunning: [],
+    replaced: [],
+    wouldReplace: [],
     wouldLaunch: [],
+    blocked: [],
     launched: [],
     failed: [],
     dryRun,
   };
-
-  // 2. Check Herdr connectivity and live agents
-  let activeHandles = new Set();
-  try {
-    const liveAgents = await getHerdrAgents();
-    activeHandles = new Set(liveAgents.map((a) => a.name).filter(Boolean));
-  } catch {}
-
-  for (const agent of targetFleet) {
-    if (activeHandles.has(agent.handle)) {
-      result.alreadyRunning.push(agent.handle);
-    } else {
-      result.wouldLaunch.push(agent.handle);
-    }
-  }
-
-  if (dryRun) {
-    return result;
-  }
-
-  // Determine Herdr workspace
+  const liveAgents = await getLiveAgents();
+  const launcherRoots = new Set();
   let workspaceId = process.env.HERDR_WORKSPACE_ID || null;
-  if (!workspaceId) {
-    try {
-      const wsRaw = execFileSync("herdr", ["workspace", "list"], { encoding: "utf8" });
-      const wsJson = JSON.parse(wsRaw);
-      const workspaces = wsJson?.result?.workspaces || [];
-      const matched = workspaces.find((w) => w.cwd === repoRoot || w.label === path.basename(repoRoot));
-      workspaceId = matched ? matched.workspace_id : (workspaces[0]?.workspace_id || null);
-    } catch {}
-  }
 
-  const safePath = buildFleetEnvPath();
-
-  // 4. Launch each non-active agent into a tab
-  for (const agent of targetFleet) {
-    const handle = agent.handle;
-    if (activeHandles.has(handle)) {
-      result.alreadyRunning.push(handle);
-      continue;
+  try {
+    if (!dryRun && !workspaceId) {
+      try {
+        const workspaceOutput = runHerdr(["workspace", "list"], execHerdr);
+        const workspaceJson = JSON.parse(workspaceOutput);
+        const workspaces = workspaceJson?.result?.workspaces || [];
+        const matched = workspaces.find((workspace) => workspace.cwd === repoRoot || workspace.label === path.basename(repoRoot));
+        workspaceId = matched ? matched.workspace_id : (workspaces[0]?.workspace_id || null);
+      } catch {}
     }
 
-    try {
-      // Create tab in Herdr targeting worktree
-      const tabArgs = [
-        "tab",
-        "create",
-        "--cwd",
-        agent.worktree,
-        "--label",
-        handle,
-        "--env",
-        `PATH=${safePath}`,
-        "--no-focus",
-      ];
-      if (workspaceId) {
-        tabArgs.push("--workspace", workspaceId);
+    for (const agent of targetFleet) {
+      const handle = agent.handle;
+      const panes = matchingFleetPanes(agent, liveAgents);
+      const matchingKind = panes.filter((pane) => pane.agent === kind);
+
+      if (matchingKind.length > 0) {
+        result.alreadyRunning.push(handle);
+        for (const duplicate of matchingKind.slice(1)) {
+          try {
+            runHerdr(["pane", "close", duplicate.pane_id], execHerdr);
+          } catch (error) {
+            result.failed.push({ handle, error: error.message });
+          }
+        }
+        continue;
       }
 
-      const tabOut = execFileSync("herdr", tabArgs, { encoding: "utf8" });
-      const tabJson = JSON.parse(tabOut);
-      const paneId = tabJson?.result?.root_pane?.pane_id;
-
-      if (!paneId) {
-        throw new Error(`Failed to acquire pane_id from herdr tab create: ${tabOut}`);
-      }
-
-      // Start the agent in the new pane with retry if the shell is still booting
-      const startArgs = [
-        "agent",
-        "start",
-        handle,
-        "--kind",
-        kind,
-        "--pane",
-        paneId,
-        "--timeout",
-        String(timeoutMs),
-      ];
-
-      if (customArgs.length > 0) {
-        startArgs.push("--", ...customArgs);
-      }
-
-      let started = false;
-      let lastErr = null;
-      for (let attempt = 0; attempt < 5; attempt++) {
+      if (panes.length > 0) {
+        if (dryRun) {
+          result.wouldReplace.push(handle);
+          continue;
+        }
+        if (!replace) {
+          result.blocked.push({ handle, reason: `already running as ${panes.map((pane) => pane.agent).join(", ")}` });
+          continue;
+        }
         try {
-          if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 800));
-          } else {
-            await new Promise((r) => setTimeout(r, 1200));
+          for (const pane of panes) {
+            runHerdr(["pane", "close", pane.pane_id], execHerdr);
           }
-          execFileSync("herdr", startArgs, { encoding: "utf8" });
-          started = true;
-          result.launched.push({ handle, paneId, kind });
-          break;
-        } catch (err) {
-          lastErr = err;
-          if (err.message && err.message.includes("agent_pane_busy")) {
-            continue;
-          }
-          break;
+          await sleep(300);
+          result.replaced.push({
+            handle,
+            fromKinds: panes.map((pane) => pane.agent),
+            paneIds: panes.map((pane) => pane.pane_id),
+          });
+        } catch (error) {
+          result.failed.push({ handle, error: error.message });
+          continue;
         }
       }
 
-      if (!started) {
-        result.failed.push({ handle, error: lastErr?.message || "Failed to start agent" });
+      if (dryRun) {
+        result.wouldLaunch.push(handle);
+        continue;
       }
-    } catch (err) {
-      result.failed.push({ handle, error: err.message });
+
+      let paneId;
+      try {
+        let launchPath = safePath;
+        if (kind === "opencode") {
+          const executable = options.opencodeExecutable || resolveExecutable("opencode", safePath);
+          if (!executable) throw new Error("OpenCode executable not found in fleet PATH");
+          const createLauncher = options.createOpencodeLauncher || createOpencodeLauncher;
+          const launcher = createLauncher(handle, readOpencodeModel(agent.worktree), executable);
+          launcherRoots.add(launcher.root);
+          launchPath = `${launcher.binDir}${path.delimiter}${safePath}`;
+        }
+
+        const tabArgs = [
+          "tab",
+          "create",
+          "--cwd",
+          agent.worktree,
+          "--label",
+          handle,
+          "--env",
+          `PATH=${launchPath}`,
+          "--no-focus",
+        ];
+        if (workspaceId) tabArgs.push("--workspace", workspaceId);
+        const tabOutput = runHerdr(tabArgs, execHerdr);
+        const tabJson = JSON.parse(tabOutput);
+        paneId = tabJson?.result?.root_pane?.pane_id;
+        if (!paneId) throw new Error(`Failed to acquire pane_id from herdr tab create: ${tabOutput}`);
+
+        const startArgs = [
+          "agent",
+          "start",
+          handle,
+          "--kind",
+          kind,
+          "--pane",
+          paneId,
+          "--timeout",
+          String(timeoutMs),
+        ];
+        const launchArgs = kind === "opencode" && options.args == null
+          ? defaultLaunchArgs(kind, handle)
+          : configuredArgs;
+        if (launchArgs.length > 0) startArgs.push("--", ...launchArgs);
+
+        let started = false;
+        let lastError = null;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            await sleep(attempt === 0 ? 800 : 1200);
+            runHerdr(startArgs, execHerdr);
+            started = true;
+            result.launched.push({ handle, paneId, kind });
+            break;
+          } catch (error) {
+            lastError = error;
+            if (error.message && error.message.includes("agent_pane_busy")) continue;
+            break;
+          }
+        }
+        if (!started) {
+          throw lastError || new Error("Failed to start agent");
+        }
+      } catch (error) {
+        result.failed.push({ handle, error: error.message || String(error) });
+        if (paneId) {
+          try {
+            runHerdr(["pane", "close", paneId], execHerdr);
+          } catch {}
+        }
+      }
+    }
+  } finally {
+    for (const root of launcherRoots) {
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {}
     }
   }
 

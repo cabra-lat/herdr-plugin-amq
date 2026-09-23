@@ -65,6 +65,7 @@ describe("actions.mjs CLI integration", () => {
     }
 
     assert.ok(output.includes("Herdr AMQ Bridge Status"));
+    assert.ok(output.includes("Version:"));
     assert.ok(output.includes("Registered Agents"));
   });
 
@@ -102,6 +103,36 @@ describe("actions.mjs CLI integration", () => {
       // Done
       handleTaskCommand("done", ["test-card-1", "--proof", "All tests passed"]);
       assert.ok(fs.existsSync(path.join(tempRoot, ".opencode", "bus", "done", "test-card-1.md")));
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("handleTaskCommand drain and next commands drain assigned cards", () => {
+    // Write a new card assigned to alice in backlog
+    const busBacklog = path.join(tempRoot, ".opencode", "bus", "backlog");
+    fs.writeFileSync(
+      path.join(busBacklog, "alice-task.md"),
+      `---\nid: alice-task\ntitle: Alice unit test\nowner: alice\nstatus: backlog\n---\nDetailed test description`
+    );
+
+    let output = "";
+    const origLog = console.log;
+    try {
+      console.log = (msg = "") => {
+        output += msg + "\n";
+      };
+
+      // Drain without claim
+      handleTaskCommand("drain", ["--me", "alice"]);
+      assert.ok(output.includes("Task Drain for alice"));
+      assert.ok(output.includes("Alice unit test"));
+      assert.ok(output.includes("alice-task"));
+
+      // Auto-claim via next
+      handleTaskCommand("next", ["--me", "alice"]);
+      assert.ok(output.includes("Auto-claimed task alice-task"));
+      assert.ok(fs.existsSync(path.join(tempRoot, ".opencode", "bus", "doing", "alice-task.md")));
     } finally {
       console.log = origLog;
     }

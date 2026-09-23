@@ -29,22 +29,34 @@ export function findStatusFile(repoRoot) {
 
 /**
  * Locate the global bus directory for tasks.
- * Defaults to .opencode/bus (or .agent-mail/bus).
+ * Defaults to .agent-mail/bus (lives alongside agent mailboxes and blobs).
+ * Falls back to legacy .opencode/bus if present.
  */
 export function getBusDirectory(repoRoot, amqRoot) {
-  if (repoRoot) {
-    const opencodeBus = path.join(repoRoot, ".opencode", "bus");
-    if (fs.existsSync(opencodeBus)) {
-      return opencodeBus;
-    }
+  if (process.env.AMQ_BUS_DIR) {
+    return path.resolve(process.env.AMQ_BUS_DIR);
   }
+  // 1. Primary: .agent-mail/bus if amqRoot is provided
+  if (amqRoot) {
+    const amqBus = path.join(amqRoot, "bus");
+    if (fs.existsSync(amqBus)) return amqBus;
+  }
+  // 2. Check repoRoot/.agent-mail/bus
+  if (repoRoot) {
+    const repoAmqBus = path.join(repoRoot, ".agent-mail", "bus");
+    if (fs.existsSync(repoAmqBus)) return repoAmqBus;
+    // 3. Fallback to legacy .opencode/bus if it exists
+    const opencodeBus = path.join(repoRoot, ".opencode", "bus");
+    if (fs.existsSync(opencodeBus)) return opencodeBus;
+  }
+  // Default new creation target: .agent-mail/bus
   if (amqRoot) {
     return path.join(amqRoot, "bus");
   }
   if (repoRoot) {
-    return path.join(repoRoot, ".opencode", "bus");
+    return path.join(repoRoot, ".agent-mail", "bus");
   }
-  return path.join(process.cwd(), ".opencode", "bus");
+  return path.join(process.cwd(), ".agent-mail", "bus");
 }
 
 export const STAGE_DIRS = {
@@ -757,4 +769,130 @@ export function deleteBoardTask(repoRoot, amqRoot, taskId) {
   }
 
   return { ok: true, taskId, deleted };
+}
+
+/**
+ * List pending backlog tasks assigned to a specific handle (or all backlog tasks if null/all).
+ */
+export function listBacklogTasks(repoRoot, amqRoot, handle = null) {
+  const busDir = getBusDirectory(repoRoot, amqRoot);
+  const backlogDir = path.join(busDir, "backlog");
+  if (!fs.existsSync(backlogDir)) return [];
+
+  try {
+    const files = fs.readdirSync(backlogDir).filter((f) => f.endsWith(".md") && !f.startsWith("."));
+    const tasks = [];
+    const target = handle && handle !== "all" ? canonicalizeOwner(handle) : null;
+
+    for (const f of files) {
+      const fullPath = path.join(backlogDir, f);
+      const parsed = parseTaskFile(fullPath, "backlog");
+      if (parsed) {
+        if (!target || parsed.owner === target) {
+          tasks.push(parsed);
+        }
+      }
+    }
+    tasks.sort((a, b) => (a.created || "").localeCompare(b.created || ""));
+    return tasks;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Drain tasks for an agent: returns all pending backlog tasks with full descriptions,
+ * optionally auto-claiming the first available task if claim: true.
+ */
+export function drainTasks(repoRoot, amqRoot, { me, claim = false, notify = true } = {}) {
+  const target = me ? canonicalizeOwner(me) : "coordinator";
+  const tasks = listBacklogTasks(repoRoot, amqRoot, target);
+
+  let claimedTask = null;
+  if (claim && tasks.length > 0) {
+    const toClaim = tasks[0];
+    const res = updateBoardTask(
+      repoRoot,
+      amqRoot,
+      toClaim.id,
+      { status: "in_progress", owner: target },
+      { from: target, notify }
+    );
+    if (res.ok) {
+      claimedTask = res.task;
+    }
+  }
+
+  // Also discover any active tasks currently in doing/in_progress
+  const busDir = getBusDirectory(repoRoot, amqRoot);
+  const doingDir = path.join(busDir, resolveStageDir(busDir, "doing"));
+  const activeTasks = [];
+  if (fs.existsSync(doingDir)) {
+    try {
+      const files = fs.readdirSync(doingDir).filter((f) => f.endsWith(".md") && !f.startsWith("."));
+      for (const f of files) {
+        const fullPath = path.join(doingDir, f);
+        const parsed = parseTaskFile(fullPath, "in_progress");
+        if (parsed && parsed.owner === target) {
+          activeTasks.push(parsed);
+        }
+      }
+    } catch {}
+  }
+
+  return {
+    ok: true,
+    owner: target,
+    count: tasks.length,
+    tasks,
+    activeTasks,
+    claimedTask,
+  };
+}
+
+/**
+ * Fast query of task numbers/statistics for an agent across stages:
+ * { backlog, doing, blocked, done, total }
+ */
+export function getAgentTaskStats(repoRoot, amqRoot, handle) {
+  const target = handle ? canonicalizeOwner(handle) : null;
+  const busDir = getBusDirectory(repoRoot, amqRoot);
+  const stages = [
+    { dir: "backlog", key: "backlog" },
+    { dir: "doing", key: "doing" },
+    { dir: "in_progress", key: "doing" },
+    { dir: "blocked", key: "blocked" },
+    { dir: "done", key: "done" },
+  ];
+
+  const stats = {
+    backlog: 0,
+    doing: 0,
+    blocked: 0,
+    done: 0,
+    total: 0,
+  };
+
+  const seenIds = new Set();
+
+  for (const { dir, key } of stages) {
+    const fullDir = path.join(busDir, dir);
+    if (!fs.existsSync(fullDir)) continue;
+    try {
+      const files = fs.readdirSync(fullDir).filter((f) => f.endsWith(".md") && !f.startsWith("."));
+      for (const f of files) {
+        const fullPath = path.join(fullDir, f);
+        const parsed = parseTaskFile(fullPath, key);
+        if (parsed && (!target || parsed.owner === target)) {
+          if (!seenIds.has(parsed.id)) {
+            seenIds.add(parsed.id);
+            stats[key]++;
+            stats.total++;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return stats;
 }

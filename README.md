@@ -33,7 +33,7 @@ The **Bridge Daemon** continuously inspects agent inboxes. When an agent is `idl
 flowchart TD
     subgraph Storage ["Persistent Transport Layer"]
         AMQ[".agent-mail/ (Maildir + RFC 5322)<br/>Decoupled Markdown Transmissions"]
-        BUS[".opencode/bus/ (Decentralized Task Cards)<br/>backlog/ → doing/ → blocked/ → done/"]
+        BUS[".agent-mail/bus/ (Decentralized Task Cards)<br/>backlog/ → doing/ → blocked/ → done/"]
         CAS[".agent-mail/blobs/ (CAS Blobstore)<br/>SHA-256 Render Strips & Proofs"]
     end
 
@@ -72,7 +72,8 @@ flowchart TD
 
 ### 1. The Autonomous Doorbell Bridge
 - **Lifecycle-Aware Wakeups**: Rings doorbells (`herdr agent prompt`) only when agents are `idle` or `done`, preventing command interleaving during active turns.
-- **De-duplication**: Tracks delivered message IDs in persistent state (`bridge-state.json`) so agents are never doorbelled twice for the same mail.
+- **Dual-Queue Wakeups (Mail & Tasks)**: Evaluates both unread Maildir messages and pending backlog tasks assigned to idle agents, prompting agents with specific drainage and claim actions.
+- **De-duplication**: Tracks delivered message and task IDs in persistent state (`bridge-state.json`) so agents are never doorbelled twice for the same event.
 - **Self-Healing Panes**: Automatically detects and renames desynced terminal titles back to their canonical agent handles (`herdr agent rename`).
 - **Blocked State Alerts**: When an agent with unread mail is blocked on external input, logs actionable alert directives for human intervention.
 
@@ -90,7 +91,7 @@ flowchart TD
 
 ### 4. Git Worktree Isolation & Task Bus
 - **Multi-Lane Isolation**: Automatically provisions and manages dedicated Git worktrees (`.worktrees/<agent>`) so parallel agents never step on each other's unstaged files.
-- **Decentralized File-Based Task Cards**: Directory-based task bus (`.opencode/bus/`) immune to concurrent merge conflicts.
+- **Decentralized File-Based Task Cards**: Directory-based task bus (`.agent-mail/bus/`) immune to concurrent merge conflicts.
 
 ---
 
@@ -195,6 +196,8 @@ herdr-amq drain --me coordinator
 
 # Decentralized Kanban Task Bus
 herdr-amq task list
+herdr-amq task drain --me range
+herdr-amq task next --me range
 herdr-amq task claim TSK-402 --me worker-alpha
 herdr-amq task done TSK-402 --proof "Proof of Sabotage: INV-29 passed with non-zero exit on mutation"
 herdr-amq task block TSK-402 --reason "Waiting on asset import lock"
@@ -238,7 +241,7 @@ Under the hood, this pipeline automatically:
 ### 2. Context Resilience (Do agents lose context on cold start?)
 **No.** Context is completely decoupled from the terminal scrollback:
 * **Persistent Transmissions**: All messages, decisions, reviews, and CAS/Git attachments live as RFC 5322 markdown files in `.agent-mail/`.
-* **Decentralized Task Bus**: Tasks live in `.opencode/bus/{backlog,doing,blocked,done}/`.
+* **Decentralized Task Bus**: Tasks live in `.agent-mail/bus/{backlog,doing,blocked,done}/`.
 * **Code Branch Isolation**: Staged and uncommitted edits remain intact in `.worktrees/<handle>` on the agent's branch.
 * **Turn-Based Epistolary Execution**: When an agent wakes up, it drains its inbox (`herdr-amq mail drain --me <handle>`), reads its assigned task card, inspects `git status`, and resumes work without relying on monolithic LLM chat memory.
 

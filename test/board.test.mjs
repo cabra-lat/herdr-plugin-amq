@@ -10,7 +10,11 @@ import {
   addBoardTask,
   updateBoardTask,
   deleteBoardTask,
+  listBacklogTasks,
+  drainTasks,
+  getAgentTaskStats,
 } from "../src/board.mjs";
+import { buildDoorbellPrompt } from "../src/bridge.mjs";
 
 describe("board.mjs Kanban module", () => {
   test("classifyStatus classifies states correctly", () => {
@@ -264,6 +268,93 @@ describe("board.mjs Kanban module", () => {
     const delRes = deleteBoardTask(tmpDir, amqRoot, taskId);
     assert.equal(delRes.ok, true);
     assert.equal(fs.existsSync(doneFile), false, "Task file should be unlinked upon deletion");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("listBacklogTasks and drainTasks drain assigned cards and support auto-claim", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-drain-test-"));
+    const amqRoot = path.join(tmpDir, ".agent-mail");
+    fs.mkdirSync(path.join(amqRoot, "agents", "spotter", "inbox", "new"), { recursive: true });
+
+    // Add 2 backlog tasks: 1 for spotter, 1 for ballistics
+    const task1 = addBoardTask(tmpDir, amqRoot, {
+      title: "Strip GPU verify",
+      owner: "spotter",
+      status: "backlog",
+      description: "Verify frame rendering on :99",
+      notify: false,
+    });
+    const task2 = addBoardTask(tmpDir, amqRoot, {
+      title: "Bullet penetration math",
+      owner: "ballistics",
+      status: "backlog",
+      description: "Check Poncelet tissue values",
+      notify: false,
+    });
+
+    assert.ok(task1.ok);
+    assert.ok(task2.ok);
+
+    // listBacklogTasks filters by owner
+    const spotterBacklog = listBacklogTasks(tmpDir, amqRoot, "spotter");
+    assert.equal(spotterBacklog.length, 1);
+    assert.equal(spotterBacklog[0].id, task1.task.id);
+
+    const allBacklog = listBacklogTasks(tmpDir, amqRoot, "all");
+    assert.equal(allBacklog.length, 2);
+
+    // drainTasks without claim
+    const drainPreview = drainTasks(tmpDir, amqRoot, { me: "spotter", claim: false, notify: false });
+    assert.equal(drainPreview.ok, true);
+    assert.equal(drainPreview.count, 1);
+    assert.equal(drainPreview.claimedTask, null);
+    assert.equal(drainPreview.tasks[0].id, task1.task.id);
+
+    // drainTasks with claim: true auto-claims the task into doing/
+    const drainClaim = drainTasks(tmpDir, amqRoot, { me: "spotter", claim: true, notify: false });
+    assert.equal(drainClaim.ok, true);
+    assert.ok(drainClaim.claimedTask);
+    assert.equal(drainClaim.claimedTask.id, task1.task.id);
+    assert.equal(drainClaim.claimedTask.status, "in_progress");
+
+    // After claim, spotter has 0 pending backlog tasks, but 1 active task in doing
+    const afterDrain = drainTasks(tmpDir, amqRoot, { me: "spotter", claim: false, notify: false });
+    assert.equal(afterDrain.count, 0);
+    assert.equal(afterDrain.activeTasks.length, 1);
+    assert.equal(afterDrain.activeTasks[0].id, task1.task.id);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("getAgentTaskStats returns accurate numbers across stages", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-stats-test-"));
+    const amqRoot = path.join(tmpDir, ".agent-mail");
+
+    // Add 1 backlog, 1 doing, 1 blocked, 1 done for range
+    const t1 = addBoardTask(tmpDir, amqRoot, { title: "T1", owner: "range", status: "backlog", notify: false });
+    const t2 = addBoardTask(tmpDir, amqRoot, { title: "T2", owner: "range", status: "in_progress", notify: false });
+    const t3 = addBoardTask(tmpDir, amqRoot, { title: "T3", owner: "range", status: "blocked", notify: false });
+    const t4 = addBoardTask(tmpDir, amqRoot, { title: "T4", owner: "range", status: "done", notify: false });
+
+    assert.ok(t1.ok && t2.ok && t3.ok && t4.ok);
+
+    const stats = getAgentTaskStats(tmpDir, amqRoot, "range");
+    assert.equal(stats.backlog, 1);
+    assert.equal(stats.doing, 1);
+    assert.equal(stats.blocked, 1);
+    assert.equal(stats.done, 1);
+    assert.equal(stats.total, 4);
+
+    // Prompt formatting includes numbers of tasks and drain message
+    const promptWithBoth = buildDoorbellPrompt("range", [{ from: "coordinator" }], stats);
+    assert.ok(promptWithBoth.includes("1 task(s) in backlog (1 blocked, 1 in progress, 1 done)"));
+    assert.ok(promptWithBoth.includes("herdr-amq task drain --me range"));
+    assert.ok(promptWithBoth.includes("herdr-amq mail drain --me range"));
+
+    const promptTasksOnly = buildDoorbellPrompt("range", [], stats);
+    assert.ok(promptTasksOnly.includes("1 task(s) in backlog (1 blocked, 1 in progress, 1 done)"));
+    assert.ok(promptTasksOnly.includes("herdr-amq task next --me range"));
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

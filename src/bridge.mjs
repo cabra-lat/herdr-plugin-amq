@@ -6,9 +6,11 @@ import {
   getStateDir,
   getConfigDir,
   findAmqRoot,
+  getRepoRootFromAmq,
   getAgentHandles,
   execCmd,
 } from "./config.mjs";
+import { listBacklogTasks, getAgentTaskStats } from "./board.mjs";
 
 function getPidFile() {
   return path.join(getStateDir(), "bridge.pid");
@@ -152,9 +154,12 @@ function recordAlert(handle, count, from, dryRun = false) {
 function loadDeliveredState() {
   const stateFile = getStateFile();
   try {
-    return JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    const s = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    s.delivered = s.delivered || {};
+    s.deliveredTasks = s.deliveredTasks || {};
+    return s;
   } catch {
-    return { delivered: {} };
+    return { delivered: {}, deliveredTasks: {} };
   }
 }
 
@@ -165,6 +170,13 @@ function saveDeliveredState(state) {
     ids.sort();
     for (const id of ids.slice(0, ids.length - 1500)) {
       delete state.delivered[id];
+    }
+  }
+  const taskIds = Object.keys(state.deliveredTasks || {});
+  if (taskIds.length > 2000) {
+    taskIds.sort();
+    for (const id of taskIds.slice(0, taskIds.length - 1500)) {
+      delete state.deliveredTasks[id];
     }
   }
   fs.writeFileSync(stateFile, JSON.stringify(state, null, 1), "utf8");
@@ -239,15 +251,63 @@ export function listInbox(amqRoot, handle) {
   }
 }
 
-const buildDoorbellPrompt = (handle, msgs) => {
+export const buildDoorbellPrompt = (handle, msgs = [], taskStatsOrBacklog = null) => {
   const senders = [...new Set(msgs.map((m) => m.from))].join(", ");
-  const n = msgs.length;
+  const mCount = msgs.length;
+
+  let stats;
+  if (Array.isArray(taskStatsOrBacklog)) {
+    stats = { backlog: taskStatsOrBacklog.length, blocked: 0, doing: 0, done: 0 };
+  } else if (taskStatsOrBacklog && typeof taskStatsOrBacklog === "object") {
+    stats = taskStatsOrBacklog;
+  } else {
+    stats = { backlog: 0, blocked: 0, doing: 0, done: 0 };
+  }
+
+  const bCount = stats.backlog || 0;
+
+  // Build task numbers breakdown string: e.g. " (1 blocked, 2 in progress, 3 done)"
+  const taskDetails = [];
+  if (stats.blocked > 0) taskDetails.push(`${stats.blocked} blocked`);
+  if (stats.doing > 0) taskDetails.push(`${stats.doing} in progress`);
+  if (stats.done > 0) taskDetails.push(`${stats.done} done`);
+  const detailsStr = taskDetails.length > 0 ? ` (${taskDetails.join(", ")})` : "";
+
+  if (mCount > 0 && bCount > 0) {
+    return (
+      `AMQ & Task doorbell: ${mCount} new message(s) from ${senders}. You have ${bCount} task(s) in backlog${detailsStr}. ` +
+      `Run: herdr-amq mail drain --me ${handle} --include-body && herdr-amq task drain --me ${handle}. ` +
+      `Claim next task via: herdr-amq task next --me ${handle}, then reply on-thread with herdr-amq mail reply --id <msg_id>.`
+    );
+  }
+
+  if (bCount > 0) {
+    return (
+      `Task doorbell: You have ${bCount} task(s) in backlog${detailsStr}. ` +
+      `Run: herdr-amq task drain --me ${handle} and claim via: herdr-amq task next --me ${handle}.`
+    );
+  }
+
   return (
-    `AMQ doorbell: ${n} new message(s) in your inbox (from ${senders}). ` +
-    `Run: amq drain --me ${handle} --include-body, then reply to the sender on the same ` +
-    `thread with amq reply --id <msg_id>. After replying, resume your work.`
+    `AMQ doorbell: ${mCount} new message(s) in your inbox from ${senders}${detailsStr}. ` +
+    `Run: herdr-amq mail drain --me ${handle} --include-body, then reply on-thread with herdr-amq mail reply --id <msg_id>. After replying, resume your work.`
   );
 };
+
+export const DEFAULT_DOORBELL_COOLDOWN_MS = 45000; // 45s cooldown window
+
+/**
+ * Determines whether an item was recently doorbelled and is still in-flight.
+ * If the item has not been drained after the cooldown window, it no longer
+ * counts as delivered and will be re-doorbelled.
+ */
+export function isItemPendingDrain(deliveryEntry, cooldownMs = DEFAULT_DOORBELL_COOLDOWN_MS, force = false) {
+  if (force) return false;
+  if (!deliveryEntry || !deliveryEntry.at) return false;
+  const deliveredAt = new Date(deliveryEntry.at).getTime();
+  if (isNaN(deliveredAt)) return false;
+  return Date.now() - deliveredAt < cooldownMs;
+}
 
 // ─── Doorbell Pass ────────────────────────────────────────────────────────────
 
@@ -256,6 +316,8 @@ export function runDoorbellPass({
   handles = null,
   targetHandle = null,
   dryRun = false,
+  force = false,
+  cooldownMs = parseInt(process.env.HERDR_DOORBELL_COOLDOWN_MS || String(DEFAULT_DOORBELL_COOLDOWN_MS), 10),
 } = {}) {
   if (!amqRoot) {
     return { ok: false, error: "No .agent-mail queue found." };
@@ -266,25 +328,30 @@ export function runDoorbellPass({
     : (handles && handles.length > 0 ? handles : getAgentHandles(amqRoot));
 
   if (!agentList.length) {
-    return { ok: true, checked: 0, doorbelled: 0, message: "No registered agents found." };
+    return { ok: true, checked: 0, doorbelled: 0, doorbelledTasks: 0, message: "No registered agents found." };
   }
 
+  const repoRoot = getRepoRootFromAmq(amqRoot);
   const state = loadDeliveredState();
   state.delivered = state.delivered || {};
+  state.deliveredTasks = state.deliveredTasks || {};
 
   let doorbelledCount = 0;
+  let doorbelledTasksCount = 0;
   const results = [];
 
   for (const handle of agentList) {
     const rawMsgs = listInbox(amqRoot, handle);
     // Ignore self-messages
     const msgs = rawMsgs.filter((m) => m.from !== handle);
+    // If message is still in inbox/new after cooldown, the agent did NOT drain it!
+    const undeliveredMsgs = msgs.filter((m) => !isItemPendingDrain(state.delivered[m.id], cooldownMs, force));
 
-    if (!msgs.length) continue;
+    const backlogTasks = listBacklogTasks(repoRoot, amqRoot, handle);
+    // If task is still in backlog after cooldown, the agent did NOT claim/drain it!
+    const undeliveredTasks = backlogTasks.filter((t) => !isItemPendingDrain(state.deliveredTasks?.[t.id], cooldownMs, force));
 
-    // Filter messages not yet delivered
-    const undelivered = msgs.filter((m) => !state.delivered[m.id]);
-    if (!undelivered.length) continue;
+    if (!undeliveredMsgs.length && !undeliveredTasks.length) continue;
 
     let status = getAgentStatus(handle);
     if (status === "missing") {
@@ -292,33 +359,74 @@ export function runDoorbellPass({
       if (healed) status = getAgentStatus(handle);
     }
 
+    const taskStats = getAgentTaskStats(repoRoot, amqRoot, handle);
+    taskStats.backlog = undeliveredTasks.length > 0 ? undeliveredTasks.length : backlogTasks.length;
+
     if (status === "idle" || status === "done") {
-      const text = buildDoorbellPrompt(handle, undelivered);
+      const text = buildDoorbellPrompt(handle, undeliveredMsgs, taskStats);
       const ok = promptAgent(handle, text, dryRun);
       if (ok) {
-        doorbelledCount += undelivered.length;
+        doorbelledCount += undeliveredMsgs.length;
+        doorbelledTasksCount += undeliveredTasks.length;
         if (!dryRun) {
-          for (const m of undelivered) {
+          for (const m of undeliveredMsgs) {
+            const prev = state.delivered[m.id];
             state.delivered[m.id] = {
               at: new Date().toISOString(),
               to: handle,
               from: m.from,
+              attempts: (prev?.attempts || 0) + 1,
+            };
+          }
+          for (const t of undeliveredTasks) {
+            const prev = state.deliveredTasks[t.id];
+            state.deliveredTasks[t.id] = {
+              at: new Date().toISOString(),
+              to: handle,
+              title: t.title,
+              attempts: (prev?.attempts || 0) + 1,
             };
           }
         }
-        results.push({ handle, status, count: undelivered.length, action: "prompted" });
+        results.push({
+          handle,
+          status,
+          count: undeliveredMsgs.length,
+          tasksCount: undeliveredTasks.length,
+          action: "prompted",
+        });
       }
     } else if (status === "working") {
-      results.push({ handle, status, count: undelivered.length, action: "working_wait" });
+      results.push({
+        handle,
+        status,
+        count: undeliveredMsgs.length,
+        tasksCount: undeliveredTasks.length,
+        action: "working_wait",
+      });
     } else if (status === "blocked") {
-      recordAlert(handle, undelivered.length, undelivered[0]?.from, dryRun);
-      results.push({ handle, status, count: undelivered.length, action: "alert_blocked" });
+      if (undeliveredMsgs.length) {
+        recordAlert(handle, undeliveredMsgs.length, undeliveredMsgs[0]?.from, dryRun);
+      }
+      results.push({
+        handle,
+        status,
+        count: undeliveredMsgs.length,
+        tasksCount: undeliveredTasks.length,
+        action: "alert_blocked",
+      });
     } else {
-      results.push({ handle, status, count: undelivered.length, action: "unknown_state" });
+      results.push({
+        handle,
+        status,
+        count: undeliveredMsgs.length,
+        tasksCount: undeliveredTasks.length,
+        action: "unknown_state",
+      });
     }
   }
 
-  if (!dryRun && doorbelledCount > 0) {
+  if (!dryRun && (doorbelledCount > 0 || doorbelledTasksCount > 0)) {
     saveDeliveredState(state);
   }
 
@@ -327,6 +435,7 @@ export function runDoorbellPass({
     amqRoot,
     agentsChecked: agentList.length,
     doorbelled: doorbelledCount,
+    doorbelledTasks: doorbelledTasksCount,
     results,
   };
 }

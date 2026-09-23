@@ -7,6 +7,7 @@ import {
   getStateDir,
   getConfigDir,
   getEventContext,
+  getPluginVersion,
 } from "./config.mjs";
 import {
   isDaemonRunning,
@@ -20,6 +21,7 @@ import {
   addBoardTask,
   updateBoardTask,
   deleteBoardTask,
+  drainTasks,
 } from "./board.mjs";
 import {
   sendMaildirMessage,
@@ -31,6 +33,7 @@ import {
   discoverFleetPersonas,
   prepopulateFleet,
   launchFleet,
+  stopFleet,
 } from "./fleet.mjs";
 import { getHerdrAgents } from "./herdr.mjs";
 
@@ -38,9 +41,11 @@ export function handleStatus() {
   const amqRoot = findAmqRoot();
   const pid = isDaemonRunning();
   const handles = amqRoot ? getAgentHandles(amqRoot) : [];
+  const version = getPluginVersion();
 
-  console.log("\n📦 \x1b[1mHerdr AMQ Bridge Status\x1b[0m");
+  console.log(`\n📦 \x1b[1mHerdr AMQ Bridge Status\x1b[0m \x1b[2m(v${version})\x1b[0m`);
   console.log("──────────────────────────────────────────────");
+  console.log(`Version:   v${version}`);
   console.log(`Daemon:    ${pid ? `\x1b[32m● Running\x1b[0m (PID ${pid})` : "\x1b[33m○ Stopped\x1b[0m"}`);
   console.log(`AMQ Root:  ${amqRoot ? `\x1b[36m${amqRoot}\x1b[0m` : "\x1b[31mNot found\x1b[0m"}`);
   console.log(`State Dir: ${getStateDir()}`);
@@ -109,17 +114,19 @@ export function handleDoorbell() {
     process.exit(1);
   }
 
-  console.log(`🔔 Checking AMQ inboxes at ${amqRoot}...`);
-  const res = runDoorbellPass({ amqRoot });
+  const force = process.argv.includes("--force") || process.argv.includes("-f");
+  console.log(`🔔 Checking AMQ inboxes at ${amqRoot}${force ? " (force=true)" : ""}...`);
+  const res = runDoorbellPass({ amqRoot, force });
 
   if (!res.ok) {
     console.error(`❌ Doorbell check failed: ${res.error}`);
     return;
   }
 
-  console.log(`Checked ${res.agentsChecked} agents. Doorbelled: ${res.doorbelled} message(s).`);
+  console.log(`Checked ${res.agentsChecked} agents. Doorbelled: ${res.doorbelled} message(s), ${res.doorbelledTasks || 0} task(s).`);
   for (const r of res.results || []) {
-    console.log(`  - ${r.handle} (${r.status}): ${r.count} msg(s) -> ${r.action}`);
+    const taskInfo = r.tasksCount ? `, ${r.tasksCount} task(s)` : "";
+    console.log(`  - ${r.handle} (${r.status}): ${r.count} msg(s)${taskInfo} -> ${r.action}`);
   }
 }
 
@@ -380,12 +387,75 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       break;
     }
 
+    case "drain": {
+      const claim = Boolean(flags.claim || flags.autoClaim);
+      const res = drainTasks(repoRoot, amqRoot, {
+        me,
+        claim,
+        notify: flags.notify !== "false",
+      });
+
+      if (flags.json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+
+      console.log(`\n📋 \x1b[1mTask Drain for ${me}\x1b[0m (${res.count} pending backlog task(s))`);
+      console.log("────────────────────────────────────────────────────────────────────────────");
+
+      if (res.activeTasks && res.activeTasks.length > 0) {
+        for (const at of res.activeTasks) {
+          console.log(`⚡ \x1b[33mActive task in progress (doing):\x1b[0m \x1b[1m${at.title}\x1b[0m (ID: ${at.id})`);
+        }
+        console.log("────────────────────────────────────────────────────────────────────────────");
+      }
+
+      if (res.tasks.length === 0) {
+        console.log(`  (no pending backlog tasks assigned to ${me})`);
+      } else {
+        for (const t of res.tasks) {
+          const isClaimed = res.claimedTask && res.claimedTask.id === t.id;
+          const statusStr = isClaimed
+            ? `\x1b[32m[CLAIMED -> in_progress]\x1b[0m`
+            : `\x1b[34m[backlog]\x1b[0m`;
+
+          console.log(`\n${statusStr} \x1b[1m${t.title}\x1b[0m (ID: \x1b[36m${t.id}\x1b[0m)`);
+          if (t.created) console.log(`  Created: ${t.created}`);
+          if (t.description) {
+            console.log(`  Details:`);
+            for (const line of t.description.split("\n")) {
+              console.log(`    ${line}`);
+            }
+          }
+        }
+
+        console.log("\n────────────────────────────────────────────────────────────────────────────");
+        if (res.claimedTask) {
+          console.log(`🚀 \x1b[32mAuto-claimed task ${res.claimedTask.id} into doing/\x1b[0m (status: in_progress)`);
+          console.log(`✉️ Notification dispatched to coordinator via AMQ.`);
+        } else {
+          console.log(`👉 \x1b[1mTo claim a task:\x1b[0m`);
+          console.log(`   herdr-amq task claim ${res.tasks[0].id} --me ${me}`);
+          console.log(`   or auto-claim next: herdr-amq task next --me ${me}`);
+        }
+      }
+      console.log("────────────────────────────────────────────────────────────────────────────\n");
+      break;
+    }
+
+    case "next": {
+      handleTaskCommand("drain", [...rawArgs, "--claim"]);
+      break;
+    }
+
     default:
       console.log(`\n📋 \x1b[1mAGboard Task Coordination CLI\x1b[0m`);
       console.log("────────────────────────────────────────────────────────────────────────────");
       console.log("Usage: herdr-amq task <subcommand> [options]");
       console.log("\nCommands:");
       console.log("  list [--owner <h>] [--status <s>] [--json]   List all tasks");
+      console.log("  drain [--me <h>] [--claim] [--json]           Drain backlog tasks with full descriptions");
+      console.log("  next [--me <h>]                               Auto-claim and start next backlog task");
       console.log("  assign --to <h> --title <t> [--desc <d>]      Assign a new task to an agent");
       console.log("  claim <id> [--me <h>]                         Claim an existing task");
       console.log("  done <id> [--me <h>] [--proof <evidence>]     Complete a task with proof");
@@ -567,8 +637,15 @@ export function handleSkillCommand(args = []) {
       destDir = path.resolve(process.cwd(), destDir);
     }
 
+    let targetFile;
+    if (destDir.endsWith(".md")) {
+      targetFile = destDir;
+      destDir = path.dirname(destDir);
+    } else {
+      targetFile = path.join(destDir, "SKILL.md");
+    }
+
     fs.mkdirSync(destDir, { recursive: true });
-    const targetFile = path.join(destDir, "SKILL.md");
     fs.writeFileSync(targetFile, content, "utf-8");
     console.log(`✅ Successfully installed herdr-amq skill to ${targetFile}`);
     return targetFile;
@@ -654,12 +731,14 @@ Usage: herdr-amq fleet <command> [options]
 Commands:
   status, list     Show discovered fleet personas, worktrees, and Herdr status
   prepopulate      Create AMQ maildirs and worktrees for all fleet personas
-  up               Launch missing fleet agents into Herdr terminal tabs
+  up               Launch missing agents and replace mismatched kinds
+  down             Close fleet agent panes without removing worktrees
 
 Options:
-  --kind <kind>    Agent kind to launch (default: agy, options: agy, opencode, pi)
+  --kind <kind>    Agent kind (default: agy for up, required for down)
   --agents <list>  Comma-separated handles to target (default: all)
-  --dry-run        Preview actions without creating tabs or starting agents
+  --no-replace     Refuse to replace agents running as another kind
+  --dry-run        Preview actions without changing panes
   --help, -h       Show this help message
 `);
     return;
@@ -675,7 +754,7 @@ Options:
     for (const [handle, p] of personas.entries()) {
       const live = liveMap.get(handle);
       const liveBadge = live
-        ? `\x1b[32m● ${live.agent_status} (${live.pane_id})\x1b[0m`
+        ? `\x1b[32m● ${live.agent || "unknown"} ${live.agent_status} (${live.pane_id})\x1b[0m`
         : `\x1b[90m○ offline\x1b[0m`;
       const wtExists = fs.existsSync(path.join(repoRoot, ".worktrees", handle));
       const wtBadge = wtExists ? "worktree: ok" : "\x1b[33mno worktree\x1b[0m";
@@ -696,23 +775,81 @@ Options:
     return;
   }
 
+  if (subcommand === "down") {
+    const kindIdx = rawArgs.indexOf("--kind");
+    const kind = kindIdx !== -1 && rawArgs[kindIdx + 1] ? rawArgs[kindIdx + 1] : null;
+    const agentsIdx = rawArgs.indexOf("--agents");
+    const agents = agentsIdx !== -1 && rawArgs[agentsIdx + 1] ? rawArgs[agentsIdx + 1] : null;
+    const dryRun = rawArgs.includes("--dry-run");
+    if (!kind) {
+      console.error("❌ fleet down requires --kind <agy|opencode|pi>");
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`\n🛑 \x1b[1mStopping Fleet via Herdr (kind: ${kind})\x1b[0m`);
+    console.log("──────────────────────────────────────────────");
+    if (dryRun) console.log("Mode: \x1b[33mDry Run (preview only)\x1b[0m\n");
+
+    const res = await stopFleet(amqRoot, repoRoot, { kind, agents, dryRun });
+    if (dryRun && res.wouldStop.length > 0) {
+      console.log(`\x1b[33m⚡ Would stop (${res.wouldStop.length}):\x1b[0m ${[...new Set(res.wouldStop.map((entry) => entry.handle))].join(", ")}`);
+    }
+    if (res.stopped.length > 0) {
+      console.log(`\x1b[32m✔ Stopped agents (${res.stopped.length}):\x1b[0m`);
+      for (const entry of res.stopped) {
+        console.log(`   • ${entry.handle} -> pane ${entry.paneId} (${entry.kind})`);
+      }
+    }
+    if (res.skipped.length > 0) {
+      console.log(`\x1b[33m↷ Skipped mismatched agents (${res.skipped.length}):\x1b[0m`);
+      for (const entry of res.skipped) {
+        console.log(`   • ${entry.handle}: ${entry.reason}`);
+      }
+    }
+    if (res.failed.length > 0) {
+      console.log(`\x1b[31m✖ Failed to stop:\x1b[0m`);
+      for (const entry of res.failed) {
+        console.log(`   • ${entry.handle} (${entry.paneId}): ${entry.error}`);
+      }
+    }
+    console.log("\n✅ Fleet stop pass complete. Worktrees and maildirs were preserved.\n");
+    return res;
+  }
+
   if (subcommand === "up") {
     const kindIdx = rawArgs.indexOf("--kind");
     const kind = kindIdx !== -1 && rawArgs[kindIdx + 1] ? rawArgs[kindIdx + 1] : "agy";
     const agentsIdx = rawArgs.indexOf("--agents");
     const agents = agentsIdx !== -1 && rawArgs[agentsIdx + 1] ? rawArgs[agentsIdx + 1] : null;
     const dryRun = rawArgs.includes("--dry-run");
+    const replace = !rawArgs.includes("--no-replace");
 
     console.log(`\n🚀 \x1b[1mLaunching Fleet via Herdr (kind: ${kind})\x1b[0m`);
     console.log("──────────────────────────────────────────────");
     if (dryRun) console.log("Mode: \x1b[33mDry Run (preview only)\x1b[0m\n");
 
-    const res = await launchFleet(amqRoot, repoRoot, { kind, agents, dryRun });
+    const res = await launchFleet(amqRoot, repoRoot, { kind, agents, dryRun, replace });
     if (res.alreadyRunning.length > 0) {
       console.log(`\x1b[36m● Already running (${res.alreadyRunning.length}):\x1b[0m ${res.alreadyRunning.join(", ")}`);
     }
+    if (res.replaced.length > 0) {
+      console.log(`\x1b[33m↻ Replaced mismatched agents (${res.replaced.length}):\x1b[0m`);
+      for (const entry of res.replaced) {
+        console.log(`   • ${entry.handle}: ${entry.fromKinds.join(", ")} -> ${kind}`);
+      }
+    }
+    if (dryRun && res.wouldReplace.length > 0) {
+      console.log(`\x1b[33m⚡ Would replace (${res.wouldReplace.length}):\x1b[0m ${res.wouldReplace.join(", ")}`);
+    }
     if (dryRun && res.wouldLaunch.length > 0) {
       console.log(`\x1b[33m⚡ Would launch into Herdr (${res.wouldLaunch.length}):\x1b[0m ${res.wouldLaunch.join(", ")}`);
+    }
+    if (res.blocked.length > 0) {
+      console.log(`\x1b[33m↷ Blocked mismatched agents (${res.blocked.length}):\x1b[0m`);
+      for (const entry of res.blocked) {
+        console.log(`   • ${entry.handle}: ${entry.reason}`);
+      }
     }
     if (res.launched.length > 0) {
       console.log(`\x1b[32m✔ Launched agents (${res.launched.length}):\x1b[0m`);
