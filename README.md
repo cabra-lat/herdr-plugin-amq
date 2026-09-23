@@ -1,9 +1,11 @@
 # Herdr AMQ Plugin
 
 [![CI](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/ci.yml/badge.svg)](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-87%20passing-brightgreen.svg)](https://github.com/cabra-lat/herdr-plugin-amq)
+[![Security](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/security.yml/badge.svg)](https://github.com/cabra-lat/herdr-plugin-amq/actions/workflows/security.yml)
+[![Tests](https://img.shields.io/badge/tests-95%20passing-brightgreen.svg)](https://github.com/cabra-lat/herdr-plugin-amq)
 [![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen.svg)](https://github.com/cabra-lat/herdr-plugin-amq)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Proudly Vibe Coded - Plasma Mix](https://vibecoded.fyi/badges/flat/main/proudly-vibe-coded-plasma-mix.svg)](https://vibecoded.fyi/)
 
 Autonomous Agent Message Queue (AMQ) bridge daemon, mailbox monitor, decentralized task bus, CAS blobstore, and AGmail dashboard for Herdr & AI coding agents.
 
