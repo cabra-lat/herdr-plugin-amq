@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { execCmd, getHerdrBin, getAgentHandles } from "./config.mjs";
+import { execCmd, getHerdrBin, getAgentHandles, getRepoRootFromAmq } from "./config.mjs";
 import { scanAgentBriefs, getAgentBrief, saveAgentBrief } from "./briefs.mjs";
 import { ingestAttachment } from "./blobs.mjs";
 import { sendMaildirMessage, replyMaildirMessage, drainMaildir } from "./protocol.mjs";
@@ -114,7 +114,7 @@ export function resolveAttachmentPath(ref, amqRoot) {
   const clean = ref.trim().replace(/^["'<(\[]+|[>"')\],;:]+$/g, "");
   if (!clean) return null;
 
-  const repoRoot = amqRoot ? path.resolve(path.dirname(amqRoot)) : process.cwd();
+  const repoRoot = getRepoRootFromAmq(amqRoot);
   const now = Date.now();
   if (now - cacheTimestamp > 30000) {
     filePathCache.clear();
@@ -197,7 +197,7 @@ export function resolveAttachmentPath(ref, amqRoot) {
 export function extractAttachments(body = "", metaAttachments = [], amqRoot = null) {
   const attachments = [];
   const seen = new Set();
-  const repoRoot = amqRoot ? path.resolve(path.dirname(amqRoot)) : process.cwd();
+  const repoRoot = getRepoRootFromAmq(amqRoot);
 
   function addCandidate(rawRef) {
     if (!rawRef) return;
@@ -770,7 +770,7 @@ export function loadAgentDirectory(amqRoot) {
     }
   } catch {}
 
-  const repoRoot = path.resolve(path.dirname(amqRoot));
+  const repoRoot = getRepoRootFromAmq(amqRoot);
   const briefs = scanAgentBriefs(repoRoot);
 
   // Merge discovered brief handles into the list so agents defined on disk are discoverable
@@ -892,7 +892,7 @@ export function registerAgent(amqRoot, { handle, name, role, model = "claude-3-7
   // Sync to disk brief file if prompt is provided
   if (syncDisk && promptContent) {
     try {
-      const repoRoot = path.resolve(path.dirname(amqRoot));
+      const repoRoot = getRepoRootFromAmq(amqRoot);
       saveAgentBrief(repoRoot, safeHandle, { description: role, prompt: promptContent, model, role });
     } catch {}
   }

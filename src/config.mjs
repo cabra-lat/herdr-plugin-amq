@@ -14,6 +14,13 @@ export function getStateDir() {
   return dir;
 }
 
+export function getRepoRootFromAmq(amqRoot) {
+  if (!amqRoot) return process.cwd();
+  return path.basename(amqRoot) === ".agent-mail"
+    ? path.resolve(path.dirname(amqRoot))
+    : path.resolve(amqRoot);
+}
+
 export function getConfigDir() {
   const dir = process.env.HERDR_PLUGIN_CONFIG_DIR || path.join(process.env.HOME || "/tmp", ".herdr-amq-config");
   if (!fs.existsSync(dir)) {
