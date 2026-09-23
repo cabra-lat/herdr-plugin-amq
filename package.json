@@ -19,8 +19,8 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "test": "node --test test/**/*.test.mjs",
-    "test:coverage": "mkdir -p coverage && node --test --experimental-test-coverage --test-reporter=spec --test-reporter=lcov --test-reporter-destination=stdout --test-reporter-destination=coverage/lcov.info test/**/*.test.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:coverage": "mkdir -p coverage && node --test --experimental-test-coverage --test-reporter=spec --test-reporter=lcov --test-reporter-destination=stdout --test-reporter-destination=coverage/lcov.info test/*.test.mjs",
     "check": "node --check bin/herdr-amq.mjs src/*.mjs test/*.test.mjs",
     "status": "node bin/herdr-amq.mjs status",
     "start": "node bin/herdr-amq.mjs start",

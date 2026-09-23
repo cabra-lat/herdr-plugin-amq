@@ -77,7 +77,6 @@ export function isPathSafe(filePath, repoRoot, amqRoot) {
     "/etc/",
     "/proc/",
     "/sys/",
-    "/var/",
     "/root",
     "id_rsa",
     "id_ed25519",
@@ -95,7 +94,9 @@ export function isPathSafe(filePath, repoRoot, amqRoot) {
   if (base.startsWith(".") && base !== ".agent-mail") return false;
 
   const allowedRoots = [
-    os.tmpdir(),
+    path.resolve(os.tmpdir()),
+    "/tmp",
+    "/private/tmp",
     path.resolve(repoRoot || process.cwd()),
     path.resolve(amqRoot || process.cwd()),
   ];
