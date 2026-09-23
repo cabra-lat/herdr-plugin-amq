@@ -58,7 +58,11 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = path.join(__dirname, "web");
 
-export function startWebServer({ port = 8505, amqRoot = findAmqRoot() } = {}) {
+export function startWebServer({
+  port = 8505,
+  host = process.env.AGMAIL_HOST || "127.0.0.1",
+  amqRoot = findAmqRoot(),
+} = {}) {
   if (!amqRoot) {
     console.error("❌ Cannot start web server: No .agent-mail directory found.");
     process.exit(1);
@@ -177,6 +181,43 @@ export function startWebServer({ port = 8505, amqRoot = findAmqRoot() } = {}) {
 
 
   const server = http.createServer(async (req, res) => {
+    // ─── Compliance: Strict Security Headers ───────────────────────────────
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none';"
+    );
+    res.setHeader("Referrer-Policy", "no-referrer");
+
+    // ─── Compliance: Host Header & DNS Rebinding Protection ───────────────
+    const rawHost = req.headers.host || "";
+    const hostHeader = rawHost.split(":")[0].toLowerCase();
+    const isLocalHost =
+      hostHeader === "localhost" ||
+      hostHeader === "127.0.0.1" ||
+      hostHeader === "[::1]" ||
+      hostHeader === "::1" ||
+      !rawHost; // In-memory or direct tests without host header
+
+    if (!isLocalHost) {
+      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(
+        JSON.stringify({
+          error: "Forbidden: Invalid Host header (DNS rebinding protection). AGmail is strictly local-only.",
+          rejectedHost: rawHost,
+        })
+      );
+      return;
+    }
+
+    // ─── Compliance: Null-byte injection check ──────────────────────────────
+    if (req.url && (req.url.includes("\0") || req.url.includes("%00"))) {
+      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "Forbidden: Null-byte injection detected" }));
+      return;
+    }
+
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const pathname = url.pathname;
 
@@ -679,12 +720,15 @@ export function startWebServer({ port = 8505, amqRoot = findAmqRoot() } = {}) {
     }
   });
 
-  server.listen(port, () => {
-    console.log(`\x1b[32m● AGmail Webmail Server running at:\x1b[0m \x1b[1mhttp://localhost:${port}\x1b[0m`);
+  server.listen(port, host, () => {
+    console.log(`\x1b[32m● AGmail Webmail Server running at:\x1b[0m \x1b[1mhttp://${host}:${port}\x1b[0m (local only)`);
     console.log(`  Queue Root: \x1b[36m${amqRoot}\x1b[0m`);
+    if (host !== "127.0.0.1" && host !== "localhost") {
+      console.warn(`\x1b[33m⚠️  SECURITY WARNING: Server is listening on '${host}'. AGmail contains sensitive agent data and should strictly be local-only!\x1b[0m`);
+    }
     // Workspaces are the default: automatically isolate agents in worktrees silently
     try {
-      const repoRoot = path.resolve(path.dirname(amqRoot));
+      const repoRoot = getRepoRootFromAmq(amqRoot);
       const handles = getAgentHandles(amqRoot);
       ensureAllWorktrees(repoRoot, handles);
     } catch {}

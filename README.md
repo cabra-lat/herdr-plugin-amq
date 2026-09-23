@@ -20,16 +20,17 @@ This plugin ties them together into a unified workflow:
 
 ## Requirements
 
-- Herdr >= 0.7.0
 - Node.js >= 18
-- `amq` CLI installed and available on PATH (or in `~/.local/bin/amq`)
+- Herdr >= 0.7.0 *(optional, only if using Herdr terminal workspaces & panes)*
+- **Zero runtime dependencies** — 100% self-contained ESM with native pure-JS Maildir & RFC 5322 engine (external `amq` Go binary is NOT required).
 
 ## Installation & Linking
 
-For local development, link this repository to your Herdr installation:
+For Herdr plugin integration:
 
 ```bash
-herdr plugin link /home/cabra.lat/documents/coding/herdr-plugin-amq
+# Link plugin from local repository clone
+herdr plugin link .
 ```
 
 Verify that the plugin is recognized:
@@ -141,6 +142,19 @@ herdr-amq --skill
 # Install into .opencode/skills/herdr-amq/SKILL.md
 herdr-amq --skill --install
 ```
+
+## Security & Threat Model (Local-Only Architecture)
+
+> **IMPORTANT**: The AGmail dashboard is strictly a **local development tool** for inspecting agent communication. **It must never be exposed to public networks or untrusted LANs.**
+
+By default, `herdr-amq` implements strict defense-in-depth protections:
+
+- **Loopback Interface Binding**: The HTTP server explicitly binds only to `127.0.0.1` (never `0.0.0.0`), dropping all non-local incoming TCP connections at the OS network stack.
+- **DNS Rebinding Protection**: All incoming HTTP requests validate the `Host` header. Requests claiming external domain names or remote IPs receive immediate `403 Forbidden`.
+- **System Path Traversal Defense**: The `/api/file` and `/api/git-file` endpoints strictly enforce jail roots (`isPathSafe`), denying access to `.ssh`, `.env`, `/etc`, credentials, dotfiles, or paths outside the workspace/temp trees.
+- **Null-Byte Injection Neutralization**: Any URL or path containing `%00` or `\0` is blocked before file resolution.
+- **Strict Browser Headers**: Enforces `X-Frame-Options: DENY` (anti-clickjacking), `X-Content-Type-Options: nosniff`, and restrictive `Content-Security-Policy` with `frame-ancestors 'none'`.
+- **Zero Runtime Dependencies**: No npm supply-chain vulnerabilities or third-party tracking scripts.
 
 ## License
 
