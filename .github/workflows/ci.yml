@@ -28,7 +28,12 @@ jobs:
       - name: Check syntax & JS module validation
         run: npm run check
 
-      - name: Run test suite with experimental coverage
+      - name: Run test suite (Node 18)
+        if: matrix.node-version == '18.x'
+        run: npm test
+
+      - name: Run test suite with experimental coverage (Node 20+)
+        if: matrix.node-version != '18.x'
         run: npm run test:coverage
 
       - name: Upload coverage artifact (Ubuntu / Node 22)
