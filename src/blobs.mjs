@@ -34,6 +34,11 @@ export const MIME_TYPES = {
   ".zip": "application/zip",
   ".tar": "application/x-tar",
   ".gz": "application/gzip",
+
+  // Video (pilot: inline <video> playback, same-origin blob stream)
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".webm": "video/webm",
 };
 
 export function getMimeType(ext) {
@@ -104,6 +109,7 @@ export function storeBlob(input, amqRoot, originalName = "") {
 
   const sizeBytes = contentBuffer.length;
   const isImage = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"].includes(ext);
+  const isVideo = [".mp4", ".m4v", ".webm"].includes(ext);
   const isLog = [".log", ".txt", ".csv", ".json", ".out", ".diff", ".patch"].includes(ext);
 
   return {
@@ -114,6 +120,7 @@ export function storeBlob(input, amqRoot, originalName = "") {
     mime: getMimeType(ext),
     sizeBytes,
     isImage,
+    isVideo,
     isLog,
     exists: true,
     url: `/api/blob/${sha256}${ext ? `?ext=${encodeURIComponent(ext)}` : ""}`,
@@ -269,6 +276,7 @@ export function pinGitRef(repoRoot, relativePath, commit = "HEAD") {
 
     const ext = path.extname(cleanRel).toLowerCase();
     const isImage = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"].includes(ext);
+    const isVideo = [".mp4", ".m4v", ".webm"].includes(ext);
     const isLog = [".log", ".txt", ".csv", ".json", ".out", ".diff", ".patch"].includes(ext);
 
     const ref = {
@@ -282,6 +290,7 @@ export function pinGitRef(repoRoot, relativePath, commit = "HEAD") {
       mime: getMimeType(ext),
       sizeBytes,
       isImage,
+      isVideo,
       isLog,
       exists: true,
       url: `/api/git-file?commit=${commitSha}&path=${encodeURIComponent(cleanRel)}`,

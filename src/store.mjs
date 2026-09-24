@@ -206,6 +206,7 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
 
     const ext = path.extname(clean).toLowerCase();
     const isImage = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"].includes(ext);
+    const isVideo = [".mp4", ".m4v", ".webm"].includes(ext);
     const isLog = [".log", ".txt", ".csv", ".json", ".out", ".diff", ".patch"].includes(ext);
 
     // 1. Check disk resolution first (sub-millisecond)
@@ -222,6 +223,7 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
         name: base,
         ext,
         isImage,
+        isVideo,
         isLog,
         exists: true,
         sizeBytes,
@@ -237,6 +239,10 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
       if (hashMatch) {
         const stored = getBlob(hashMatch[1], amqRoot);
         if (stored) {
+          const storedExt = (stored.ext || ext).toLowerCase();
+          const storedIsImage = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"].includes(storedExt);
+          const storedIsVideo = [".mp4", ".m4v", ".webm"].includes(storedExt);
+          const storedIsLog = [".log", ".txt", ".csv", ".json", ".out", ".diff", ".patch"].includes(storedExt);
           attachments.push({
             type: "blob",
             sha256: stored.sha256,
@@ -244,8 +250,9 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
             ext: stored.ext,
             mime: stored.mime,
             sizeBytes: stored.sizeBytes,
-            isImage,
-            isLog,
+            isImage: storedIsImage,
+            isVideo: storedIsVideo,
+            isLog: storedIsLog,
             exists: true,
             sizeDisplay: formatFileSize(stored.sizeBytes),
             url: `/api/blob/${stored.sha256}${stored.ext ? `?ext=${encodeURIComponent(stored.ext)}` : ""}`,
@@ -262,6 +269,7 @@ export function extractAttachments(body = "", metaAttachments = [], amqRoot = nu
       name: base,
       ext,
       isImage,
+      isVideo,
       isLog,
       exists: false,
       sizeBytes: 0,

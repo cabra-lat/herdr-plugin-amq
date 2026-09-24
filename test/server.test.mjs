@@ -313,6 +313,19 @@ Test body`
     assert.ok(styleText.includes('#splitter-view[data-reading-layout="full"].detail-open .mail-list-container'));
   });
 
+  test("security headers allow same-origin video attachments", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    assert.equal(res.status, 200);
+    const csp = res.headers.get("content-security-policy") || "";
+    assert.match(csp, /media-src 'self'/);
+    assert.match(csp, /default-src 'self'/);
+    assert.match(csp, /frame-ancestors 'none'/);
+    // app.js renders pilot <video> cards for isVideo attachments
+    const appText = await (await fetch(`${baseUrl}/app.js`)).text();
+    assert.ok(appText.includes("<video controls"));
+    assert.ok(appText.includes('preload="metadata"'));
+  });
+
   test("GET /api/agent-briefs returns array of disk agent definitions", async () => {
     const res = await fetch(`${baseUrl}/api/agent-briefs`);
     assert.equal(res.status, 200);

@@ -115,8 +115,9 @@ export function handleDoorbell() {
   }
 
   const force = process.argv.includes("--force") || process.argv.includes("-f");
-  console.log(`🔔 Checking AMQ inboxes at ${amqRoot}${force ? " (force=true)" : ""}...`);
-  const res = runDoorbellPass({ amqRoot, force, allowPrompt: true, persistState: true });
+  const dryRun = process.argv.includes("--dry-run");
+  console.log(`🔔 Checking AMQ inboxes at ${amqRoot}${force ? " (force=true)" : ""}${dryRun ? " [dry-run: no prompts, heals, or state writes]" : ""}...`);
+  const res = runDoorbellPass({ amqRoot, force, dryRun, allowPrompt: !dryRun, persistState: !dryRun });
 
   if (!res.ok) {
     console.error(`❌ Doorbell check failed: ${res.error}`);

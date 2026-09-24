@@ -62,6 +62,11 @@ const WEB_ROOT = path.join(__dirname, "web");
 const HERDR_STATUS_EVENT_TYPES = new Set(["pane_agent_status_changed", "pane.agent_status_changed", "pane.updated", "agent.state_changed", "agent.updated"]);
 const HERDR_REFRESH_EVENT_TYPES = new Set(["pane_agent_detected", "pane.created", "pane.closed", "workspace.created", "workspace.closed", "agent.created", "agent.closed"]);
 
+// Strict CSP for the local dashboard. media-src 'self' covers same-origin
+// <video> attachments streamed from /api/blob/* and /api/file.
+export const CONTENT_SECURITY_POLICY =
+  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self'; connect-src 'self'; frame-ancestors 'none';";
+
 export function isHerdrStatusEvent(type) {
   return HERDR_STATUS_EVENT_TYPES.has(String(type || ""));
 }
@@ -254,7 +259,7 @@ export function startWebServer({
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none';"
+      CONTENT_SECURITY_POLICY
     );
     res.setHeader("Referrer-Policy", "no-referrer");
 

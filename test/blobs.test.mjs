@@ -20,7 +20,26 @@ test("MIME type detection", () => {
   assert.equal(getMimeType(".png"), "image/png");
   assert.equal(getMimeType(".log"), "text/plain; charset=utf-8");
   assert.equal(getMimeType(".gd"), "text/plain; charset=utf-8");
+  assert.equal(getMimeType(".mp4"), "video/mp4");
+  assert.equal(getMimeType(".m4v"), "video/mp4");
+  assert.equal(getMimeType(".webm"), "video/webm");
+  assert.equal(getMimeType(".MP4"), "video/mp4");
   assert.equal(getMimeType(".unknown"), "application/octet-stream");
+});
+
+test("Option A: video blobs carry playable MIME and isVideo flag", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "amq-blob-video-"));
+  try {
+    const blob = storeBlob(Buffer.from("fake-h264-bytes"), tmpDir, "clip.mp4");
+    assert.equal(blob.mime, "video/mp4");
+    assert.equal(blob.isVideo, true);
+    assert.equal(blob.isImage, false);
+    assert.match(blob.url, /^\/api\/blob\/[a-f0-9]{64}/);
+    const retrieved = getBlob(blob.sha256, tmpDir);
+    assert.equal(retrieved.mime, "video/mp4");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("Option A: CAS Blobstore storing and retrieving", () => {

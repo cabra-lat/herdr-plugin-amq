@@ -1509,7 +1509,8 @@
     if (!attachments || !attachments.length) return "";
 
     const images = attachments.filter((a) => a.isImage);
-    const otherFiles = attachments.filter((a) => !a.isImage);
+    const videos = attachments.filter((a) => !a.isImage && a.isVideo);
+    const otherFiles = attachments.filter((a) => !a.isImage && !a.isVideo);
 
     let html = `<div class="attachments-container">`;
     html += `<div class="attachments-header"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a3 3 0 0 0 6 0V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg> <span>Attachments & Visual Artifacts (${attachments.length})</span></div>`;
@@ -1535,6 +1536,37 @@
                 <img src="${fileUrl}" alt="${escapeHtml(img.name)}" loading="lazy" onerror="this.onerror=null;this.parentElement.innerHTML='<div class=\\'broken-img\\'>🖼️ ${escapeHtml(img.name)}</div>'">
               </div>
               <span class="attachment-filename">${escapeHtml(img.name)}</span>
+            </div>
+          `;
+        }
+      }
+      html += `</div>`;
+    }
+
+    if (videos.length) {
+      html += `<div class="attachment-gallery attachment-video-gallery">`;
+      for (const vid of videos) {
+        if (!vid.exists) {
+          html += `
+            <div class="attachment-image-card missing" title="Video referenced in transmission but not found on disk: ${escapeHtml(vid.originalRef || vid.path)}">
+              <div class="attachment-thumb-wrap missing-thumb">
+                <span class="missing-thumb-icon">⚠️</span>
+                <span class="missing-thumb-text">Video not found on disk</span>
+              </div>
+              <span class="attachment-filename">${escapeHtml(vid.name)}</span>
+            </div>
+          `;
+        } else {
+          // Same-origin blob/file stream: allowed by media-src 'self'.
+          // No Range/206 support yet, so seeking is unavailable — short
+          // pilot clips play progressively (use faststart MP4s).
+          const fileUrl = vid.url || `/api/file?path=${encodeURIComponent(vid.path)}`;
+          html += `
+            <div class="attachment-image-card attachment-video-card">
+              <div class="attachment-thumb-wrap">
+                <video controls preload="metadata" src="${fileUrl}" style="max-width:100%;max-height:320px;"></video>
+              </div>
+              <span class="attachment-filename">${escapeHtml(vid.name)}</span>
             </div>
           `;
         }
@@ -2697,6 +2729,12 @@
     for (const [colName, containerEl] of Object.entries(colContainers)) {
       if (!containerEl) continue;
       const filtered = filterCards(columns[colName]);
+      if (colName === "done") {
+        // Newest-completed first. Cards only carry created/updated (updated
+        // bumps on every stage move), so updated desc approximates
+        // "date the card entered this column".
+        filtered.sort((a, b) => (b.updated || b.created || "").localeCompare(a.updated || a.created || ""));
+      }
 
       if (!filtered.length) {
         containerEl.innerHTML = `<div class="kanban-empty">${emptyMessages[colName]}</div>`;
@@ -2729,8 +2767,8 @@
           actionsHtml += `<button class="kanban-move-btn" data-move-id="${card.id}" data-target-col="blocked" title="Mark Blocked">🛑</button>`;
           actionsHtml += `<button class="kanban-move-btn" data-move-id="${card.id}" data-target-col="done" title="Mark Done">✅</button>`;
         } else if (colName === "blocked") {
-          actionsHtml += `<button class="kanban-move-btn" data-move-id="${card.id}" data-target-col="in_progress" title="Unblock / Resume">🚀</button>`;
-          actionsHtml += `<button class="kanban-move-btn" data-move-id="${card.id}" data-target-col="done" title="Mark Done">✅</button>`;
+          actionsHtml += `<button class="kanban-move-btn" data-move-id="${card.id}" data-target-col="in_progress" title="Unblock: resume work in Em Voo">🚀 Resume</button>`;
+          actionsHtml += `<button class="kanban-move-btn" data-move-id="${card.id}" data-target-col="done" title="Mark Done: close with proof">✅ Done</button>`;
         } else if (colName === "done") {
           actionsHtml += `<button class="kanban-move-btn" data-move-id="${card.id}" data-target-col="in_progress" title="Reopen to Em Voo">↩️</button>`;
         }
@@ -3050,11 +3088,22 @@
     }
   }
 
+  // Generation guard + silent background refresh for the task-drawer thread
+  // list. Every SSE tick re-invokes this; without the guard the drawer
+  // flashes "Carregando..." forever and racing fetches overwrite each other.
+  let sheetThreadGen = 0;
+  let sheetThreadTaskId = null;
   async function renderSheetTransmissions(task) {
     if (!task || !sheetThreadList) return;
-    sheetThreadList.innerHTML = `<div class="sheet-msg-empty"><span>Carregando transmissões...</span></div>`;
+    const myGen = ++sheetThreadGen;
+    const firstPaint = sheetThreadTaskId !== task.id || !sheetThreadList.querySelector(".sheet-msg-card");
+    sheetThreadTaskId = task.id;
+    if (firstPaint) {
+      sheetThreadList.innerHTML = `<div class="sheet-msg-empty"><span>Carregando transmissões...</span></div>`;
+    }
 
     const msgs = await fetchTaskTransmissions(task);
+    if (myGen !== sheetThreadGen || state.selectedTaskId !== task.id) return; // stale: a newer refresh won
     if (sheetThreadBadge) sheetThreadBadge.textContent = msgs.length;
     if (sheetTabBadge) sheetTabBadge.textContent = msgs.length;
 

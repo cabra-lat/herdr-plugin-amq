@@ -104,20 +104,35 @@ function getAgentStatus(handle) {
   }
 }
 
-function healAgentName(handle, dryRun = false) {
+export function healAgentName(handle, dryRun = false, run = runHerdr) {
   try {
-    const out = runHerdr(["pane", "list"]);
+    const out = run(["pane", "list"]);
     const panes = JSON.parse(out)?.result?.panes ?? [];
     const needle = `- ${handle} - `;
-    const hit = panes.find((p) =>
+    let hit = panes.find((p) =>
       (p.terminal_title_stripped || p.terminal_title || "").includes(needle)
     );
+    if (!hit) {
+      // Fallback: the terminal title is often overwritten by the foreground
+      // program (e.g. "OpenCode"), while the tab label keeps the canonical
+      // handle. Match the tab label exactly, and heal only when that tab
+      // holds a single pane (multi-pane tabs are ambiguous — skip them).
+      try {
+        const tabsOut = run(["tab", "list"]);
+        const tabs = JSON.parse(tabsOut)?.result?.tabs ?? [];
+        const tab = tabs.find((t) => (t.label || "") === handle);
+        if (tab) {
+          const inTab = panes.filter((p) => p.tab_id === tab.tab_id);
+          if (inTab.length === 1) hit = inTab[0];
+        }
+      } catch {}
+    }
     if (!hit) return false;
     if (dryRun) {
       console.log(`[bridge] DRY: would heal name ${handle} <- pane ${hit.pane_id}`);
       return true;
     }
-    runHerdr(["agent", "rename", hit.pane_id, handle]);
+    run(["agent", "rename", hit.pane_id, handle]);
     console.log(`[bridge] Healed pane ${hit.pane_id} -> renamed back to '${handle}'`);
     return true;
   } catch (err) {
