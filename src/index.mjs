@@ -7,3 +7,4 @@ export * from "./migration.mjs";
 export * from "./briefs.mjs";
 export * from "./worktrees.mjs";
 export * from "./fleet.mjs";
+export * from "./templates.mjs";

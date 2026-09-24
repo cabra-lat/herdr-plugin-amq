@@ -11,6 +11,10 @@ import {
   execCmd,
 } from "./config.mjs";
 import { listBacklogTasks, getAgentTaskStats } from "./board.mjs";
+import { loadLocalTemplate, renderTemplate } from "./templates.mjs";
+import { isSafeMailIdentifier, listMaildirMessageFiles, readMaildirMessageFile, writeBoundedFileAtomic } from "./protocol.mjs";
+
+const MAX_DOORBELL_PROMPT_BYTES = 64 * 1024;
 
 function getPidFile() {
   return path.join(getStateDir(), "bridge.pid");
@@ -122,12 +126,13 @@ function healAgentName(handle, dryRun = false) {
 }
 
 function promptAgent(handle, text, dryRun = false) {
+  const boundedText = boundDoorbellPrompt(text);
   if (dryRun || process.env.HERDR_DISABLE_PROMPT === "1" || process.env.NODE_ENV === "test") {
-    console.log(`[bridge] DRY: would prompt ${handle}: ${text.slice(0, 60)}...`);
+    console.log(`[bridge] DRY: would prompt ${handle}: ${boundedText.slice(0, 60)}...`);
     return true;
   }
   try {
-    runHerdr(["agent", "prompt", handle, text]);
+    runHerdr(["agent", "prompt", handle, boundedText]);
     return true;
   } catch (err) {
     console.warn(`[bridge] Warning: prompt ${handle} failed: ${err.message}`);
@@ -151,15 +156,50 @@ function recordAlert(handle, count, from, dryRun = false) {
   } catch {}
 }
 
+function safeStateText(value, maxLength = 512) {
+  if (typeof value !== "string") return "";
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function sanitizeDeliveredState(value) {
+  const delivered = {};
+  const deliveredTasks = {};
+  if (!value || typeof value !== "object") return { delivered, deliveredTasks, recoveryRequired: true };
+
+  for (const [id, entry] of Object.entries(value.delivered || {})) {
+    if (!isSafeMailIdentifier(id) || !entry || typeof entry !== "object") continue;
+    if (!isSafeMailIdentifier(entry.to, 128) || !isSafeMailIdentifier(entry.from, 128)) continue;
+    if (typeof entry.at !== "string") continue;
+    delivered[id] = {
+      at: entry.at,
+      to: entry.to,
+      from: entry.from,
+      attempts: Number.isFinite(entry.attempts) ? Math.max(1, Math.trunc(entry.attempts)) : 1,
+    };
+  }
+
+  for (const [id, entry] of Object.entries(value.deliveredTasks || {})) {
+    if (!isSafeMailIdentifier(id) || !entry || typeof entry !== "object") continue;
+    if (!isSafeMailIdentifier(entry.to, 128) || typeof entry.at !== "string") continue;
+    deliveredTasks[id] = {
+      at: entry.at,
+      to: entry.to,
+      title: safeStateText(entry.title),
+      attempts: Number.isFinite(entry.attempts) ? Math.max(1, Math.trunc(entry.attempts)) : 1,
+    };
+  }
+
+  return { delivered, deliveredTasks, recoveryRequired: false };
+}
+
 function loadDeliveredState() {
   const stateFile = getStateFile();
   try {
-    const s = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    s.delivered = s.delivered || {};
-    s.deliveredTasks = s.deliveredTasks || {};
-    return s;
+    const content = readMaildirMessageFile(stateFile, 2 * 1024 * 1024);
+    if (content === null) return { delivered: {}, deliveredTasks: {}, recoveryRequired: true };
+    return sanitizeDeliveredState(JSON.parse(content));
   } catch {
-    return { delivered: {}, deliveredTasks: {} };
+    return { delivered: {}, deliveredTasks: {}, recoveryRequired: true };
   }
 }
 
@@ -179,7 +219,7 @@ function saveDeliveredState(state) {
       delete state.deliveredTasks[id];
     }
   }
-  fs.writeFileSync(stateFile, JSON.stringify(state, null, 1), "utf8");
+  writeBoundedFileAtomic(stateFile, JSON.stringify(state, null, 1), 2 * 1024 * 1024);
 }
 
 export function listInbox(amqRoot, handle) {
@@ -202,11 +242,12 @@ export function listInbox(amqRoot, handle) {
   try {
     const newDir = path.join(amqRoot, "agents", handle, "inbox", "new");
     if (!fs.existsSync(newDir)) return [];
-    const files = fs.readdirSync(newDir).filter((f) => !f.startsWith("."));
+    const files = listMaildirMessageFiles(newDir).filter((f) => !f.startsWith("."));
     const msgs = [];
     for (const f of files) {
       const fullPath = path.join(newDir, f);
-      const content = fs.readFileSync(fullPath, "utf8");
+      const content = readMaildirMessageFile(fullPath);
+      if (content === null) continue;
       const jsonMatch = content.match(/^---json\r?\n([\s\S]*?)\r?\n---/);
       if (jsonMatch) {
         try {
@@ -251,47 +292,98 @@ export function listInbox(amqRoot, handle) {
   }
 }
 
-export const buildDoorbellPrompt = (handle, msgs = [], taskStatsOrBacklog = null) => {
-  const senders = [...new Set(msgs.map((m) => m.from))].join(", ");
-  const mCount = msgs.length;
+function boundDoorbellPrompt(text, maxBytes = MAX_DOORBELL_PROMPT_BYTES) {
+  const value = typeof text === "string" ? text : String(text ?? "");
+  const bytes = Buffer.from(value, "utf8");
+  return bytes.length <= maxBytes
+    ? value
+    : bytes.subarray(0, Math.max(0, maxBytes)).toString("utf8");
+}
 
-  let stats;
-  if (Array.isArray(taskStatsOrBacklog)) {
-    stats = { backlog: taskStatsOrBacklog.length, blocked: 0, doing: 0, done: 0 };
-  } else if (taskStatsOrBacklog && typeof taskStatsOrBacklog === "object") {
-    stats = taskStatsOrBacklog;
-  } else {
-    stats = { backlog: 0, blocked: 0, doing: 0, done: 0 };
+function safeCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+}
+
+function safeSender(value) {
+  const sender = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(sender) ? sender : "unknown";
+}
+
+function normalizeDoorbellStats(taskStatsOrBacklog) {
+  const raw = Array.isArray(taskStatsOrBacklog)
+    ? { backlog: taskStatsOrBacklog.length, blocked: 0, doing: 0, done: 0 }
+    : taskStatsOrBacklog && typeof taskStatsOrBacklog === "object"
+      ? taskStatsOrBacklog
+      : { backlog: 0, blocked: 0, doing: 0, done: 0 };
+  const stats = {
+    backlog: safeCount(raw.backlog),
+    blocked: safeCount(raw.blocked),
+    doing: safeCount(raw.doing),
+    done: safeCount(raw.done),
+  };
+  stats.total = safeCount(raw.total ?? Object.values(stats).reduce((sum, value) => sum + value, 0));
+  return stats;
+}
+
+function buildDoorbellContext(handle, msgs, stats) {
+  return {
+    agent: { handle },
+    mail: {
+      count: safeCount(msgs.length),
+      senders: [...new Set(msgs.map((message) => safeSender(message.from)))].slice(0, 16).join(", "),
+    },
+    board: stats,
+  };
+}
+
+function buildRequiredDoorbellActions(handle, context) {
+  const actions = [];
+  if (context.mail.count > 0) {
+    actions.push(`Run: herdr-amq mail drain --me ${handle} --include-body.`);
   }
+  if (context.board.backlog > 0) {
+    actions.push(`Run: herdr-amq task drain --me ${handle}; claim with herdr-amq task next --me ${handle}.`);
+  }
+  if (context.mail.count > 0) {
+    actions.push("Reply only when a message explicitly requests action or asks a question.");
+  }
+  return actions.join(" ");
+}
 
-  const bCount = stats.backlog || 0;
-
-  // Build task numbers breakdown string: e.g. " (1 blocked, 2 in progress, 3 done)"
+function buildDefaultDoorbellPrompt(handle, msgs, stats) {
+  const context = buildDoorbellContext(handle, msgs, stats);
   const taskDetails = [];
-  if (stats.blocked > 0) taskDetails.push(`${stats.blocked} blocked`);
-  if (stats.doing > 0) taskDetails.push(`${stats.doing} in progress`);
-  if (stats.done > 0) taskDetails.push(`${stats.done} done`);
-  const detailsStr = taskDetails.length > 0 ? ` (${taskDetails.join(", ")})` : "";
-
-  if (mCount > 0 && bCount > 0) {
-    return (
-      `AMQ & Task doorbell: ${mCount} new message(s) from ${senders}. You have ${bCount} task(s) in backlog${detailsStr}. ` +
-      `Run: herdr-amq mail drain --me ${handle} --include-body && herdr-amq task drain --me ${handle}. ` +
-      `Claim next task via: herdr-amq task next --me ${handle}, then reply on-thread with herdr-amq mail reply --id <msg_id>.`
-    );
+  if (context.board.blocked > 0) taskDetails.push(`${context.board.blocked} blocked`);
+  if (context.board.doing > 0) taskDetails.push(`${context.board.doing} in progress`);
+  if (context.board.done > 0) taskDetails.push(`${context.board.done} done`);
+  const details = taskDetails.length ? ` (${taskDetails.join(", ")})` : "";
+  let summary;
+  if (context.mail.count > 0 && context.board.backlog > 0) {
+    summary = `AMQ & Task doorbell: ${context.mail.count} new message(s) from ${context.mail.senders}. You have ${context.board.backlog} task(s) in backlog${details}.`;
+  } else if (context.board.backlog > 0) {
+    summary = `Task doorbell: You have ${context.board.backlog} task(s) in backlog${details}.`;
+  } else {
+    summary = `AMQ doorbell: ${context.mail.count} new message(s) in your inbox from ${context.mail.senders}${details}.`;
   }
+  return boundDoorbellPrompt(`${summary} ${buildRequiredDoorbellActions(handle, context)}`.trim());
+}
 
-  if (bCount > 0) {
-    return (
-      `Task doorbell: You have ${bCount} task(s) in backlog${detailsStr}. ` +
-      `Run: herdr-amq task drain --me ${handle} and claim via: herdr-amq task next --me ${handle}.`
-    );
+export const buildDoorbellPrompt = (handle, msgs = [], taskStatsOrBacklog = null, templateSource = null) => {
+  const stats = normalizeDoorbellStats(taskStatsOrBacklog);
+  const context = buildDoorbellContext(handle, msgs, stats);
+  const fallback = buildDefaultDoorbellPrompt(handle, msgs, stats);
+  if (!templateSource) return fallback;
+
+  try {
+    const custom = renderTemplate(templateSource, context).trim();
+    if (!custom) return fallback;
+    const requiredActions = `Required actions: ${buildRequiredDoorbellActions(handle, context)}`;
+    const bodyLimit = Math.max(0, MAX_DOORBELL_PROMPT_BYTES - Buffer.byteLength(requiredActions, "utf8") - 2);
+    return `${boundDoorbellPrompt(custom, bodyLimit)}\n\n${requiredActions}`;
+  } catch {
+    return fallback;
   }
-
-  return (
-    `AMQ doorbell: ${mCount} new message(s) in your inbox from ${senders}${detailsStr}. ` +
-    `Run: herdr-amq mail drain --me ${handle} --include-body, then reply on-thread with herdr-amq mail reply --id <msg_id>. After replying, resume your work.`
-  );
 };
 
 export const DEFAULT_DOORBELL_COOLDOWN_MS = 45000; // 45s cooldown window
@@ -317,6 +409,12 @@ export function runDoorbellPass({
   targetHandle = null,
   dryRun = false,
   force = false,
+  allowPrompt = false,
+  persistState = false,
+  state: injectedState = null,
+  getStatus = getAgentStatus,
+  healName = healAgentName,
+  prompt = promptAgent,
   cooldownMs = parseInt(process.env.HERDR_DOORBELL_COOLDOWN_MS || String(DEFAULT_DOORBELL_COOLDOWN_MS), 10),
 } = {}) {
   if (!amqRoot) {
@@ -332,7 +430,8 @@ export function runDoorbellPass({
   }
 
   const repoRoot = getRepoRootFromAmq(amqRoot);
-  const state = loadDeliveredState();
+  const doorbellTemplate = loadLocalTemplate(amqRoot, "doorbell");
+  const state = injectedState || loadDeliveredState();
   state.delivered = state.delivered || {};
   state.deliveredTasks = state.deliveredTasks || {};
 
@@ -341,6 +440,10 @@ export function runDoorbellPass({
   const results = [];
 
   for (const handle of agentList) {
+    if (typeof handle !== "string" || !/^[a-z0-9_-]{1,128}$/.test(handle)) {
+      results.push({ handle: String(handle), status: "invalid", count: 0, tasksCount: 0, action: "invalid_handle" });
+      continue;
+    }
     const rawMsgs = listInbox(amqRoot, handle);
     // Ignore self-messages
     const msgs = rawMsgs.filter((m) => m.from !== handle);
@@ -353,9 +456,12 @@ export function runDoorbellPass({
 
     if (!undeliveredMsgs.length && !undeliveredTasks.length) continue;
 
-    let status = getAgentStatus(handle);
+    let status = getStatus(handle);
     if (status === "missing") {
-      const healed = healAgentName(handle, dryRun);
+      const healed = healName(
+        handle,
+        dryRun || !allowPrompt || process.env.HERDR_DISABLE_PROMPT === "1"
+      );
       if (healed) status = getAgentStatus(handle);
     }
 
@@ -363,8 +469,8 @@ export function runDoorbellPass({
     taskStats.backlog = undeliveredTasks.length > 0 ? undeliveredTasks.length : backlogTasks.length;
 
     if (status === "idle" || status === "done") {
-      const text = buildDoorbellPrompt(handle, undeliveredMsgs, taskStats);
-      const ok = promptAgent(handle, text, dryRun);
+      const text = buildDoorbellPrompt(handle, undeliveredMsgs, taskStats, doorbellTemplate?.source || null);
+      const ok = prompt(handle, text, dryRun || !allowPrompt);
       if (ok) {
         doorbelledCount += undeliveredMsgs.length;
         doorbelledTasksCount += undeliveredTasks.length;
@@ -393,7 +499,7 @@ export function runDoorbellPass({
           status,
           count: undeliveredMsgs.length,
           tasksCount: undeliveredTasks.length,
-          action: "prompted",
+          action: allowPrompt && !dryRun ? "prompted" : "simulated",
         });
       }
     } else if (status === "working") {
@@ -406,7 +512,7 @@ export function runDoorbellPass({
       });
     } else if (status === "blocked") {
       if (undeliveredMsgs.length) {
-        recordAlert(handle, undeliveredMsgs.length, undeliveredMsgs[0]?.from, dryRun);
+        recordAlert(handle, undeliveredMsgs.length, undeliveredMsgs[0]?.from, dryRun || !allowPrompt);
       }
       results.push({
         handle,
@@ -426,7 +532,7 @@ export function runDoorbellPass({
     }
   }
 
-  if (!dryRun && (doorbelledCount > 0 || doorbelledTasksCount > 0)) {
+  if (allowPrompt && persistState && !dryRun && (doorbelledCount > 0 || doorbelledTasksCount > 0)) {
     saveDeliveredState(state);
   }
 
@@ -468,7 +574,7 @@ export function startDaemonLoop({ interval = 3000, dryRun = false } = {}) {
   const tick = () => {
     try {
       const handles = getAgentHandles(amqRoot);
-      const res = runDoorbellPass({ amqRoot, handles, dryRun });
+      const res = runDoorbellPass({ amqRoot, handles, dryRun, allowPrompt: true, persistState: true });
       if (res.doorbelled > 0) {
         console.log(`[bridge] Doorbelled ${res.doorbelled} message(s)`);
       }

@@ -1,6 +1,6 @@
 {
   "name": "herdr-plugin-amq",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Herdr plugin for AMQ (Agent Message Queue) autonomous bridge, status monitoring, and AGmail dashboard",
   "type": "module",
   "main": "src/index.mjs",
@@ -11,6 +11,7 @@
     "bin/",
     "src/",
     "skills/",
+    "docs/",
     "herdr-plugin.toml",
     "README.md",
     "LICENSE"
@@ -19,9 +20,11 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
-    "test:coverage": "mkdir -p coverage && node --test --experimental-test-coverage --test-reporter=spec --test-reporter=lcov --test-reporter-destination=stdout --test-reporter-destination=coverage/lcov.info test/*.test.mjs",
-    "check": "node --check bin/herdr-amq.mjs src/*.mjs test/*.test.mjs",
+    "test": "HERDR_DISABLE_PROMPT=1 node --test test/*.test.mjs",
+    "test:coverage": "mkdir -p coverage && HERDR_DISABLE_PROMPT=1 node --test --experimental-test-coverage --test-reporter=spec --test-reporter=lcov --test-reporter-destination=stdout --test-reporter-destination=coverage/lcov.info test/*.test.mjs",
+    "test:e2e": "HERDR_DISABLE_PROMPT=1 node --test test/e2e/*.test.mjs",
+    "test:visual": "npm run test:e2e",
+    "check": "node --check bin/herdr-amq.mjs src/*.mjs src/web/app.js test/*.test.mjs test/e2e/*.mjs",
     "test:security": "node --test test/security.test.mjs",
     "coverage:summary": "node tools/coverage-summary.mjs",
     "status": "node bin/herdr-amq.mjs status",
@@ -46,5 +49,8 @@
     "agmail"
   ],
   "author": "cabra.lat",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "playwright-core": "1.48.2"
+  }
 }

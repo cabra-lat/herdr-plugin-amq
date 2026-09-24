@@ -15,6 +15,9 @@ import {
 describe("actions.mjs CLI integration", () => {
   let tempRoot;
   let oldAmRoot;
+  let oldStateDir;
+  let oldDisablePrompt;
+  let oldEventJson;
   let oldCwd;
 
   before(() => {
@@ -22,6 +25,11 @@ describe("actions.mjs CLI integration", () => {
     const amqRoot = path.join(tempRoot, ".agent-mail");
     oldAmRoot = process.env.AM_ROOT;
     process.env.AM_ROOT = amqRoot;
+    oldStateDir = process.env.HERDR_PLUGIN_STATE_DIR;
+    process.env.HERDR_PLUGIN_STATE_DIR = path.join(tempRoot, "state");
+    oldDisablePrompt = process.env.HERDR_DISABLE_PROMPT;
+    process.env.HERDR_DISABLE_PROMPT = "1";
+    oldEventJson = process.env.HERDR_PLUGIN_EVENT_JSON;
 
     // Set up agent directory inside amqRoot
     const agentsDir = path.join(amqRoot, "agents");
@@ -48,6 +56,21 @@ describe("actions.mjs CLI integration", () => {
       process.env.AM_ROOT = oldAmRoot;
     } else {
       delete process.env.AM_ROOT;
+    }
+    if (oldStateDir !== undefined) {
+      process.env.HERDR_PLUGIN_STATE_DIR = oldStateDir;
+    } else {
+      delete process.env.HERDR_PLUGIN_STATE_DIR;
+    }
+    if (oldDisablePrompt !== undefined) {
+      process.env.HERDR_DISABLE_PROMPT = oldDisablePrompt;
+    } else {
+      delete process.env.HERDR_DISABLE_PROMPT;
+    }
+    if (oldEventJson !== undefined) {
+      process.env.HERDR_PLUGIN_EVENT_JSON = oldEventJson;
+    } else {
+      delete process.env.HERDR_PLUGIN_EVENT_JSON;
     }
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -210,14 +233,14 @@ describe("actions.mjs CLI integration", () => {
   });
 
   test("handleAgentStatusChanged processes event payload", () => {
-    process.env.HERDR_EVENT = JSON.stringify({
+    process.env.HERDR_PLUGIN_EVENT_JSON = JSON.stringify({
       event: "agent_status_changed",
       data: { agent_name: "alice", agent_status: "idle" },
     });
     try {
       handleAgentStatusChanged();
     } finally {
-      delete process.env.HERDR_EVENT;
+      delete process.env.HERDR_PLUGIN_EVENT_JSON;
     }
   });
 });

@@ -55,3 +55,39 @@ jobs:
           node tools/coverage-summary.mjs >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Full LCOV report uploaded as \`lcov-coverage\` artifact." >> $GITHUB_STEP_SUMMARY
+
+  browser:
+    name: Headless browser journeys
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Setup Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: 130.0.6723.31
+          install-dependencies: true
+
+      - name: Run browser journeys
+        run: npm run test:e2e
+        env:
+          CHROMIUM_BIN: ${{ steps.chrome.outputs.chrome-path }}
+          E2E_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/e2e
+
+      - name: Upload browser journey artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-journey-artifacts
+          path: artifacts/e2e
+          if-no-files-found: warn

@@ -33,6 +33,7 @@ describe("Autonomous Swarm Multi-Agent Simulation & Integration", () => {
   let amqRoot;
   let oldAmRoot;
   let oldStateDir;
+  let simulationBridgeState;
   let oldCwd;
 
   before(() => {
@@ -43,6 +44,7 @@ describe("Autonomous Swarm Multi-Agent Simulation & Integration", () => {
     oldStateDir = process.env.HERDR_PLUGIN_STATE_DIR;
     process.env.HERDR_PLUGIN_STATE_DIR = path.join(tempRoot, "state");
     process.env.HERDR_DISABLE_PROMPT = "1";
+    simulationBridgeState = { delivered: {}, deliveredTasks: {} };
 
     // Create Maildir trees for 3 agents
     const agents = ["coordinator", "worker-alpha", "worker-beta"];
@@ -152,16 +154,20 @@ describe("Autonomous Swarm Multi-Agent Simulation & Integration", () => {
   });
 
   test("Step 4: Bridge doorbell pass detects unread messages and handles agent states", () => {
-    // Dry-run pass
-    const dryRes = runDoorbellPass({ amqRoot, dryRun: true });
+    const isolatedDoorbell = {
+      getStatus: () => "idle",
+      healName: () => false,
+      prompt: () => true,
+    };
+    const dryRes = runDoorbellPass({ amqRoot, dryRun: true, ...isolatedDoorbell });
     assert.ok(dryRes.ok);
 
-    // Live pass
-    const liveRes = runDoorbellPass({ amqRoot, dryRun: false });
+    const liveRes = runDoorbellPass({ amqRoot, dryRun: false, state: simulationBridgeState, ...isolatedDoorbell });
     assert.ok(liveRes.ok);
+    assert.ok(liveRes.results.some((result) => result.action === "simulated"));
 
     // Second live pass - already delivered messages should not re-trigger
-    const secondPass = runDoorbellPass({ amqRoot, dryRun: false });
+    const secondPass = runDoorbellPass({ amqRoot, dryRun: false, state: simulationBridgeState, ...isolatedDoorbell });
     assert.ok(secondPass.ok);
     assert.strictEqual(secondPass.doorbelled, 0, "Second pass should not re-doorbell already delivered messages");
   });

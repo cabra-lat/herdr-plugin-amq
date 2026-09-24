@@ -5,7 +5,8 @@ import crypto from "node:crypto";
 import { execCmd, getHerdrBin, getAgentHandles, getRepoRootFromAmq } from "./config.mjs";
 import { scanAgentBriefs, getAgentBrief, saveAgentBrief } from "./briefs.mjs";
 import { ingestAttachment } from "./blobs.mjs";
-import { sendMaildirMessage, replyMaildirMessage, drainMaildir } from "./protocol.mjs";
+import { sendMaildirMessage, replyMaildirMessage, drainMaildir, ensureAgentMailbox, findMessageForRecipient, isSafeMailIdentifier, readMaildirMessageFile, writeBoundedFileAtomic } from "./protocol.mjs";
+import { renderLocalTemplate } from "./templates.mjs";
 
 const PALETTE = [
   "#1a73e8", "#ea4335", "#fbbc05", "#34a853", "#ff6d00",
@@ -856,58 +857,242 @@ export function loadAgentDirectory(amqRoot) {
   return list;
 }
 
+function readAgentProfile(profilePath) {
+  try {
+    const content = readMaildirMessageFile(profilePath, 1024 * 1024);
+    if (content === null) return null;
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAgentProfile(agentDir, profileData) {
+  const profilePath = path.join(agentDir, "profile.json");
+  writeBoundedFileAtomic(profilePath, JSON.stringify(profileData, null, 2), 1024 * 1024);
+}
+
+function normalizeText(value, fallback, maxLength) {
+  if (typeof value !== "string") return fallback;
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/`/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized ? normalized.slice(0, maxLength) : fallback;
+}
+
+function normalizeMultiline(value, fallback, maxLength) {
+  if (typeof value !== "string") return fallback;
+  const normalized = value
+    .replace(/\0/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .trim();
+  return normalized ? normalized.slice(0, maxLength) : fallback;
+}
+
+function withAgentRegistrationLock(agentDir, operation) {
+  const lockDir = path.join(agentDir, ".registration.lock");
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = Date.now() + 5000;
+
+  while (true) {
+    try {
+      fs.mkdirSync(lockDir);
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      try {
+        const stat = fs.statSync(lockDir);
+        if (Date.now() - stat.mtimeMs > 30000) fs.rmSync(lockDir, { recursive: true, force: true });
+      } catch {}
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for agent registration lock");
+      Atomics.wait(sleeper, 0, 0, 25);
+    }
+  }
+
+  try {
+    return operation();
+  } finally {
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+function defaultWelcomeBody(handle, name) {
+  return `Welcome to AMQ.\nAgent data: name=${JSON.stringify(name)}; handle=${JSON.stringify(handle)}.\nRun herdr-amq mail drain --me ${handle} --include-body to read messages. No reply is required.`.slice(0, 2048);
+}
+
+function selectProfileFields(profile) {
+  if (!profile || typeof profile !== "object") return {};
+  const selected = {};
+  for (const key of ["name", "role", "model", "emoji", "color", "worktree", "prompt", "createdAt", "registrationId"]) {
+    if (Object.prototype.hasOwnProperty.call(profile, key)) selected[key] = profile[key];
+  }
+  if (profile.welcome && typeof profile.welcome === "object" && !Array.isArray(profile.welcome)) {
+    selected.welcome = {};
+    for (const key of ["status", "messageId", "sentAt", "templatePath", "templateSha256", "source", "lastError"]) {
+      if (Object.prototype.hasOwnProperty.call(profile.welcome, key)) selected.welcome[key] = profile.welcome[key];
+    }
+  }
+  return selected;
+}
+
 /**
  * Register a new agent or update an existing agent profile with model configuration and prompt
  */
-export function registerAgent(amqRoot, { handle, name, role, model = "claude-3-7-sonnet", emoji, color, worktree, prompt, brief, syncDisk = true }) {
-  if (!amqRoot || !fs.existsSync(amqRoot)) {
-    return { ok: false, error: "Invalid AMQ root" };
-  }
+export function registerAgent(amqRoot, options = {}) {
+  if (!amqRoot || !fs.existsSync(amqRoot)) return { ok: false, error: "Invalid AMQ root" };
 
-  const safeHandle = (handle || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
-  if (!safeHandle) {
-    return { ok: false, error: "Invalid agent handle" };
-  }
+  const safeHandle = (options.handle || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+  if (!isSafeMailIdentifier(safeHandle, 128)) return { ok: false, error: "Invalid agent handle" };
 
-  const agentDir = path.join(amqRoot, "agents", safeHandle);
-  if (!fs.existsSync(agentDir)) {
-    // Create standard AMQ maildir structure
-    fs.mkdirSync(path.join(agentDir, "inbox", "new"), { recursive: true });
-    fs.mkdirSync(path.join(agentDir, "inbox", "cur"), { recursive: true });
-    fs.mkdirSync(path.join(agentDir, "inbox", "tmp"), { recursive: true });
-    fs.mkdirSync(path.join(agentDir, "outbox", "sent"), { recursive: true });
-    fs.mkdirSync(path.join(agentDir, "outbox", "tmp"), { recursive: true });
-    fs.mkdirSync(path.join(agentDir, "receipts"), { recursive: true });
+  try {
+    const agentDir = ensureAgentMailbox(amqRoot, safeHandle);
+    return withAgentRegistrationLock(agentDir, () => registerAgentLocked(amqRoot, agentDir, safeHandle, options));
+  } catch (error) {
+    return { ok: false, error: error.message };
   }
+}
 
-  const promptContent = prompt || brief || undefined;
+function registerAgentLocked(amqRoot, agentDir, safeHandle, options) {
+  const { name, role, model, emoji, color, worktree, prompt, brief, syncDisk = true } = options;
+  const profilePath = path.join(agentDir, "profile.json");
+  const existingProfile = readAgentProfile(profilePath);
+  const now = new Date().toISOString();
+  const registrationId = isSafeMailIdentifier(existingProfile?.registrationId, 128)
+    ? existingProfile.registrationId
+    : crypto.randomUUID();
+  const shouldDeliverWelcome = !existingProfile || existingProfile?.welcome?.status === "pending";
+  const welcomeMessageId = isSafeMailIdentifier(existingProfile?.welcome?.messageId)
+    ? existingProfile.welcome.messageId
+    : `welcome-${registrationId}`;
+  const defaultName = formatAgentTitle(safeHandle);
+  const defaultEmoji = safeHandle === "user" ? "👤" : safeHandle.slice(0, 1).toUpperCase();
+  const promptContent = normalizeMultiline(
+    prompt ?? brief,
+    normalizeMultiline(existingProfile?.prompt, "", 256 * 1024),
+    256 * 1024
+  );
   const profileData = {
+    ...selectProfileFields(existingProfile),
     handle: safeHandle,
-    name: name || formatAgentTitle(safeHandle),
-    role: role || "Autonomous Specialist",
-    model: model || "claude-3-7-sonnet",
-    emoji: emoji || (safeHandle === "user" ? "👤" : safeHandle.slice(0, 1).toUpperCase()),
-    color: color || getAgentColor(safeHandle),
-    worktree: worktree || null,
+    name: normalizeText(name, normalizeText(existingProfile?.name, defaultName, 120), 120),
+    role: normalizeText(role, normalizeText(existingProfile?.role, "Autonomous Specialist", 240), 240),
+    model: normalizeText(model, normalizeText(existingProfile?.model, "claude-3-7-sonnet", 200), 200),
+    emoji: normalizeText(emoji, normalizeText(existingProfile?.emoji, defaultEmoji, 16), 16),
+    color: normalizeText(color, normalizeText(existingProfile?.color, getAgentColor(safeHandle), 64), 64),
+    worktree: normalizeText(worktree, normalizeText(existingProfile?.worktree, "", 1024), 1024) || null,
     prompt: promptContent,
-    updatedAt: new Date().toISOString(),
+    createdAt: existingProfile?.createdAt || now,
+    registrationId,
+    updatedAt: now,
   };
 
-  fs.writeFileSync(
-    path.join(agentDir, "profile.json"),
-    JSON.stringify(profileData, null, 2),
-    "utf8"
-  );
+  if (shouldDeliverWelcome) {
+    profileData.welcome = {
+      status: "pending",
+      messageId: welcomeMessageId,
+      ...(typeof existingProfile?.welcome?.lastError === "string"
+        ? { lastError: normalizeText(existingProfile.welcome.lastError, "delivery pending", 512) }
+        : {}),
+    };
+  }
+  writeAgentProfile(agentDir, profileData);
 
-  // Sync to disk brief file if prompt is provided
   if (syncDisk && promptContent) {
     try {
       const repoRoot = getRepoRootFromAmq(amqRoot);
-      saveAgentBrief(repoRoot, safeHandle, { description: role, prompt: promptContent, model, role });
+      saveAgentBrief(repoRoot, safeHandle, {
+        description: profileData.role,
+        prompt: promptContent,
+        model: profileData.model,
+        role: profileData.role,
+      });
     } catch {}
   }
 
-  return { ok: true, agent: profileData };
+  if (!shouldDeliverWelcome) return { ok: true, agent: profileData, welcome: { ok: true, skipped: true } };
+
+  const rendered = renderLocalTemplate(
+    amqRoot,
+    "welcome",
+    {
+      agent: {
+        handle: safeHandle,
+        name: profileData.name,
+        role: profileData.role,
+        model: profileData.model,
+        emoji: profileData.emoji,
+        color: profileData.color,
+        worktree: profileData.worktree || "",
+      },
+    },
+    defaultWelcomeBody(safeHandle, profileData.name)
+  );
+
+  let deliveredMessage = findMessageForRecipient(amqRoot, safeHandle, welcomeMessageId);
+  let deliveryError = null;
+  if (!deliveredMessage) {
+    try {
+      sendMaildirMessage(amqRoot, {
+        id: welcomeMessageId,
+        from: "coordinator",
+        to: [safeHandle],
+        subject: `Welcome to AMQ, ${safeHandle}`,
+        thread: `welcome/${safeHandle}`,
+        body: rendered.text,
+        priority: "normal",
+        kind: "status",
+        labels: ["welcome", "registration"],
+        context: {
+          template: "welcome",
+          templateSource: rendered.source,
+          templateSha256: rendered.sha256,
+          registrationId,
+        },
+        created: now,
+      });
+      deliveredMessage = findMessageForRecipient(amqRoot, safeHandle, welcomeMessageId);
+    } catch (error) {
+      deliveryError = error;
+      deliveredMessage = findMessageForRecipient(amqRoot, safeHandle, welcomeMessageId);
+    }
+  }
+
+  if (!deliveredMessage) {
+    profileData.welcome = {
+      status: "pending",
+      messageId: welcomeMessageId,
+      lastError: normalizeText(
+        deliveryError?.message,
+        "Welcome delivery was not observed",
+        512
+      ),
+    };
+    writeAgentProfile(agentDir, profileData);
+    return {
+      ok: true,
+      agent: profileData,
+      welcome: { ok: false, pending: true, error: profileData.welcome.lastError },
+    };
+  }
+
+  profileData.welcome = {
+    status: "sent",
+    messageId: welcomeMessageId,
+    sentAt: deliveredMessage.header?.created || now,
+    templatePath: rendered.source === "template" && rendered.path ? path.relative(amqRoot, rendered.path) : null,
+    templateSha256: rendered.source === "template" ? rendered.sha256 : null,
+    source: rendered.source,
+  };
+  writeAgentProfile(agentDir, profileData);
+  return {
+    ok: true,
+    agent: profileData,
+    welcome: { ok: true, id: welcomeMessageId, sentAt: profileData.welcome.sentAt },
+  };
 }
 
 /**

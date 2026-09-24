@@ -11,9 +11,9 @@
  */
 
 import net from "node:net";
-import { execSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { getOpenCodeSessionModels, resolveRuntimeModel } from "./runtime-models.mjs";
 
 // ─── Socket Path Resolution ──────────────────────────────────────────────────
 
@@ -108,22 +108,76 @@ export async function getHerdrAgents() {
  */
 export async function getHerdrStatusMap() {
   const agents = await getHerdrAgents();
+  const observedAt = new Date().toISOString();
+  const sessionModels = getOpenCodeSessionModels(agents);
   const map = new Map();
-  for (const a of agents) {
-    const handle = a.name; // e.g. "ballistics", "testkit"
-    if (handle) {
-      map.set(handle, {
-        herdrStatus: a.agent_status || "unknown",
-        herdrPaneId: a.pane_id,
-        herdrWorkspaceId: a.workspace_id,
-        herdrTabId: a.tab_id,
-        herdrTitle: a.terminal_title_stripped || a.terminal_title,
-        interactiveReady: a.interactive_ready || false,
-        agentType: a.agent,
-      });
-    }
+  for (const agent of agents) {
+    const activity = mapHerdrAgentActivity(agent, observedAt, resolveRuntimeModel(agent, sessionModels));
+    if (activity) map.set(activity.herdrHandle, activity);
   }
   return map;
+}
+
+export function normalizeHerdrStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+  if (status === "online" || status === "active") return "idle";
+  if (["idle", "working", "blocked", "done", "error", "unknown"].includes(status)) return status;
+  return "unknown";
+}
+
+function herdrText(value) {
+  if (typeof value === "string") return value.trim();
+  if (!value || typeof value !== "object") return "";
+  for (const key of ["text", "label", "title", "value"]) {
+    if (typeof value[key] === "string" && value[key].trim()) return value[key].trim();
+  }
+  return "";
+}
+
+function herdrStateLabels(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result = {};
+  for (const [status, label] of Object.entries(value)) {
+    const text = herdrText(label);
+    if (text) result[status] = text;
+  }
+  return result;
+}
+
+function herdrTokens(value) {
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+  return values.map(herdrText).filter(Boolean);
+}
+
+export function mapHerdrAgentActivity(agent, observedAt = new Date().toISOString(), runtime = null) {
+  const handle = herdrText(agent?.name);
+  if (!handle) return null;
+  const status = normalizeHerdrStatus(agent?.agent_status);
+  const terminalTitle = herdrText(agent?.terminal_title_stripped) || herdrText(agent?.terminal_title);
+  const metadataTitle = herdrText(agent?.title);
+  const model = runtime || resolveRuntimeModel(agent);
+  return {
+    herdrHandle: handle,
+    herdrStatus: status,
+    herdrPaneId: herdrText(agent?.pane_id),
+    herdrWorkspaceId: herdrText(agent?.workspace_id),
+    herdrTabId: herdrText(agent?.tab_id),
+    herdrTerminalId: herdrText(agent?.terminal_id),
+    herdrTitle: terminalTitle || metadataTitle,
+    herdrTerminalTitle: terminalTitle,
+    herdrMetadataTitle: metadataTitle,
+    herdrStateLabels: herdrStateLabels(agent?.state_labels),
+    herdrTokens: herdrTokens(agent?.tokens),
+    herdrStateChangeSeq: Number.isFinite(agent?.state_change_seq) ? agent.state_change_seq : null,
+    interactiveReady: Boolean(agent?.interactive_ready),
+    herdrFocused: Boolean(agent?.focused),
+    herdrLaunchPending: Boolean(agent?.launch_pending),
+    agentType: herdrText(agent?.agent),
+    herdrSessionId: model.sessionId || null,
+    herdrModel: model.model || null,
+    herdrModelSource: model.source || null,
+    herdrObservedAt: observedAt,
+  };
 }
 
 // ─── Long-lived event subscription ──────────────────────────────────────────

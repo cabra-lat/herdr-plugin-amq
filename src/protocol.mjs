@@ -38,6 +38,201 @@ export function generateMessageId(date = new Date(), pid = process.pid) {
   return `${iso}_pid${pid}_${rand}`;
 }
 
+export function isSafeMailIdentifier(value, maxLength = 200) {
+  if (typeof value !== "string") return false;
+  if (!value || value.length > maxLength || value === "." || value === "..") return false;
+  return !value.includes("/") && !value.includes("\\") && !value.includes("\0");
+}
+
+function resolveAgentDirectory(amqRoot, handle, create = false) {
+  if (!amqRoot || !fs.existsSync(amqRoot) || !isSafeMailIdentifier(handle, 128)) {
+    throw new Error("Invalid AMQ agent path");
+  }
+
+  const root = fs.realpathSync(amqRoot);
+  const agentsDir = path.join(root, "agents");
+  if (create) fs.mkdirSync(agentsDir, { recursive: true });
+  if (!fs.existsSync(agentsDir)) return null;
+
+  const agentsStat = fs.lstatSync(agentsDir);
+  if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
+    throw new Error("Invalid AMQ agents directory");
+  }
+
+  const agentDir = path.join(agentsDir, handle);
+  if (create && !fs.existsSync(agentDir)) ensureDirectoryExists(agentDir);
+  if (!fs.existsSync(agentDir)) return null;
+
+  const agentStat = fs.lstatSync(agentDir);
+  if (!agentStat.isDirectory() || agentStat.isSymbolicLink()) {
+    throw new Error("Invalid AMQ agent directory");
+  }
+
+  const realAgentsDir = fs.realpathSync(agentsDir);
+  const realAgentDir = fs.realpathSync(agentDir);
+  if (path.dirname(realAgentDir) !== realAgentsDir) {
+    throw new Error("AMQ agent directory escaped the queue root");
+  }
+  return realAgentDir;
+}
+
+const MAX_MAILDIR_FILE_BYTES = 8 * 1024 * 1024;
+
+function openNoFollow(filePath, flags, mode) {
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  return fs.openSync(filePath, flags | noFollow, mode);
+}
+
+function descriptorPath(fd) {
+  const base = process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd";
+  return path.join(base, String(fd));
+}
+
+function openRelativeNoFollow(dirFd, name, flags, mode) {
+  if (!name || path.basename(name) !== name) throw new Error("Invalid relative Maildir name");
+  return openNoFollow(path.join(descriptorPath(dirFd), name), flags, mode);
+}
+
+function openDirectorySecure(dirPath) {
+  const resolved = path.resolve(dirPath);
+  const parsed = path.parse(resolved);
+  const segments = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  const directoryFlag = fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0);
+  let current = openNoFollow(parsed.root, directoryFlag, undefined);
+  try {
+    for (const segment of segments) {
+      const next = openRelativeNoFollow(current, segment, directoryFlag);
+      fs.closeSync(current);
+      current = next;
+    }
+    return current;
+  } catch (error) {
+    fs.closeSync(current);
+    throw error;
+  }
+}
+
+function writeFileAtomicBetweenDirectories(fileName, tempDirFd, targetDirFd, content, maxBytes = MAX_MAILDIR_FILE_BYTES) {
+  if (Buffer.byteLength(content, "utf8") > maxBytes) {
+    throw new Error("Message exceeds the Maildir size limit");
+  }
+
+  const tempName = `.amq-${process.pid}-${crypto.randomBytes(8).toString("hex")}.tmp`;
+  let fd;
+  try {
+    fd = openRelativeNoFollow(
+      tempDirFd,
+      tempName,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+      0o600
+    );
+    fs.writeFileSync(fd, content, "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(
+      path.join(descriptorPath(tempDirFd), tempName),
+      path.join(descriptorPath(targetDirFd), fileName)
+    );
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    try { fs.unlinkSync(path.join(descriptorPath(tempDirFd), tempName)); } catch {}
+  }
+}
+
+export function writeBoundedFileAtomic(filePath, content, maxBytes = MAX_MAILDIR_FILE_BYTES) {
+  const dirFd = openDirectorySecure(path.dirname(filePath));
+  try {
+    writeFileAtomicBetweenDirectories(path.basename(filePath), dirFd, dirFd, content, maxBytes);
+  } finally {
+    fs.closeSync(dirFd);
+  }
+}
+
+export function listMaildirMessageFiles(dirPath) {
+  const dirFd = openDirectorySecure(dirPath);
+  try {
+    return fs.readdirSync(descriptorPath(dirFd));
+  } finally {
+    fs.closeSync(dirFd);
+  }
+}
+
+export function moveMaildirMessage(amqRoot, handle, fromFolder, toFolder, fileName) {
+  if (!isSafeMailIdentifier(handle, 128) || !isSafeMailIdentifier(fileName)) {
+    throw new Error("Invalid Maildir message path");
+  }
+  const agentDir = resolveAgentDirectory(amqRoot, handle, false);
+  if (!agentDir) return null;
+  const fromDir = ensureContainedDirectory(agentDir, ["inbox", fromFolder]);
+  const toDir = ensureContainedDirectory(agentDir, ["inbox", toFolder]);
+  const fromFd = openDirectorySecure(fromDir);
+  let toFd;
+  try {
+    toFd = openDirectorySecure(toDir);
+    fs.renameSync(
+      path.join(descriptorPath(fromFd), fileName),
+      path.join(descriptorPath(toFd), fileName)
+    );
+    return path.join(toDir, fileName);
+  } finally {
+    fs.closeSync(fromFd);
+    if (toFd !== undefined) fs.closeSync(toFd);
+  }
+}
+
+export function readMaildirMessageFile(filePath, maxBytes = MAX_MAILDIR_FILE_BYTES) {
+  const dirFd = openDirectorySecure(path.dirname(filePath));
+  let fd;
+  try {
+    fd = openRelativeNoFollow(
+      dirFd,
+      path.basename(filePath),
+      fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0)
+    );
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) return null;
+
+    const chunks = [];
+    let total = 0;
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    while (true) {
+      const bytes = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytes === 0) break;
+      total += bytes;
+      if (total > maxBytes) return null;
+      chunks.push(Buffer.from(buffer.subarray(0, bytes)));
+    }
+    return Buffer.concat(chunks, total).toString("utf8");
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    fs.closeSync(dirFd);
+  }
+}
+
+function ensureDirectoryExists(dir) {
+  try {
+    fs.mkdirSync(dir);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+}
+
+function ensureContainedDirectory(rootDir, segments) {
+  let current = rootDir;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    if (!fs.existsSync(current)) ensureDirectoryExists(current);
+    const stat = fs.lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Invalid AMQ mailbox directory");
+    const real = fs.realpathSync(current);
+    if (real !== current || !real.startsWith(`${rootDir}${path.sep}`)) {
+      throw new Error("AMQ mailbox directory escaped the queue root");
+    }
+  }
+  return current;
+}
+
 /**
  * Determine a canonical p2p or group thread ID.
  * For 2 participants, sorts lexicographically: p2p/<agentA>__<agentB>
@@ -140,20 +335,15 @@ export function parseMessage(content = "") {
  * - outbox/sent
  */
 export function ensureAgentMailbox(amqRoot, handle) {
-  const agentDir = path.join(amqRoot, "agents", handle);
-  const dirs = [
-    path.join(agentDir, "inbox", "tmp"),
-    path.join(agentDir, "inbox", "new"),
-    path.join(agentDir, "inbox", "cur"),
-    path.join(agentDir, "outbox", "sent"),
-  ];
-
-  for (const d of dirs) {
-    if (!fs.existsSync(d)) {
-      fs.mkdirSync(d, { recursive: true });
-    }
-  }
-
+  const agentDir = resolveAgentDirectory(amqRoot, handle, true);
+  ensureContainedDirectory(agentDir, ["inbox"]);
+  ensureContainedDirectory(agentDir, ["inbox", "tmp"]);
+  ensureContainedDirectory(agentDir, ["inbox", "new"]);
+  ensureContainedDirectory(agentDir, ["inbox", "cur"]);
+  ensureContainedDirectory(agentDir, ["outbox"]);
+  ensureContainedDirectory(agentDir, ["outbox", "tmp"]);
+  ensureContainedDirectory(agentDir, ["outbox", "sent"]);
+  ensureContainedDirectory(agentDir, ["receipts"]);
   return agentDir;
 }
 
@@ -169,10 +359,15 @@ export function sendMaildirMessage(amqRoot, options = {}) {
   const { from, to, subject, body, priority, kind, thread, refs, labels, context, attachments = [] } = options;
 
   if (!from) throw new Error("Sender 'from' is required");
+  if (!isSafeMailIdentifier(from, 128)) throw new Error("Invalid sender handle");
   const recipients = Array.isArray(to) ? to : (to ? [to] : []);
   if (!recipients.length) throw new Error("At least one recipient in 'to' is required");
+  if (!recipients.every((recipient) => isSafeMailIdentifier(recipient, 128))) {
+    throw new Error("Invalid recipient handle");
+  }
 
   const msgId = options.id || generateMessageId();
+  if (!isSafeMailIdentifier(msgId)) throw new Error("Invalid message id");
   const created = options.created || new Date().toISOString();
 
   // Process attachments: auto-freeze ephemeral files into CAS blobstore if needed
@@ -203,21 +398,29 @@ export function sendMaildirMessage(amqRoot, options = {}) {
     created,
   });
 
-  // Ensure sender mailbox exists & record in outbox/sent
-  ensureAgentMailbox(amqRoot, from);
-  const senderSentDir = path.join(amqRoot, "agents", from, "outbox", "sent");
-  fs.writeFileSync(path.join(senderSentDir, `${msgId}.md`), fileText, "utf8");
+  if (Buffer.byteLength(fileText, "utf8") > MAX_MAILDIR_FILE_BYTES) {
+    throw new Error("Message exceeds the Maildir size limit");
+  }
 
-  // Deliver to each recipient using atomic Maildir tmp -> new rename
   for (const recipient of recipients) {
-    ensureAgentMailbox(amqRoot, recipient);
-    const tmpPath = path.join(amqRoot, "agents", recipient, "inbox", "tmp", `${msgId}.md`);
-    const newPath = path.join(amqRoot, "agents", recipient, "inbox", "new", `${msgId}.md`);
+    const recipientDir = ensureAgentMailbox(amqRoot, recipient);
+    const tmpFd = openDirectorySecure(path.join(recipientDir, "inbox", "tmp"));
+    let newFd;
+    try {
+      newFd = openDirectorySecure(path.join(recipientDir, "inbox", "new"));
+      writeFileAtomicBetweenDirectories(`${msgId}.md`, tmpFd, newFd, fileText);
+    } finally {
+      fs.closeSync(tmpFd);
+      if (newFd !== undefined) fs.closeSync(newFd);
+    }
+  }
 
-    // Write to tmp
-    fs.writeFileSync(tmpPath, fileText, "utf8");
-    // Atomic move to new (POSIX atomic rename guarantee)
-    fs.renameSync(tmpPath, newPath);
+  const senderDir = ensureAgentMailbox(amqRoot, from);
+  const sentFd = openDirectorySecure(path.join(senderDir, "outbox", "sent"));
+  try {
+    writeFileAtomicBetweenDirectories(`${msgId}.md`, sentFd, sentFd, fileText);
+  } finally {
+    fs.closeSync(sentFd);
   }
 
   return {
@@ -236,35 +439,85 @@ export function sendMaildirMessage(amqRoot, options = {}) {
 /**
  * Locate any message across all agent maildirs by ID.
  */
+export function markMaildirMessageRead(amqRoot, handle, msgId) {
+  if (!amqRoot || !isSafeMailIdentifier(handle, 128) || !isSafeMailIdentifier(msgId)) {
+    return { ok: false, error: "Invalid mailbox or message identifier" };
+  }
+
+  try {
+    const agentDir = resolveAgentDirectory(amqRoot, handle, false);
+    if (!agentDir) return { ok: false, error: "Mailbox not found" };
+    const newPath = path.join(agentDir, "inbox", "new", `${msgId}.md`);
+    const curPath = path.join(agentDir, "inbox", "cur", `${msgId}.md`);
+    if (!fs.existsSync(newPath)) {
+      if (fs.existsSync(curPath)) return { ok: true, alreadyRead: true, id: msgId, filePath: curPath };
+      return { ok: false, error: "Message not found" };
+    }
+
+    const content = readMaildirMessageFile(newPath);
+    if (content === null) return { ok: false, error: "Message could not be read" };
+    const { header } = parseMessage(content);
+    const recipients = Array.isArray(header.to) ? header.to : [header.to];
+    if (header.id !== msgId || !recipients.includes(handle)) {
+      return { ok: false, error: "Message is not addressed to this mailbox" };
+    }
+
+    const filePath = moveMaildirMessage(amqRoot, handle, "new", "cur", `${msgId}.md`);
+    if (!filePath) return { ok: false, error: "Message could not be marked read" };
+    return { ok: true, alreadyRead: false, id: msgId, filePath };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+export function findMessageForRecipient(amqRoot, recipient, msgId) {
+  if (!amqRoot || !isSafeMailIdentifier(recipient, 128) || !isSafeMailIdentifier(msgId)) return null;
+
+  try {
+    const agentDir = resolveAgentDirectory(amqRoot, recipient, false);
+    if (!agentDir) return null;
+
+    for (const dir of [path.join(agentDir, "inbox", "new"), path.join(agentDir, "inbox", "cur")]) {
+      const filePath = path.join(dir, `${msgId}.md`);
+      if (!fs.existsSync(filePath)) continue;
+      const content = readMaildirMessageFile(filePath);
+      if (content === null) continue;
+      const { header, body } = parseMessage(content);
+      const recipients = Array.isArray(header.to) ? header.to : [header.to];
+      if (header.id === msgId && recipients.includes(recipient)) {
+        return { id: msgId, header, body, filePath, foundIn: recipient };
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
 export function findMessageById(amqRoot, msgId) {
-  if (!amqRoot || !msgId) return null;
+  if (!amqRoot || !isSafeMailIdentifier(msgId)) return null;
   const agentsDir = path.join(amqRoot, "agents");
   if (!fs.existsSync(agentsDir)) return null;
 
-  const agentFolders = fs.readdirSync(agentsDir);
-  for (const agent of agentFolders) {
-    const candidateDirs = [
-      path.join(agentsDir, agent, "inbox", "new"),
-      path.join(agentsDir, agent, "inbox", "cur"),
-      path.join(agentsDir, agent, "outbox", "sent"),
-    ];
+  for (const agent of fs.readdirSync(agentsDir)) {
+    if (!isSafeMailIdentifier(agent, 128)) continue;
+    try {
+      const agentDir = resolveAgentDirectory(amqRoot, agent, false);
+      if (!agentDir) continue;
+      const candidateDirs = [
+        path.join(agentDir, "inbox", "new"),
+        path.join(agentDir, "inbox", "cur"),
+        path.join(agentDir, "outbox", "sent"),
+      ];
 
-    for (const dir of candidateDirs) {
-      const filePath = path.join(dir, `${msgId}.md`);
-      if (fs.existsSync(filePath)) {
-        try {
-          const content = fs.readFileSync(filePath, "utf8");
-          const { header, body } = parseMessage(content);
-          return {
-            id: msgId,
-            header,
-            body,
-            filePath,
-            foundIn: agent,
-          };
-        } catch {}
+      for (const dir of candidateDirs) {
+        const filePath = path.join(dir, `${msgId}.md`);
+        if (!fs.existsSync(filePath)) continue;
+        const content = readMaildirMessageFile(filePath);
+      if (content === null) continue;
+        const { header, body } = parseMessage(content);
+        if (header.id === msgId) return { id: msgId, header, body, filePath, foundIn: agent };
       }
-    }
+    } catch {}
   }
 
   return null;
@@ -316,29 +569,24 @@ export function replyMaildirMessage(amqRoot, options = {}) {
  * Drain all new messages for an agent (atomic Maildir new/ -> cur/ transition).
  */
 export function drainMaildir(amqRoot, handle) {
-  if (!amqRoot || !handle) return [];
-  const newDir = path.join(amqRoot, "agents", handle, "inbox", "new");
-  const curDir = path.join(amqRoot, "agents", handle, "inbox", "cur");
-
-  if (!fs.existsSync(newDir)) return [];
-  if (!fs.existsSync(curDir)) fs.mkdirSync(curDir, { recursive: true });
-
-  const files = fs.readdirSync(newDir).filter((f) => f.endsWith(".md"));
+  if (!amqRoot || !isSafeMailIdentifier(handle, 128)) return [];
+  const agentDir = resolveAgentDirectory(amqRoot, handle, true);
+  const newDir = ensureContainedDirectory(agentDir, ["inbox", "new"]);
+  const files = listMaildirMessageFiles(newDir).filter((file) => file.endsWith(".md"));
   const drained = [];
 
-  for (const f of files) {
-    const fromPath = path.join(newDir, f);
-    const toPath = path.join(curDir, f);
+  for (const file of files) {
     try {
-      const content = fs.readFileSync(fromPath, "utf8");
+      const content = readMaildirMessageFile(path.join(newDir, file));
+      if (content === null) continue;
       const { header, body } = parseMessage(content);
-      // Atomic move to cur
-      fs.renameSync(fromPath, toPath);
+      const filePath = moveMaildirMessage(amqRoot, handle, "new", "cur", file);
+      if (!filePath) continue;
       drained.push({
-        id: f.replace(/\.md$/, ""),
+        id: file.replace(/\.md$/, ""),
         header,
         body,
-        filePath: toPath,
+        filePath,
       });
     } catch {}
   }

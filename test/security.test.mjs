@@ -11,9 +11,15 @@ describe("Red-Team Security Compliance & Hardening Suite", () => {
   let server;
   let baseUrl;
   let port;
+  let oldStateDir;
+  let oldSocketPath;
 
   before(async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sec-test-"));
+    oldStateDir = process.env.HERDR_PLUGIN_STATE_DIR;
+    process.env.HERDR_PLUGIN_STATE_DIR = path.join(tempRoot, "state");
+    oldSocketPath = process.env.HERDR_SOCKET_PATH;
+    process.env.HERDR_SOCKET_PATH = path.join(tempRoot, "missing-herdr.sock");
     const agentsDir = path.join(tempRoot, "agents");
     fs.mkdirSync(path.join(agentsDir, "sec-agent", "inbox", "new"), { recursive: true });
 
@@ -31,6 +37,10 @@ describe("Red-Team Security Compliance & Hardening Suite", () => {
 
   after(() => {
     if (server) server.close();
+    if (oldStateDir !== undefined) process.env.HERDR_PLUGIN_STATE_DIR = oldStateDir;
+    else delete process.env.HERDR_PLUGIN_STATE_DIR;
+    if (oldSocketPath !== undefined) process.env.HERDR_SOCKET_PATH = oldSocketPath;
+    else delete process.env.HERDR_SOCKET_PATH;
     if (tempRoot && fs.existsSync(tempRoot)) {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

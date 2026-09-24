@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findAmqRoot, getAgentHandles } from "./config.mjs";
+import { markMaildirMessageRead } from "./protocol.mjs";
 import {
   loadAllMessages,
   loadThreads,
@@ -75,6 +76,7 @@ export function startWebServer({
   // Map<handle, { herdrStatus, herdrPaneId, herdrWorkspaceId, ... }>
   let herdrStatusCache = new Map();
   let herdrSubscription = null;
+  let herdrRefreshDebounce = null;
 
   function broadcastSSE(payload) {
     const msg = `data: ${JSON.stringify(payload)}\n\n`;
@@ -89,6 +91,15 @@ export function startWebServer({
     } catch {}
   }
 
+  function scheduleHerdrRefresh(reason = "event") {
+    if (isClosing) return;
+    clearTimeout(herdrRefreshDebounce);
+    herdrRefreshDebounce = setTimeout(async () => {
+      await refreshHerdrCache();
+      broadcastSSE({ type: "herdr_agents_refresh", reason, at: new Date().toISOString() });
+    }, 80);
+  }
+
   let isClosing = false;
   let herdrReconnectTimeout = null;
 
@@ -99,42 +110,22 @@ export function startWebServer({
     }
     herdrSubscription = subscribeHerdrEvents({
       onConnect: () => {
-        // Refresh snapshot on connect so our cache is up to date
-        refreshHerdrCache();
+        scheduleHerdrRefresh("connected");
       },
       onEvent: (event) => {
-        const t = event.type;
-        // Agent state changed — update cache and notify SSE clients
-        if (t === "agent.state_changed" || t === "agent.updated") {
-          const handle = event.name;
-          if (handle) {
-            const existing = herdrStatusCache.get(handle) || {};
-            herdrStatusCache.set(handle, {
-              ...existing,
-              herdrStatus: event.agent_status || existing.herdrStatus,
-              herdrPaneId: event.pane_id || existing.herdrPaneId,
-              herdrWorkspaceId: event.workspace_id || existing.herdrWorkspaceId,
-              herdrTabId: event.tab_id || existing.herdrTabId,
-              herdrTitle: event.terminal_title_stripped || event.terminal_title || existing.herdrTitle,
-              interactiveReady: event.interactive_ready ?? existing.interactiveReady,
-            });
-            broadcastSSE({
-              type: "herdr_agent_update",
-              handle,
-              herdrStatus: event.agent_status,
-              paneId: event.pane_id,
-              at: new Date().toISOString(),
-            });
-          }
-        }
-        // Workspace/pane lifecycle — do a full agent refresh
-        if (t === "workspace.created" || t === "workspace.closed" ||
-            t === "pane.created" || t === "pane.closed") {
-          refreshHerdrCache();
+        const type = String(event?.type || "");
+        if (
+          type.startsWith("pane.") ||
+          type.startsWith("agent.") ||
+          type === "workspace.created" ||
+          type === "workspace.closed"
+        ) {
+          scheduleHerdrRefresh(type);
         }
       },
       onDisconnect: () => {
-        // Reconnect after 5s if Herdr socket drops
+        herdrStatusCache = new Map();
+        broadcastSSE({ type: "herdr_agents_refresh", reason: "disconnected", at: new Date().toISOString() });
         if (!isClosing) {
           herdrReconnectTimeout = setTimeout(startHerdrSubscription, 5000);
         }
@@ -285,9 +276,25 @@ export function startWebServer({
           herdrWorkspaceId: h.herdrWorkspaceId,
           herdrTabId: h.herdrTabId,
           herdrTitle: h.herdrTitle,
-          interactiveReady: h.interactiveReady,
-          agentType: h.agentType,
-          // Promote herdrStatus as the primary status when available
+          herdrObservedAt: h.herdrObservedAt,
+           interactiveReady: h.interactiveReady,
+           agentType: h.agentType,
+           runtimeModel: h.herdrModel || null,
+           modelSource: h.herdrModelSource || null,
+           herdrActivity: {
+            status: h.herdrStatus,
+            title: h.herdrMetadataTitle || h.herdrTitle,
+            terminalTitle: h.herdrTerminalTitle,
+            metadataTitle: h.herdrMetadataTitle,
+            stateLabels: h.herdrStateLabels || {},
+            tokens: h.herdrTokens || [],
+            stateChangeSeq: h.herdrStateChangeSeq,
+            observedAt: h.herdrObservedAt,
+             focused: h.herdrFocused,
+             launchPending: h.herdrLaunchPending,
+             model: h.herdrModel || null,
+             modelSource: h.herdrModelSource || null,
+           },
           status: h.herdrStatus !== "unknown" ? h.herdrStatus : (a.status || "offline"),
         };
       });
@@ -306,6 +313,11 @@ export function startWebServer({
 
     if (pathname === "/api/agents" && req.method === "POST") {
       const body = await parseJsonBody(req);
+      if (body.__error) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: body.__error }));
+        return;
+      }
       const repoRoot = path.resolve(path.dirname(amqRoot));
       // Workspaces are the default under the hood: automatically isolate agent in .worktrees/<handle>
       const worktreeResult = ensureAgentWorktree(repoRoot, body.handle, body.branch);
@@ -314,7 +326,7 @@ export function startWebServer({
         worktree: worktreeResult?.ok ? worktreeResult.path : body.worktree,
       });
       // Refresh Herdr cache after registration
-      refreshHerdrCache().catch(() => {});
+      scheduleHerdrRefresh("agent_registered");
       res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ...result, worktreeResult }));
       return;
@@ -458,6 +470,24 @@ export function startWebServer({
       return;
     }
 
+
+    if (pathname.startsWith("/api/messages/") && pathname.endsWith("/read") && req.method === "POST") {
+      const messageId = decodeURIComponent(pathname.slice("/api/messages/".length, -"/read".length));
+      const account = url.searchParams.get("account") || "user";
+      if (account === "all" || !/^[A-Za-z0-9_-]{1,128}$/.test(account)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "A concrete mailbox account is required" }));
+        return;
+      }
+      const result = markMaildirMessageRead(amqRoot, account, messageId);
+      if (result.ok) {
+        invalidateMessageCache();
+        broadcastSSE({ type: "mail_update", reason: "message_read", account, messageId, at: new Date().toISOString() });
+      }
+      res.writeHead(result.ok ? 200 : 404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+      return;
+    }
 
     if (pathname === "/api/messages" && req.method === "GET") {
       const account = url.searchParams.get("account") || "all";
@@ -718,8 +748,11 @@ export function startWebServer({
           ? "text/css; charset=utf-8"
           : "application/javascript; charset=utf-8";
 
-      res.writeHead(200, { "Content-Type": mime });
-      fs.createReadStream(filePath).pipe(res);
+    res.writeHead(200, {
+      "Content-Type": mime,
+      "Cache-Control": "no-store, max-age=0",
+    });
+    fs.createReadStream(filePath).pipe(res);
     } else {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("File not found");
@@ -779,6 +812,7 @@ export function startWebServer({
       server6 = null;
     }
     if (herdrReconnectTimeout) clearTimeout(herdrReconnectTimeout);
+    if (herdrRefreshDebounce) clearTimeout(herdrRefreshDebounce);
     if (watchDebounce) clearTimeout(watchDebounce);
     if (herdrSubscription) {
       try { herdrSubscription.close(); } catch {}
@@ -801,10 +835,20 @@ export function startWebServer({
 function parseJsonBody(req) {
   return new Promise((resolve) => {
     let acc = "";
+    let tooLarge = false;
     req.on("data", (chunk) => {
+      if (tooLarge) return;
       acc += chunk;
+      if (Buffer.byteLength(acc) > 1024 * 1024) {
+        acc = "";
+        tooLarge = true;
+      }
     });
     req.on("end", () => {
+      if (tooLarge) {
+        resolve({ __error: "request body too large" });
+        return;
+      }
       try {
         resolve(JSON.parse(acc));
       } catch {

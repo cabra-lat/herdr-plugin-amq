@@ -2,7 +2,7 @@
 (function () {
   const state = {
     activeAccount: "all",
-    activePersona: localStorage.getItem("agmail_persona") || "user",
+    activePersona: "user",
     activeFolder: "inbox",
     activeCategory: "all",
     viewMode: "threads", // "threads" (Conversation view) or "flat" (Individual transmissions)
@@ -21,15 +21,26 @@
     status: {},
     contextTarget: null,
     currentView: "mail", // "mail" or "board"
+    readingLayout: document.documentElement.dataset.readingLayout === "full" ? "full" : "split",
+    themePreference: ["system", "light", "dark"].includes(document.documentElement.dataset.themePreference) ? document.documentElement.dataset.themePreference : "system",
+    detailOpen: false,
     board: null,
     boardFilterAgent: "all",
     boardSearchQuery: "",
     selectedTaskId: null,
+    activeAgentHandle: null,
   };
+
+  function getActiveSender(selected = "") {
+    if (state.activeAccount === "all") return "user";
+    return selected || state.activeAccount || state.activePersona || "user";
+  }
 
   // DOM Elements
   const mailListEl = document.getElementById("mail-list");
+  const mailListViewEl = document.getElementById("mail-list-view");
   const mailDetailViewEl = document.getElementById("mail-detail-view");
+  const contentSplitterEl = document.getElementById("splitter-view");
   const searchInputEl = document.getElementById("search-input");
   const clearSearchBtn = document.getElementById("clear-search");
   const headerSearchContainer = document.getElementById("header-search-container");
@@ -52,6 +63,14 @@
   const sidebarBackdrop = document.getElementById("sidebar-backdrop");
   const sidebarEl = document.getElementById("sidebar");
 
+  const openSettingsBtn = document.getElementById("open-settings-btn");
+  const settingsBackdrop = document.getElementById("settings-backdrop");
+  const settingsForm = document.getElementById("settings-form");
+  const closeSettingsBtn = document.getElementById("close-settings-btn");
+  const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
+  const readingLayoutInputs = [...document.querySelectorAll('input[name="reading-layout"]')];
+  const themeInputs = [...document.querySelectorAll('input[name="theme"]')];
+
   // Account Menu Elements
   const userProfileBtn = document.getElementById("user-profile-btn");
   const accountDropdown = document.getElementById("account-dropdown");
@@ -60,7 +79,25 @@
   const currentUserAvatar = document.getElementById("current-user-avatar");
   const dropdownLargeAvatar = document.getElementById("dropdown-large-avatar");
   const dropdownUserTitle = document.getElementById("dropdown-user-title");
+  const dropdownUserRole = document.getElementById("dropdown-user-role");
   const dropdownUserEmail = document.getElementById("dropdown-user-email");
+
+  const agentActivityDialog = document.getElementById("agent-activity-dialog");
+  const closeAgentActivityBtn = document.getElementById("close-agent-activity-btn");
+  const agentActivityAvatar = document.getElementById("agent-activity-avatar");
+  const agentActivityName = document.getElementById("agent-activity-name");
+  const agentActivityHandle = document.getElementById("agent-activity-handle");
+  const agentActivityRole = document.getElementById("agent-activity-role");
+  const agentActivityStatus = document.getElementById("agent-activity-status");
+  const agentActivityHeadline = document.getElementById("agent-activity-headline");
+  const agentActivityTask = document.getElementById("agent-activity-task");
+  const agentActivityTaskStatus = document.getElementById("agent-activity-task-status");
+  const agentActivityModel = document.getElementById("agent-activity-model");
+  const agentActivityUnread = document.getElementById("agent-activity-unread");
+  const agentActivityPane = document.getElementById("agent-activity-pane");
+  const agentActivityObserved = document.getElementById("agent-activity-observed");
+  const viewAgentInboxBtn = document.getElementById("view-agent-inbox-btn");
+  const viewAgentTaskBtn = document.getElementById("view-agent-task-btn");
 
   // Context Menu Elements
   const chatContextMenu = document.getElementById("chat-context-menu");
@@ -159,6 +196,7 @@
   const newTaskForm = document.getElementById("new-task-form");
   const taskTitleInput = document.getElementById("task-title-input");
   const taskOwnerSelect = document.getElementById("task-owner-select");
+  const taskOwnerTip = document.getElementById("task-owner-tip");
   const taskStatusSelect = document.getElementById("task-status-select");
   const taskDescInput = document.getElementById("task-desc-input");
 
@@ -194,6 +232,95 @@
   const sheetDispatchBody = document.getElementById("sheet-dispatch-body");
   const sheetDispatchThreadPreview = document.getElementById("sheet-dispatch-thread-preview");
   const sheetDispatchSendBtn = document.getElementById("sheet-dispatch-send-btn");
+
+  const systemThemeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+  let settingsReturnFocus = null;
+
+  function persistPreference(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {}
+  }
+
+  function resolveTheme(preference) {
+    return preference === "dark" || (preference === "system" && systemThemeMedia.matches) ? "dark" : "light";
+  }
+
+  function applyThemePreference(preference, persist = true) {
+    const normalized = ["system", "light", "dark"].includes(preference) ? preference : "system";
+    state.themePreference = normalized;
+    document.documentElement.dataset.themePreference = normalized;
+    document.documentElement.dataset.theme = resolveTheme(normalized);
+    if (persist) persistPreference("agmail_theme", normalized);
+  }
+
+  function applyReadingLayout(layout, persist = true) {
+    const normalized = layout === "full" ? "full" : "split";
+    state.readingLayout = normalized;
+    document.documentElement.dataset.readingLayout = normalized;
+    contentSplitterEl.dataset.readingLayout = normalized;
+    if (persist) persistPreference("agmail_reading_layout", normalized);
+  }
+
+  function syncSettingsForm() {
+    readingLayoutInputs.forEach((input) => {
+      input.checked = input.value === state.readingLayout;
+    });
+    themeInputs.forEach((input) => {
+      input.checked = input.value === state.themePreference;
+    });
+  }
+
+  function openSettings() {
+    settingsReturnFocus = document.activeElement;
+    syncSettingsForm();
+    settingsBackdrop.classList.remove("hidden");
+    requestAnimationFrame(() => closeSettingsBtn.focus());
+  }
+
+  function closeSettings() {
+    if (settingsBackdrop.classList.contains("hidden")) return;
+    settingsBackdrop.classList.add("hidden");
+    if (settingsReturnFocus && settingsReturnFocus.isConnected) settingsReturnFocus.focus();
+    settingsReturnFocus = null;
+  }
+
+  openSettingsBtn.addEventListener("click", openSettings);
+  closeSettingsBtn.addEventListener("click", closeSettings);
+  cancelSettingsBtn.addEventListener("click", closeSettings);
+  settingsBackdrop.addEventListener("click", (event) => {
+    if (event.target === settingsBackdrop) closeSettings();
+  });
+  settingsForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const readingLayout = readingLayoutInputs.find((input) => input.checked)?.value || "split";
+    const theme = themeInputs.find((input) => input.checked)?.value || "system";
+    applyReadingLayout(readingLayout);
+    applyThemePreference(theme);
+    closeSettings();
+  });
+  settingsBackdrop.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSettings();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...settingsBackdrop.querySelectorAll('button:not([disabled]), input:not([disabled])')];
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  systemThemeMedia.addEventListener("change", () => {
+    if (state.themePreference === "system") applyThemePreference("system", false);
+  });
 
 
   // ─── Data Fetching ──────────────────────────────────────────────────────────
@@ -259,7 +386,7 @@
   async function fetchData() {
     try {
       const endpoint = state.viewMode === "threads" ? "/api/threads" : "/api/messages";
-      const currentPersona = state.activeAccount === "all" ? (state.activePersona || "user") : state.activeAccount;
+      const currentPersona = getActiveSender();
       const params = new URLSearchParams({
         account: state.activeAccount,
         persona: currentPersona,
@@ -292,32 +419,39 @@
   // ─── Google Account Dropdown ────────────────────────────────────────────────
 
   function renderAccountDropdown(agents) {
+    const allActive = state.activeAccount === "all";
     let html = `
-      <button class="account-item-btn ${state.activeAccount === "all" ? "active" : ""}" data-handle="all">
-        <div class="account-item-left">
-          <div class="item-avatar" style="background:#1a73e8;color:#fff;">👑</div>
-          <div>
-            <strong>God Mode (All Accounts)</strong>
-            <div style="font-size:11px;color:#5f6368;">View all swarm messages</div>
-          </div>
-        </div>
+      <button class="account-item-btn ${allActive ? "active" : ""}" data-handle="all" aria-current="${allActive ? "true" : "false"}">
+        <span class="account-item-left">
+          <span class="item-avatar" style="background:var(--primary-blue);color:#fff;">👑</span>
+          <span class="account-item-copy">
+            <strong class="account-item-name">God Mode</strong>
+            <span class="account-item-role">All accounts · sending as user</span>
+            <span class="account-item-address">amq://all-agents</span>
+          </span>
+        </span>
       </button>
     `;
 
-    for (const a of agents) {
-      const active = state.activeAccount === a.handle;
-      const prof = a.profile || { name: a.handle, emoji: a.handle.slice(0, 1).toUpperCase(), color: "#1a73e8", role: "Specialist" };
-      const unreadBadge = a.unreadCount > 0 ? `<span class="badge">${a.unreadCount} new</span>` : "";
+    for (const agent of agents) {
+      const active = state.activeAccount === agent.handle;
+      const profile = agent.profile || {};
+      const name = profile.name || agent.handle;
+      const role = profile.role || "Swarm Agent";
+      const emoji = profile.emoji || agent.handle.slice(0, 1).toUpperCase();
+      const color = safeCssColor(profile.color, "#1a73e8");
+      const unreadBadge = agent.unreadCount > 0 ? `<span class="badge">${agent.unreadCount} new</span>` : "";
 
       html += `
-        <button class="account-item-btn ${active ? "active" : ""}" data-handle="${a.handle}">
-          <div class="account-item-left">
-            <div class="item-avatar" style="background:${prof.color};color:#fff;">${prof.emoji}</div>
-            <div>
-              <strong>${prof.name}</strong>
-              <div style="font-size:11px;color:#5f6368;">${prof.role} • ${a.handle}@amq</div>
-            </div>
-          </div>
+        <button class="account-item-btn ${active ? "active" : ""}" data-handle="${escapeHtml(agent.handle)}" aria-current="${active ? "true" : "false"}" aria-label="Switch to ${escapeHtml(name)}">
+          <span class="account-item-left">
+            <span class="item-avatar" style="background:${escapeHtml(color)};color:#fff;">${escapeHtml(emoji)}</span>
+            <span class="account-item-copy">
+              <strong class="account-item-name">${escapeHtml(name)}</strong>
+              <span class="account-item-role">${escapeHtml(role)}</span>
+              <span class="account-item-address">${escapeHtml(agent.handle)}@amq</span>
+            </span>
+          </span>
           ${unreadBadge}
         </button>
       `;
@@ -329,20 +463,17 @@
       btn.addEventListener("click", () => {
         switchActiveAccount(btn.dataset.handle);
         accountDropdown.classList.add("hidden");
+        userProfileBtn.setAttribute("aria-expanded", "false");
       });
     });
   }
 
   function switchActiveAccount(handle) {
     state.activeAccount = handle;
-    if (handle !== "all") {
-      state.activePersona = handle;
-      localStorage.setItem("agmail_persona", handle);
-    }
+    state.activePersona = handle === "all" ? "user" : handle;
+    localStorage.setItem("agmail_persona", state.activePersona);
 
-    const currentPersona = state.activeAccount === "all" ? (state.activePersona || "user") : state.activeAccount;
-    const personaObj = state.agents.find((x) => x.handle === currentPersona);
-    const personaName = personaObj?.profile?.name || currentPersona;
+    const currentPersona = getActiveSender();
 
     if (handle === "all") {
       headerAccountLabel.textContent = "👑 God Mode";
@@ -350,7 +481,8 @@
       currentUserAvatar.style.backgroundColor = "var(--primary-blue)";
       dropdownLargeAvatar.textContent = "👑";
       dropdownLargeAvatar.style.backgroundColor = "var(--primary-blue)";
-      dropdownUserTitle.textContent = `God Mode (Persona: ${personaName})`;
+      dropdownUserTitle.textContent = "God Mode";
+      dropdownUserRole.textContent = "All transmissions · sending as user";
       dropdownUserEmail.textContent = "amq://all-agents";
     } else {
       const agentObj = state.agents.find((x) => x.handle === handle);
@@ -360,8 +492,9 @@
       currentUserAvatar.style.backgroundColor = prof.color;
       dropdownLargeAvatar.textContent = prof.emoji;
       dropdownLargeAvatar.style.backgroundColor = prof.color;
-      dropdownUserTitle.textContent = `${prof.name} (${prof.role})`;
-      dropdownUserEmail.textContent = `<${handle}@amq>`;
+      dropdownUserTitle.textContent = prof.name;
+      dropdownUserRole.textContent = prof.role || "Swarm Agent";
+      dropdownUserEmail.textContent = `${handle}@amq`;
     }
 
     replyAsUserEl.textContent = currentPersona;
@@ -372,61 +505,198 @@
   // Toggle account dropdown on user profile click
   userProfileBtn.addEventListener("click", (e) => {
     e.stopPropagation();
+    const opening = accountDropdown.classList.contains("hidden");
     accountDropdown.classList.toggle("hidden");
+    userProfileBtn.setAttribute("aria-expanded", String(opening));
   });
 
   // Close dropdown on outside click
   document.addEventListener("click", (e) => {
     if (!accountDropdown.contains(e.target) && !userProfileBtn.contains(e.target)) {
       accountDropdown.classList.add("hidden");
+      userProfileBtn.setAttribute("aria-expanded", "false");
     }
   });
 
   // ─── Swarm Presence List ────────────────────────────────────────────────────
 
+  function safeCssColor(value, fallback = "#1a73e8") {
+    const color = String(value || "").trim();
+    return /^#[0-9a-f]{3,8}$/i.test(color) ? color : fallback;
+  }
+
+  function agentStatusView(agent) {
+    const raw = String(agent?.herdrStatus && agent.herdrStatus !== "unknown" ? agent.herdrStatus : agent?.status || "offline").toLowerCase();
+    const status = raw === "online" || raw === "active" ? "idle" : raw;
+    const views = {
+      working: { label: "Working", tone: "working" },
+      idle: { label: "Idle", tone: "idle" },
+      done: { label: "Done", tone: "done" },
+      blocked: { label: "Blocked", tone: "blocked" },
+      error: { label: "Needs attention", tone: "blocked" },
+      offline: { label: "Offline", tone: "offline" },
+    };
+    return { status, ...(views[status] || views.offline) };
+  }
+
+  function getAgentTask(handle) {
+    if (!handle || !state.board?.columns) return null;
+    const rank = { in_progress: 0, blocked: 1, backlog: 2, done: 3 };
+    return Object.values(state.board.columns)
+      .flat()
+      .filter((task) => task.owner === handle)
+      .sort((left, right) => {
+        const rankDelta = (rank[left.status] ?? 9) - (rank[right.status] ?? 9);
+        if (rankDelta !== 0) return rankDelta;
+        return String(right.updated || right.created || "").localeCompare(String(left.updated || left.created || ""));
+      })[0] || null;
+  }
+
+  function agentActivityText(agent, task) {
+    const activity = agent?.herdrActivity || {};
+    const statusView = agentStatusView(agent);
+    const stateLabel = activity.stateLabels?.[statusView.status] || activity.stateLabels?.[agent?.herdrStatus] || "";
+    const token = Array.isArray(activity.tokens) ? activity.tokens.find((value) => typeof value === "string" && value.trim()) : "";
+    const title = [activity.title, activity.terminalTitle, agent?.herdrTitle]
+      .find((value) => {
+        const text = String(value || "").trim();
+        return text && !/^(opencode|codex|claude code|agent|herdr)$/i.test(text);
+      }) || "";
+    if (stateLabel) return stateLabel;
+    if (token) return token;
+    if (title) return title;
+    if (task?.title) return task.title;
+    if (agent?.herdrStatus && agent.herdrStatus !== "unknown") return statusView.tone === "working" ? "Working in Herdr" : "Live in Herdr";
+    return "No live Herdr activity signal";
+  }
+
   function renderPresenceList(agents) {
+    const priority = { working: 0, blocked: 1, idle: 2, done: 3, error: 4, offline: 5 };
+    const sorted = [...agents].sort((left, right) => {
+      const statusDelta = (priority[agentStatusView(left).status] ?? 9) - (priority[agentStatusView(right).status] ?? 9);
+      return statusDelta || left.handle.localeCompare(right.handle);
+    });
     let html = "";
-    for (const a of agents) {
-      const prof = a.profile || { name: a.handle, emoji: a.handle.slice(0, 1).toUpperCase(), color: "#1a73e8", role: "Specialist", model: "claude-3-7-sonnet" };
-      // Prefer Herdr live status when available, fall back to AMQ status
-      const effectiveStatus = a.herdrStatus && a.herdrStatus !== "unknown"
-        ? a.herdrStatus
-        : (a.status || "offline");
-
-      let statusClass = "offline";
-      let statusLabel = "offline";
-
-      if (effectiveStatus === "working") {
-        statusClass = "working";
-        statusLabel = "working";
-      } else if (effectiveStatus === "idle" || effectiveStatus === "done" || effectiveStatus === "active") {
-        statusClass = "idle";
-        statusLabel = effectiveStatus;
-      } else if (effectiveStatus === "blocked" || effectiveStatus === "error") {
-        statusClass = "blocked";
-        statusLabel = effectiveStatus;
-      }
-
-      const isLive = Boolean(a.herdrStatus && a.herdrStatus !== "unknown");
-      const titleText = a.herdrTitle
-        ? `${escapeHtml(prof.name)} (${escapeHtml(prof.role)}) • ${statusLabel} — ${escapeHtml(a.herdrTitle)}`
-        : `${escapeHtml(prof.name)} (${escapeHtml(prof.role)}) [${escapeHtml(prof.model || "model")}]: ${statusLabel}`;
+    for (const agent of sorted) {
+      const profile = agent.profile || {};
+      const name = profile.name || agent.handle;
+      const role = profile.role || "Swarm Agent";
+      const emoji = profile.emoji || agent.handle.slice(0, 1).toUpperCase();
+      const color = safeCssColor(profile.color);
+      const statusView = agentStatusView(agent);
+      const live = Boolean(agent.herdrStatus && agent.herdrStatus !== "unknown");
+      const task = getAgentTask(agent.handle);
+      const activity = agentActivityText(agent, task);
 
       html += `
-        <div class="presence-item${isLive ? " presence-live" : ""}" title="${titleText}">
-          <div class="presence-avatar-wrap">
-            <div class="mini-avatar" style="background:${prof.color};color:#fff;">${prof.emoji}</div>
-            <span class="presence-dot ${statusClass}"></span>
-          </div>
-          <div class="presence-details">
-            <span class="presence-name">${a.handle}${isLive ? '<span class="herdr-live-dot" title="Herdr live">●</span>' : ""}</span>
-            <span class="presence-status-text">${escapeHtml(prof.role)} • ${statusLabel}</span>
-          </div>
-        </div>
+        <button type="button" class="presence-item${live ? " presence-live" : ""}" data-agent-handle="${escapeHtml(agent.handle)}" aria-haspopup="dialog" aria-label="View activity for ${escapeHtml(name)}, ${statusView.label}" title="${escapeHtml(activity)}">
+          <span class="presence-avatar-wrap">
+            <span class="mini-avatar" style="background:${escapeHtml(color)};color:#fff;">${escapeHtml(emoji)}</span>
+            <span class="presence-dot ${statusView.tone}"></span>
+          </span>
+          <span class="presence-details">
+            <span class="presence-name-row">
+              <span class="presence-name">${escapeHtml(agent.handle)}</span>
+              <span class="presence-status-pill ${statusView.tone}">${statusView.label}</span>
+            </span>
+            <span class="presence-role">${escapeHtml(role)}</span>
+          </span>
+          <span class="presence-chevron" aria-hidden="true">›</span>
+        </button>
       `;
     }
     presenceListEl.innerHTML = html;
+    presenceListEl.querySelectorAll(".presence-item").forEach((button) => {
+      button.addEventListener("click", () => openAgentActivity(button.dataset.agentHandle));
+    });
+    if (agentActivityDialog?.open) renderAgentActivity();
   }
+
+  function renderAgentActivity() {
+    const handle = state.activeAgentHandle;
+    const agent = state.agents.find((item) => item.handle === handle);
+    if (!agent || !agentActivityDialog) return false;
+    const profile = agent.profile || {};
+    const statusView = agentStatusView(agent);
+    const task = getAgentTask(handle);
+    const activity = agent.herdrActivity || {};
+    const title = String(activity.title || activity.terminalTitle || agent.herdrTitle || "").trim();
+    const observedAt = activity.observedAt || agent.herdrObservedAt;
+    const taskStatus = task ? task.status.replaceAll("_", " ") : "No active task assigned";
+    const taskTone = { in_progress: "working", blocked: "blocked", done: "done", backlog: "idle" }[task?.status] || "offline";
+
+    agentActivityAvatar.textContent = profile.emoji || handle.slice(0, 1).toUpperCase();
+    agentActivityAvatar.style.backgroundColor = safeCssColor(profile.color);
+    agentActivityName.textContent = profile.name || handle;
+    agentActivityHandle.textContent = `${handle}@amq`;
+    agentActivityRole.textContent = profile.role || "Swarm Agent";
+    agentActivityStatus.textContent = statusView.label;
+    agentActivityStatus.className = `agent-activity-status ${statusView.tone}`;
+    agentActivityHeadline.textContent = agentActivityText(agent, task);
+    agentActivityTask.textContent = task?.title || "No board task is currently assigned to this agent.";
+    agentActivityTaskStatus.textContent = taskStatus;
+    agentActivityTaskStatus.className = `agent-task-status ${taskTone}`;
+    const liveModel = agent.runtimeModel || activity.model || "";
+    const modelSource = agent.modelSource || activity.modelSource || "";
+    agentActivityModel.textContent = liveModel || profile.model || "Not configured";
+    agentActivityModel.title = liveModel
+      ? `Live harness model${modelSource ? ` · ${modelSource}` : ""}`
+      : profile.model
+        ? "Configured profile model"
+        : "No model reported by the harness or profile";
+    agentActivityUnread.textContent = String(agent.unreadCount || 0);
+    agentActivityPane.textContent = agent.herdrPaneId || "Not tracked";
+    agentActivityObserved.textContent = observedAt ? new Date(observedAt).toLocaleString() : "No live snapshot";
+    viewAgentTaskBtn.hidden = !task;
+    agentActivityDialog.dataset.agentHandle = handle;
+    return true;
+  }
+
+  function openAgentActivity(handle) {
+    state.activeAgentHandle = handle;
+    if (!renderAgentActivity()) {
+      state.activeAgentHandle = null;
+      return;
+    }
+    if (agentActivityDialog.open) return;
+    if (typeof agentActivityDialog.showModal === "function") agentActivityDialog.showModal();
+    else agentActivityDialog.setAttribute("open", "");
+    requestAnimationFrame(() => closeAgentActivityBtn?.focus());
+  }
+
+  function closeAgentActivity() {
+    if (typeof agentActivityDialog.close === "function") agentActivityDialog.close();
+    else agentActivityDialog.removeAttribute("open");
+  }
+
+  closeAgentActivityBtn?.addEventListener("click", closeAgentActivity);
+  agentActivityDialog?.addEventListener("click", (event) => {
+    if (event.target !== agentActivityDialog) return;
+    const bounds = agentActivityDialog.getBoundingClientRect();
+    const outside = event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom;
+    if (outside) closeAgentActivity();
+  });
+  agentActivityDialog?.addEventListener("close", () => {
+    state.activeAgentHandle = null;
+  });
+  viewAgentInboxBtn?.addEventListener("click", () => {
+    const handle = state.activeAgentHandle;
+    closeAgentActivity();
+    if (!handle) return;
+    switchActiveAccount(handle);
+    switchView("mail");
+    if (window.innerWidth <= 768) {
+      document.body.classList.remove("sidebar-open");
+      sidebarBackdrop.classList.add("hidden");
+    }
+  });
+  viewAgentTaskBtn?.addEventListener("click", () => {
+    const task = getAgentTask(state.activeAgentHandle);
+    closeAgentActivity();
+    if (!task) return;
+    switchView("board");
+    requestAnimationFrame(() => openTaskSheet(task.id));
+  });
 
 
   function levenshtein(a, b) {
@@ -558,7 +828,7 @@
     if (prevPageBtn) prevPageBtn.disabled = state.page <= 1;
     if (nextPageBtn) nextPageBtn.disabled = state.page >= state.totalPages;
 
-    const currentPersona = state.activeAccount === "all" ? (state.activePersona || "user") : state.activeAccount;
+    const currentPersona = getActiveSender();
     filterInfoEl.textContent = `Account: ${state.activeAccount} • Persona: ${currentPersona} • Mode: ${state.viewMode}`;
 
     if (!filtered.length) {
@@ -578,6 +848,7 @@
     for (const t of threads) {
       const isUnread = t.hasUnread;
       const isStarred = state.starredIds.has(t.threadId);
+      const isSelected = state.selectedThreadId === t.threadId;
       const dateStr = formatTimestamp(t.latestCreated);
 
       const senders = t.participants.join(", ");
@@ -594,7 +865,7 @@
       const sendersHighlighted = highlightTerms(escapeHtml(senders), state.searchQuery);
 
       html += `
-        <div class="mail-row ${isUnread ? "unread" : "read"}" data-thread-id="${t.threadId}">
+        <div class="mail-row ${isUnread ? "unread" : "read"} ${isSelected ? "selected" : ""}" data-thread-id="${t.threadId}" role="button" tabindex="0" aria-current="${isSelected ? "true" : "false"}">
           <div class="mail-row-actions">
             <button class="star-btn ${isStarred ? "starred" : ""}" data-star-id="${t.threadId}" title="Star thread">
               ${isStarred ? "★" : "☆"}
@@ -616,11 +887,19 @@
     mailListEl.innerHTML = html;
 
     mailListEl.querySelectorAll(".mail-row").forEach((row) => {
-      row.addEventListener("click", (e) => {
-        if (e.target.closest(".star-btn")) return;
+      const activate = () => {
         const threadId = row.dataset.threadId;
         const thread = state.items.find((t) => t.threadId === threadId);
         if (thread) openThread(thread);
+      };
+      row.addEventListener("click", (e) => {
+        if (!e.target.closest(".star-btn")) activate();
+      });
+      row.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          activate();
+        }
       });
     });
 
@@ -632,6 +911,7 @@
     for (const m of messages) {
       const isStarred = state.starredIds.has(m.id);
       const isUnread = m.isNew;
+      const isSelected = state.selectedMessageId === m.id;
       const dateStr = formatTimestamp(m.created);
 
       let badgesHtml = "";
@@ -645,7 +925,7 @@
       const senderHighlighted = highlightTerms(escapeHtml(m.from || "unknown"), state.searchQuery);
 
       html += `
-        <div class="mail-row ${isUnread ? "unread" : "read"}" data-msg-id="${m.id}">
+        <div class="mail-row ${isUnread ? "unread" : "read"} ${isSelected ? "selected" : ""}" data-msg-id="${m.id}" role="button" tabindex="0" aria-current="${isSelected ? "true" : "false"}">
           <div class="mail-row-actions">
             <button class="star-btn ${isStarred ? "starred" : ""}" data-star-id="${m.id}" title="Star message">
               ${isStarred ? "★" : "☆"}
@@ -667,11 +947,19 @@
     mailListEl.innerHTML = html;
 
     mailListEl.querySelectorAll(".mail-row").forEach((row) => {
-      row.addEventListener("click", (e) => {
-        if (e.target.closest(".star-btn")) return;
+      const activate = () => {
         const msgId = row.dataset.msgId;
         const msg = state.items.find((m) => m.id === msgId);
         if (msg) openSingleMessage(msg);
+      };
+      row.addEventListener("click", (e) => {
+        if (!e.target.closest(".star-btn")) activate();
+      });
+      row.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          activate();
+        }
       });
     });
 
@@ -692,6 +980,66 @@
         renderList();
       });
     });
+  }
+
+  function syncSelectedMailRow() {
+    mailListEl.querySelectorAll(".mail-row").forEach((row) => {
+      const selected = state.viewMode === "threads"
+        ? row.dataset.threadId === state.selectedThreadId
+        : row.dataset.msgId === state.selectedMessageId;
+      row.classList.toggle("selected", selected);
+      row.setAttribute("aria-current", selected ? "true" : "false");
+    });
+  }
+
+  function showMessageDetail() {
+    state.detailOpen = true;
+    contentSplitterEl.classList.add("detail-open");
+    mailDetailViewEl.classList.remove("hidden");
+    syncSelectedMailRow();
+    mailDetailViewEl.scrollTop = 0;
+    requestAnimationFrame(() => {
+      const latestMessage = threadMessagesListEl.querySelector(".thread-card.expanded") || threadMessagesListEl.lastElementChild;
+      if (latestMessage) {
+        const detailTop = mailDetailViewEl.getBoundingClientRect().top;
+        const headerHeight = mailDetailViewEl.querySelector(".detail-header")?.getBoundingClientRect().height || 0;
+        const latestTop = latestMessage.getBoundingClientRect().top - detailTop;
+        mailDetailViewEl.scrollTop = Math.max(0, latestTop - headerHeight - 12);
+        if (state.readingLayout === "full" || window.matchMedia("(max-width: 768px)").matches) {
+          latestMessage.tabIndex = -1;
+          latestMessage.focus({ preventScroll: true });
+        }
+      } else if (state.readingLayout === "full" || window.matchMedia("(max-width: 768px)").matches) {
+        mailDetailViewEl.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  function hideMessageDetail(restoreFocus = false) {
+    state.detailOpen = false;
+    contentSplitterEl.classList.remove("detail-open");
+    mailDetailViewEl.classList.add("hidden");
+    if (restoreFocus) {
+      requestAnimationFrame(() => mailListEl.querySelector(".mail-row.selected")?.focus({ preventScroll: true }));
+    }
+  }
+
+  async function markMessageRead(message) {
+    if (!message?.isNew || state.activeAccount === "all") return;
+    const account = message.targetAccount || state.activeAccount;
+    if (!account || account === "all") return;
+    try {
+      const res = await fetch(`/api/messages/${encodeURIComponent(message.id)}/read?account=${encodeURIComponent(account)}`, { method: "POST" });
+      if (!res.ok) return;
+      message.isNew = false;
+      const thread = state.items.find((item) => item.threadId === state.selectedThreadId);
+      if (thread) thread.hasUnread = (thread.messages || []).some((item) => item.isNew);
+      renderList();
+    } catch {}
+  }
+
+  function markThreadRead(messages) {
+    return Promise.all((messages || []).filter((message) => message.isNew).map((message) => markMessageRead(message)));
   }
 
   // ─── Open Thread (Conversation View) ────────────────────────────────────────
@@ -764,7 +1112,8 @@
       .map((r) => `<button class="chip" data-text="${escapeHtml(r)}">${escapeHtml(r)}</button>`)
       .join("");
 
-    mailDetailViewEl.classList.remove("hidden");
+    void markThreadRead(msgs);
+    showMessageDetail();
   }
 
   function openSingleMessage(msg) {
@@ -814,7 +1163,8 @@
       .map((r) => `<button class="chip" data-text="${escapeHtml(r)}">${escapeHtml(r)}</button>`)
       .join("");
 
-    mailDetailViewEl.classList.remove("hidden");
+    void markMessageRead(msg);
+    showMessageDetail();
   }
 
   // Expand / collapse all cards in thread
@@ -1126,7 +1476,7 @@
     const existingTokens = new Set(parts.map((p) => p.toLowerCase()));
     const activeToken = isTrailingSpace ? "" : (parts[parts.length - 1] || "").toLowerCase();
 
-    const currentPersona = state.activeAccount === "all" ? (state.activePersona || "user") : state.activeAccount;
+    const currentPersona = getActiveSender();
     const personaObj = Array.isArray(state.agents) ? state.agents.find((x) => x.handle === currentPersona) : null;
     const personaTitle = personaObj?.profile?.name || currentPersona;
     const personaAvatar = personaObj?.profile?.emoji || "👤";
@@ -1388,7 +1738,7 @@
   });
 
   backToListBtn.addEventListener("click", () => {
-    mailDetailViewEl.classList.add("hidden");
+    hideMessageDetail(true);
   });
 
   refreshBtn.addEventListener("click", () => {
@@ -1422,7 +1772,7 @@
     sendQuickReplyBtn.textContent = "Sending...";
 
     try {
-      const currentPersona = state.activeAccount === "all" ? (state.activePersona || "user") : state.activeAccount;
+      const currentPersona = getActiveSender();
       const res = await fetch("/api/reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1470,8 +1820,9 @@
 
   openComposeBtn.addEventListener("click", () => {
     composeModalEl.classList.remove("hidden");
-    const currentPersona = state.activeAccount === "all" ? (state.activePersona || "user") : state.activeAccount;
+    const currentPersona = getActiveSender();
     composeFromEl.value = currentPersona;
+    composeFromEl.disabled = state.activeAccount === "all";
     composeSubjectEl.focus();
   });
 
@@ -1502,7 +1853,7 @@
 
   composeFormEl.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const from = composeFromEl.value;
+    const from = getActiveSender(composeFromEl.value);
     const to = composeToEl.value;
     const subject = composeSubjectEl.value;
     const thread = composeThreadEl.value;
@@ -1567,21 +1918,17 @@
                 }
               }
             });
+          } else if (payload.type === "herdr_agents_refresh") {
+            fetchAgents();
           } else if (payload.type === "herdr_agent_update") {
-            // Fast path: update just this agent's status dot without full re-fetch
             const { handle, herdrStatus } = payload;
-            if (handle && herdrStatus) {
-              // Update state.agents in place
-              const agent = state.agents.find((a) => a.handle === handle);
-              if (agent) {
-                agent.status = herdrStatus !== "unknown" ? herdrStatus : agent.status;
-                agent.herdrStatus = herdrStatus;
-                renderPresenceList(state.agents);
-              } else {
-                // Unknown agent — full refresh
-                fetchAgents();
-              }
+            const agent = state.agents.find((item) => item.handle === handle);
+            if (agent && herdrStatus) {
+              agent.status = herdrStatus !== "unknown" ? herdrStatus : agent.status;
+              agent.herdrStatus = herdrStatus;
+              renderPresenceList(state.agents);
             }
+            fetchAgents();
           }
         } catch {}
       };
@@ -2074,11 +2421,15 @@
       const data = await res.json();
       if (data.ok) {
         state.board = data;
+        if (agentActivityDialog?.open) renderAgentActivity();
         if (boardTotalCountEl) {
           boardTotalCountEl.textContent = data.stats?.total || 0;
         }
         if (state.currentView === "board") {
           renderBoard();
+        }
+        if (taskModalBackdrop && !taskModalBackdrop.classList.contains("hidden")) {
+          renderTaskOwnerTip();
         }
       }
     } catch (err) {
@@ -2350,7 +2701,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status: targetCol,
-          from: state.activePersona || "coordinator",
+          from: getActiveSender(),
           notify: true,
         }),
       });
@@ -2375,19 +2726,42 @@
     }
   }
 
+  function renderTaskOwnerTip() {
+    if (!taskOwnerTip || !taskOwnerSelect) return;
+    const owner = taskOwnerSelect.value;
+    if (!owner) {
+      taskOwnerTip.hidden = true;
+      taskOwnerTip.textContent = "";
+      return;
+    }
+    const tasks = [...(state.board?.columns?.in_progress || []), ...(state.board?.columns?.blocked || [])]
+      .filter((task) => task.owner === owner);
+    const claimed = tasks.filter((task) => task.status === "in_progress");
+    const blocked = tasks.filter((task) => task.status === "blocked");
+    taskOwnerTip.hidden = false;
+    taskOwnerTip.className = tasks.length ? "task-owner-tip warning" : "task-owner-tip";
+    if (!tasks.length) {
+      taskOwnerTip.textContent = `@${owner} has no claimed or blocked board tasks.`;
+      return;
+    }
+    const titles = tasks.slice(0, 2).map((task) => task.title).join(" · ");
+    taskOwnerTip.textContent = `Before assigning: @${owner} has ${claimed.length} claimed and ${blocked.length} blocked. Review: ${titles}`;
+  }
+
   function openNewTaskModal() {
     if (!taskModalBackdrop) return;
 
     // Populate assigned agent options
     if (taskOwnerSelect) {
       let optionsHtml = "";
-      const currentPersona = state.activePersona || "coordinator";
+      const currentPersona = getActiveSender();
       const handles = state.agents.map((a) => a.handle);
       if (!handles.includes("coordinator")) handles.unshift("coordinator");
+      if (!handles.includes("user")) handles.push("user");
 
       for (const h of handles) {
         const agentObj = state.agents.find((a) => a.handle === h);
-        const name = agentObj?.profile?.name || h;
+        const name = h === "user" ? "Human operator" : agentObj?.profile?.name || h;
         const selected = h === currentPersona ? "selected" : "";
         optionsHtml += `<option value="${escapeHtml(h)}" ${selected}>@${escapeHtml(h)} (${escapeHtml(name)})</option>`;
       }
@@ -2401,6 +2775,7 @@
     const notifyCheckbox = document.getElementById("task-notify-checkbox");
     if (notifyCheckbox) notifyCheckbox.checked = true;
 
+    renderTaskOwnerTip();
     taskModalBackdrop.classList.remove("hidden");
     taskTitleInput?.focus();
   }
@@ -2415,13 +2790,14 @@
     if (!title) return;
 
     const notifyVal = document.getElementById("task-notify-checkbox")?.checked ?? true;
+    const from = getActiveSender();
     const payload = {
       title,
-      owner: taskOwnerSelect?.value || "coordinator",
+      owner: taskOwnerSelect?.value || from,
       status: taskStatusSelect?.value || "backlog",
       description: taskDescInput?.value.trim() || "",
-      notify: notifyVal,
-      from: state.activePersona || "coordinator",
+      notify: notifyVal && taskOwnerSelect?.value !== from,
+      from,
     };
 
     try {
@@ -2434,7 +2810,7 @@
       if (data.ok) {
         closeNewTaskModal();
         await fetchBoard();
-        const notifyMsg = notifyVal && payload.owner !== "coordinator" ? " & automail dispatched" : "";
+        const notifyMsg = payload.notify ? " & automail dispatched" : "";
         showToast(`Task "${title.slice(0, 30)}" created${notifyMsg}!`);
       } else {
         alert("Failed to create task: " + (data.error || "unknown"));
@@ -2657,7 +3033,7 @@
 
     if (sheetDispatchFrom) {
       let fromOptions = "";
-      const currentPersona = state.activePersona || "coordinator";
+      const currentPersona = getActiveSender();
       for (const h of handles) {
         const sel = h === currentPersona ? "selected" : "";
         fromOptions += `<option value="${escapeHtml(h)}" ${sel}>${escapeHtml(h)}</option>`;
@@ -2746,6 +3122,7 @@
     closeTaskModalBtn?.addEventListener("click", closeNewTaskModal);
     cancelTaskBtn?.addEventListener("click", closeNewTaskModal);
     newTaskForm?.addEventListener("submit", submitNewTask);
+    taskOwnerSelect?.addEventListener("change", renderTaskOwnerTip);
 
     taskModalBackdrop?.addEventListener("click", (e) => {
       if (e.target === taskModalBackdrop) closeNewTaskModal();
@@ -2816,7 +3193,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               owner: newOwner,
-              from: state.activePersona || "coordinator",
+              from: getActiveSender(),
               notify: true,
             }),
           });
@@ -2857,7 +3234,7 @@
         return;
       }
 
-      const fromVal = sheetDispatchFrom?.value || state.activePersona || "coordinator";
+      const fromVal = getActiveSender(sheetDispatchFrom?.value || "");
       const toVal = sheetDispatchTo?.value || "coordinator";
       const task = findTaskById(state.selectedTaskId);
 
@@ -2952,13 +3329,16 @@
       if (state.currentView === "board") {
         return document.querySelector(".kanban-grid") || boardViewSection;
       }
-      return document.querySelector(".mail-list-container") || mailListEl;
+      if (state.detailOpen && !mailDetailViewEl.classList.contains("hidden")) {
+        return mailDetailViewEl;
+      }
+      return mailListViewEl;
     }
 
     function isAtTop() {
       const container = getActiveScrollableContainer();
       if (!container) return window.scrollY <= 0;
-      return container.scrollTop <= 0 && window.scrollY <= 0;
+      return container.scrollTop <= 1 && window.scrollY <= 0;
     }
 
     async function triggerReload() {
@@ -3048,6 +3428,8 @@
   }
 
   // Boot
+  applyThemePreference(state.themePreference, false);
+  applyReadingLayout(state.readingLayout, false);
   fetchStatus();
   fetchAgents();
   fetchBriefs();

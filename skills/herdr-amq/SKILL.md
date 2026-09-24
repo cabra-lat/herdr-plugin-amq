@@ -17,7 +17,8 @@ metadata:
    herdr-amq mail drain --me <handle> --include-body
    herdr-amq task drain --me <handle>
    ```
-2. **Reply to the Sender**: Always reply to the sender on the same thread/ref chain. Never drop thread context:
+   Registration welcomes are status messages. Drain them, but do not reply unless the welcome explicitly requests action.
+2. **Reply Only When Action Is Requested**: Reply on the same thread/ref chain when a message asks a question, requests action, or reports a blocker. Do not reply to terminal ACKs or informational status messages, which prevents ACK loops:
    ```bash
    herdr-amq mail reply --me <handle> --id <msg_id> --body "..."
    ```
@@ -71,7 +72,7 @@ Unifies external tool agent briefs (`.opencode/agents`, `.agents`, `.pi/agents`,
 | Command | Usage | Description |
 |---|---|---|
 | `fleet status` | `herdr-amq fleet status` | Discover personas across external tools and show live Herdr pane states |
-| `fleet prepopulate` | `herdr-amq fleet prepopulate` | Ensure Maildirs, Git worktrees, and workspace trust exist for all personas |
+| `fleet prepopulate` | `herdr-amq fleet prepopulate` | Ensure Maildirs, Git worktrees, and workspace trust exist; welcome each newly registered agent once |
 | `fleet up` | `herdr-amq fleet up [--kind agy\|opencode\|pi]` | Launch missing fleet agents into isolated Herdr tabs with auto-trust & clean PATH |
 | `bootstrap` | `herdr-amq bootstrap [--kind agy]` | Instant cold-start: prepopulate + launch fleet + start bridge daemon + doorbell pass |
 | `migrate` | `herdr-amq migrate [--dry-run]` | Migrate historical attachments into CAS blobs or pinned Git commits |
@@ -81,6 +82,6 @@ Unifies external tool agent briefs (`.opencode/agents`, `.agents`, `.pi/agents`,
 | Command | Usage | Description |
 |---|---|---|
 | `status` | `herdr-amq status` | Show bridge daemon status, unread counts per handle, and paths |
-| `doorbell` | `herdr-amq doorbell` | Run a single doorbell pass alerting idle/blocked agents |
+| `doorbell` | `herdr-amq doorbell` | Run a single doorbell pass; operators may customize `.agent-mail/templates/doorbell.md` with scalar substitutions |
 | `dashboard` | `herdr-amq dashboard [--port 8505]` | Launch web AGmail UI & REST API |
 | `--skill` | `herdr-amq --skill [--install [dir]]` | Print or install this agentic skill definition |

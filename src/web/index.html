@@ -1,14 +1,28 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light" data-theme-preference="system" data-reading-layout="split">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AGsuite: Autonomous Swarm Workspace</title>
+  <script>
+    (() => {
+      const read = (key) => {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          return null;
+        }
+      };
+      const themePreference = ["system", "light", "dark"].includes(read("agmail_theme")) ? read("agmail_theme") : "system";
+      const readingLayout = ["split", "full"].includes(read("agmail_reading_layout")) ? read("agmail_reading_layout") : "split";
+      const theme = themePreference === "dark" || (themePreference === "system" && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.dataset.themePreference = themePreference;
+      document.documentElement.dataset.readingLayout = readingLayout;
+    })();
+  </script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>✉️</text></svg>">
-  <link rel="stylesheet" href="style.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&family=Product+Sans:wght@400;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
   <!-- Top Navigation Header -->
@@ -45,10 +59,13 @@
       <button class="icon-btn" id="refresh-btn" title="Refresh mailbox">
         <svg viewBox="0 0 24 24"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
       </button>
+      <button class="icon-btn" id="open-settings-btn" title="Settings" aria-label="Open settings" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.08-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.3 7.3 0 0 0-1.69-.98L14.5 2.42A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1a.49.49 0 0 0-.61.22l-2 3.46a.49.49 0 0 0 .12.64l2.11 1.65c-.05.32-.09.66-.09.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.12.22.38.31.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.04.24.25.42.49.42h4c.24 0 .45-.18.49-.42l.38-2.65c.61-.25 1.17-.58 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"/></svg>
+      </button>
 
       <!-- Google Account Switcher Trigger -->
       <div class="account-menu-wrapper">
-        <button class="account-profile-btn" id="user-profile-btn" title="Switch active account / persona">
+        <button class="account-profile-btn" id="user-profile-btn" title="Switch active account / persona" aria-expanded="false" aria-controls="account-dropdown">
           <span class="account-header-label" id="header-account-label">👑 God Mode</span>
           <div class="user-badge" id="current-user-avatar">👑</div>
         </button>
@@ -58,7 +75,8 @@
           <div class="account-dropdown-header">
             <div class="large-avatar" id="dropdown-large-avatar">👑</div>
             <div class="account-dropdown-user-info">
-              <strong id="dropdown-user-title">God Mode (All Transmissions)</strong>
+              <strong id="dropdown-user-title">God Mode</strong>
+              <span class="account-dropdown-role" id="dropdown-user-role">All transmissions · sending as user</span>
               <span class="account-dropdown-email" id="dropdown-user-email">amq://all-agents</span>
               <span class="account-badge-pill">Active Persona</span>
             </div>
@@ -206,7 +224,7 @@
         </div>
 
         <!-- Split Layout: Mail List on Left, Thread Detail on Right -->
-        <div class="content-splitter" id="splitter-view">
+        <div class="content-splitter" id="splitter-view" data-reading-layout="split">
           <!-- List Container -->
           <div class="mail-list-container" id="mail-list-view">
             <div class="mail-list" id="mail-list">
@@ -215,10 +233,10 @@
           </div>
 
           <!-- Detail Reading View -->
-          <div class="mail-detail-container hidden" id="mail-detail-view">
+          <div class="mail-detail-container hidden" id="mail-detail-view" role="region" aria-labelledby="detail-subject" tabindex="-1">
             <div class="detail-header">
               <div class="detail-header-actions">
-                <button class="icon-btn-small" id="back-to-list-btn" title="Back to list">
+                <button class="icon-btn-small" id="back-to-list-btn" title="Back to list" aria-label="Back to message list">
                   <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
                 </button>
                 <h2 id="detail-subject" class="detail-subject">Select a transmission</h2>
@@ -515,6 +533,106 @@
     </div>
   </div>
 
+  <div class="modal-backdrop hidden" id="settings-backdrop">
+    <section class="agent-modal-card settings-modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title" aria-describedby="settings-modal-description">
+      <div class="agent-modal-header">
+        <h3 id="settings-modal-title">Settings</h3>
+        <button class="icon-btn-small" id="close-settings-btn" aria-label="Close settings">✕</button>
+      </div>
+      <form id="settings-form">
+        <p class="settings-intro" id="settings-modal-description">Choose how AGmail displays messages and which appearance it uses. Preferences are saved in this browser.</p>
+        <fieldset class="settings-group">
+          <legend>Message reading</legend>
+          <div class="settings-choice-grid settings-reading-grid">
+            <label class="settings-choice">
+              <input type="radio" name="reading-layout" value="split" checked>
+              <span class="settings-choice-preview settings-preview-split" aria-hidden="true"><i></i><i></i></span>
+              <span class="settings-choice-copy">
+                <strong>Split pane</strong>
+                <small>Keep the message list beside the selected conversation.</small>
+              </span>
+            </label>
+            <label class="settings-choice">
+              <input type="radio" name="reading-layout" value="full">
+              <span class="settings-choice-preview settings-preview-full" aria-hidden="true"><i></i><i></i></span>
+              <span class="settings-choice-copy">
+                <strong>Full page</strong>
+                <small>Open one message at a time with a Back to list control.</small>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+        <fieldset class="settings-group">
+          <legend>Theme</legend>
+          <div class="settings-choice-grid settings-theme-grid">
+            <label class="settings-choice settings-theme-choice">
+              <input type="radio" name="theme" value="system" checked>
+              <span class="settings-theme-swatch settings-theme-system" aria-hidden="true"></span>
+              <span class="settings-choice-copy"><strong>System</strong><small>Follow this device</small></span>
+            </label>
+            <label class="settings-choice settings-theme-choice">
+              <input type="radio" name="theme" value="light">
+              <span class="settings-theme-swatch settings-theme-light" aria-hidden="true"></span>
+              <span class="settings-choice-copy"><strong>Light</strong><small>Always bright</small></span>
+            </label>
+            <label class="settings-choice settings-theme-choice">
+              <input type="radio" name="theme" value="dark">
+              <span class="settings-theme-swatch settings-theme-dark" aria-hidden="true"></span>
+              <span class="settings-choice-copy"><strong>Dark</strong><small>Easy on low light</small></span>
+            </label>
+          </div>
+        </fieldset>
+        <div class="agent-modal-actions">
+          <button type="button" class="btn btn-secondary" id="cancel-settings-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="save-settings-btn">Save preferences</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <dialog class="agent-activity-dialog" id="agent-activity-dialog" aria-labelledby="agent-activity-name">
+    <div class="agent-activity-shell">
+      <header class="agent-activity-header">
+        <div>
+          <span class="agent-activity-kicker">Agent activity</span>
+          <h2 id="agent-activity-name">Agent</h2>
+          <span id="agent-activity-handle">agent@amq</span>
+        </div>
+        <button class="icon-btn-small" id="close-agent-activity-btn" aria-label="Close agent activity">✕</button>
+      </header>
+      <div class="agent-activity-body">
+        <section class="agent-activity-identity">
+          <div class="agent-activity-avatar" id="agent-activity-avatar">A</div>
+          <div class="agent-activity-identity-copy">
+            <strong id="agent-activity-role">Swarm Agent</strong>
+            <span class="agent-activity-status idle" id="agent-activity-status">Idle</span>
+          </div>
+        </section>
+        <section class="agent-activity-card agent-activity-current">
+          <span class="agent-activity-label">Current activity</span>
+          <strong id="agent-activity-headline" aria-live="polite">No live activity signal</strong>
+        </section>
+        <section class="agent-activity-card">
+          <div class="agent-activity-card-heading">
+            <span class="agent-activity-label">Assigned task</span>
+            <span class="agent-task-status offline" id="agent-activity-task-status">No active task assigned</span>
+          </div>
+          <strong id="agent-activity-task">No board task is currently assigned to this agent.</strong>
+        </section>
+        <dl class="agent-activity-meta">
+          <div><dt>Model</dt><dd id="agent-activity-model">Not configured</dd></div>
+          <div><dt>Unread</dt><dd id="agent-activity-unread">0</dd></div>
+          <div><dt>Herdr pane</dt><dd id="agent-activity-pane">Not tracked</dd></div>
+          <div><dt>Observed</dt><dd id="agent-activity-observed">No live snapshot</dd></div>
+        </dl>
+      </div>
+      <footer class="agent-activity-actions">
+        <button class="btn btn-secondary" id="view-agent-inbox-btn">View inbox</button>
+        <button class="btn btn-primary" id="view-agent-task-btn" hidden>Open task</button>
+      </footer>
+    </div>
+  </dialog>
+
   <!-- New Task Modal for Kanban Board -->
   <div class="modal-backdrop hidden" id="task-modal-backdrop">
     <div class="agent-modal-card">
@@ -542,6 +660,7 @@
             </select>
           </div>
         </div>
+        <div class="task-owner-tip hidden" id="task-owner-tip" aria-live="polite"></div>
         <div class="agent-field">
           <label for="task-desc-input">Description / Requirements / Evidence:</label>
           <textarea id="task-desc-input" rows="4" placeholder="Detail the task objectives, constraints, or gate criteria..."></textarea>
@@ -721,7 +840,7 @@
     </div>
   </aside>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=4"></script>
 
 </body>
 </html>

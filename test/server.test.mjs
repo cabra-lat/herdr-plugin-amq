@@ -4,14 +4,21 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { startWebServer } from "../src/server.mjs";
+import { sendMaildirMessage } from "../src/protocol.mjs";
 
 describe("server.mjs API integration tests", () => {
   let tempRoot;
   let server;
   let baseUrl;
+  let oldStateDir;
+  let oldSocketPath;
 
   before(async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "amq-server-test-"));
+    oldStateDir = process.env.HERDR_PLUGIN_STATE_DIR;
+    process.env.HERDR_PLUGIN_STATE_DIR = path.join(tempRoot, "state");
+    oldSocketPath = process.env.HERDR_SOCKET_PATH;
+    process.env.HERDR_SOCKET_PATH = path.join(tempRoot, "missing-herdr.sock");
     const agentsDir = path.join(tempRoot, "agents");
     fs.mkdirSync(agentsDir, { recursive: true });
 
@@ -55,6 +62,10 @@ Test body`
       }
       await new Promise((resolve) => server.close(resolve));
     }
+    if (oldStateDir !== undefined) process.env.HERDR_PLUGIN_STATE_DIR = oldStateDir;
+    else delete process.env.HERDR_PLUGIN_STATE_DIR;
+    if (oldSocketPath !== undefined) process.env.HERDR_SOCKET_PATH = oldSocketPath;
+    else delete process.env.HERDR_SOCKET_PATH;
     if (tempRoot && fs.existsSync(tempRoot)) {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -91,6 +102,37 @@ Test body`
     assert.equal(msgs.length, 1);
     assert.equal(msgs[0].id, "msg-1");
     assert.equal(msgs[0].folder, "sent");
+  });
+
+  test("POST /api/messages/:id/read marks a user message read", async () => {
+    const sent = sendMaildirMessage(tempRoot, {
+      from: "agent-one",
+      to: ["user"],
+      subject: "User read state",
+      body: "Opening this message should mark it read.",
+    });
+    const endpoint = `${baseUrl}/api/messages/${encodeURIComponent(sent.id)}/read?account=user`;
+    const first = await fetch(endpoint, { method: "POST" });
+    assert.equal(first.status, 200);
+    assert.deepEqual(await first.json(), {
+      ok: true,
+      alreadyRead: false,
+      id: sent.id,
+      filePath: path.join(tempRoot, "agents", "user", "inbox", "cur", `${sent.id}.md`),
+    });
+    assert.equal(fs.existsSync(path.join(tempRoot, "agents", "user", "inbox", "new", `${sent.id}.md`)), false);
+    assert.equal(fs.existsSync(path.join(tempRoot, "agents", "user", "inbox", "cur", `${sent.id}.md`)), true);
+
+    const second = await fetch(endpoint, { method: "POST" });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).alreadyRead, true);
+    const invalid = await fetch(`${baseUrl}/api/messages/${sent.id}/read?account=all`, { method: "POST" });
+    assert.equal(invalid.status, 400);
+    for (const filePath of [
+      path.join(tempRoot, "agents", "user", "inbox", "new", `${sent.id}.md`),
+      path.join(tempRoot, "agents", "user", "inbox", "cur", `${sent.id}.md`),
+      path.join(tempRoot, "agents", "agent-one", "outbox", "sent", `${sent.id}.md`),
+    ]) fs.rmSync(filePath, { force: true });
   });
 
   test("GET /api/threads?folder=sent returns conversation threads", async () => {
@@ -182,6 +224,17 @@ Test body`
     assert.equal(created.profile.role, "Vulnerability Scanning");
   });
 
+  test("POST /api/agents rejects oversized request bodies", async () => {
+    const res = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ handle: "oversized", name: "x".repeat(1024 * 1024) }),
+    });
+    assert.equal(res.status, 413);
+    const data = await res.json();
+    assert.equal(data.ok, false);
+  });
+
   test("GET /api/worktrees returns worktree list", async () => {
     const res = await fetch(`${baseUrl}/api/worktrees`);
     assert.equal(res.status, 200);
@@ -217,6 +270,44 @@ Test body`
     assert.ok(text.includes("chat-context-menu"));
     assert.ok(text.includes("model-suggestions"));
     assert.ok(text.includes("brief-chips-list"));
+    assert.ok(text.includes('id="open-settings-btn"'));
+    assert.ok(text.includes('id="settings-backdrop"'));
+    assert.ok(text.includes('name="reading-layout" value="full"'));
+    assert.ok(text.includes('name="theme" value="dark"'));
+    assert.ok(text.includes('id="agent-activity-dialog"'));
+    assert.ok(text.includes('id="agent-activity-headline"'));
+    assert.ok(text.includes('id="view-agent-task-btn"'));
+  });
+
+  test("GET / serves persisted reading layout and dark theme preferences", async () => {
+    const appRes = await fetch(`${baseUrl}/app.js`);
+    const appText = await appRes.text();
+    const styleRes = await fetch(`${baseUrl}/style.css`);
+    const styleText = await styleRes.text();
+
+    assert.equal(appRes.status, 200);
+    assert.equal(styleRes.status, 200);
+    assert.match(appRes.headers.get("cache-control") || "", /no-store/);
+    assert.match(styleRes.headers.get("cache-control") || "", /no-store/);
+    assert.ok(appText.includes("agmail_reading_layout"));
+    assert.ok(appText.includes("agmail_theme"));
+    assert.ok(appText.includes("applyThemePreference"));
+    assert.ok(appText.includes("applyReadingLayout"));
+    assert.ok(appText.includes("herdr_agents_refresh"));
+    assert.ok(appText.includes("getAgentTask"));
+    assert.ok(appText.includes("openAgentActivity"));
+    assert.ok(appText.includes("account-item-role"));
+    const showMessageDetailBody = appText.match(/function showMessageDetail\(\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+    const hideMessageDetailBody = appText.match(/function hideMessageDetail\([^)]*\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+    assert.ok(showMessageDetailBody.includes('contentSplitterEl.classList.add("detail-open")'));
+    assert.ok(showMessageDetailBody.includes('mailDetailViewEl.classList.remove("hidden")'));
+    assert.equal(showMessageDetailBody.includes("showMessageDetail()"), false);
+    assert.ok(hideMessageDetailBody.includes('contentSplitterEl.classList.remove("detail-open")'));
+    assert.ok(hideMessageDetailBody.includes('mailDetailViewEl.classList.add("hidden")'));
+    assert.ok(styleText.includes('html[data-theme="dark"]'));
+    assert.ok(styleText.includes(".agent-activity-dialog"));
+    assert.ok(styleText.includes(".presence-item:focus-visible"));
+    assert.ok(styleText.includes('#splitter-view[data-reading-layout="full"].detail-open .mail-list-container'));
   });
 
   test("GET /api/agent-briefs returns array of disk agent definitions", async () => {

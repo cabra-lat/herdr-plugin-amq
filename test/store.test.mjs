@@ -196,7 +196,14 @@ Acknowledged beta, processing task.`;
     assert.equal(isPathSafe(path.join(tempRoot, "agents/alpha/profile.json"), repoRoot, tempRoot), true);
   });
 
-  test("registerAgent initializes maildir structure and profile.json", () => {
+  test("registerAgent initializes a profile and sends one rendered welcome", () => {
+    const templatesDir = path.join(tempRoot, "templates");
+    fs.mkdirSync(templatesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(templatesDir, "welcome.md"),
+      "Welcome {{ agent.name }}. Handle: {{ agent.handle }}. Role: {{ agent.role }}.\n"
+    );
+
     const reg = registerAgent(tempRoot, {
       handle: "code-reviewer",
       name: "Code Reviewer",
@@ -207,11 +214,35 @@ Acknowledged beta, processing task.`;
     assert.equal(reg.agent.handle, "code-reviewer");
     assert.equal(reg.agent.model, "claude-3-7-sonnet");
 
-    const profileFile = path.join(tempRoot, "agents", "code-reviewer", "profile.json");
-    assert.ok(fs.existsSync(profileFile));
+    const agentDir = path.join(tempRoot, "agents", "code-reviewer");
+    const profileFile = path.join(agentDir, "profile.json");
     const saved = JSON.parse(fs.readFileSync(profileFile, "utf8"));
     assert.equal(saved.model, "claude-3-7-sonnet");
     assert.equal(saved.role, "Static Analysis");
+    assert.ok(saved.createdAt);
+    assert.ok(saved.registrationId);
+    assert.equal(saved.welcome.status, "sent");
+    assert.equal(saved.welcome.source, "template");
+
+    const inboxDir = path.join(agentDir, "inbox", "new");
+    const welcomeFiles = fs.readdirSync(inboxDir).filter((file) => file.endsWith(".md"));
+    assert.equal(welcomeFiles.length, 1);
+    const welcome = parseMessageFile(path.join(inboxDir, welcomeFiles[0]), tempRoot);
+    assert.equal(welcome.from, "coordinator");
+    assert.match(welcome.body, /Welcome Code Reviewer/);
+    assert.match(welcome.body, /Handle: code-reviewer/);
+    assert.match(welcome.body, /Role: Static Analysis/);
+
+    const sentAt = saved.welcome.sentAt;
+    registerAgent(tempRoot, {
+      handle: "code-reviewer",
+      name: "Code Reviewer",
+      role: "Static Analysis",
+      model: "claude-3-7-sonnet",
+    });
+    const updated = JSON.parse(fs.readFileSync(profileFile, "utf8"));
+    assert.equal(updated.welcome.sentAt, sentAt);
+    assert.equal(fs.readdirSync(inboxDir).filter((file) => file.endsWith(".md")).length, 1);
   });
 
   test("getCachedMessage caches parsed messages and invalidates on request", () => {

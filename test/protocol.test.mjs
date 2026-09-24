@@ -13,6 +13,7 @@ import {
   replyMaildirMessage,
   drainMaildir,
   findMessageById,
+  markMaildirMessageRead,
 } from "../src/protocol.mjs";
 
 test("AMQ Message ID and Thread formatting", () => {
@@ -87,6 +88,36 @@ test("Native Maildir message delivery (DJB tmp -> new rename)", () => {
 
     const testkitCur = path.join(tmpAmq, "agents", "testkit", "inbox", "cur", `${res.id}.md`);
     assert.equal(fs.existsSync(testkitCur), true);
+  } finally {
+    fs.rmSync(tmpAmq, { recursive: true, force: true });
+  }
+});
+
+test("markMaildirMessageRead moves only the addressed message to cur", () => {
+  const tmpAmq = fs.mkdtempSync(path.join(os.tmpdir(), "amq-read-test-"));
+  try {
+    const sent = sendMaildirMessage(tmpAmq, {
+      from: "coordinator",
+      to: ["user", "range"],
+      subject: "Read state check",
+      body: "Open me from the user mailbox.",
+    });
+    const userResult = markMaildirMessageRead(tmpAmq, "user", sent.id);
+    assert.deepEqual(userResult, {
+      ok: true,
+      alreadyRead: false,
+      id: sent.id,
+      filePath: path.join(tmpAmq, "agents", "user", "inbox", "cur", `${sent.id}.md`),
+    });
+    assert.equal(fs.existsSync(path.join(tmpAmq, "agents", "user", "inbox", "new", `${sent.id}.md`)), false);
+    assert.equal(fs.existsSync(path.join(tmpAmq, "agents", "range", "inbox", "new", `${sent.id}.md`)), true);
+    assert.deepEqual(markMaildirMessageRead(tmpAmq, "user", sent.id), {
+      ok: true,
+      alreadyRead: true,
+      id: sent.id,
+      filePath: path.join(tmpAmq, "agents", "user", "inbox", "cur", `${sent.id}.md`),
+    });
+    assert.equal(markMaildirMessageRead(tmpAmq, "range", sent.id).ok, true);
   } finally {
     fs.rmSync(tmpAmq, { recursive: true, force: true });
   }
