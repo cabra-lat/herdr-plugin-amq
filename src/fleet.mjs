@@ -195,9 +195,11 @@ function pathsMatch(left, right) {
   }
 }
 
-function matchingFleetPanes(agent, liveAgents) {
+function matchingFleetPanes(agent, liveAgents, currentPaneId = null) {
   return liveAgents.filter((live) => (
-    live.name === agent.handle && pathsMatch(live.cwd, agent.worktree)
+    live.name === agent.handle && (
+      pathsMatch(live.cwd, agent.worktree) || live.pane_id === currentPaneId
+    )
   ));
 }
 
@@ -276,6 +278,7 @@ export async function stopFleet(amqRoot, repoRoot, options = {}) {
   const dryRun = Boolean(options.dryRun);
   const getLiveAgents = options.getLiveAgents || getHerdrAgents;
   const execHerdr = options.execHerdr || null;
+  const currentPaneId = (options.currentPaneId ?? process.env.HERDR_PANE_ID) || null;
   const liveAgents = await getLiveAgents();
   const result = {
     total: targetFleet.length,
@@ -287,11 +290,16 @@ export async function stopFleet(amqRoot, repoRoot, options = {}) {
   };
 
   for (const agent of targetFleet) {
-    const panes = matchingFleetPanes(agent, liveAgents);
-    const selected = kind ? panes.filter((pane) => pane.agent === kind) : panes;
+    const panes = matchingFleetPanes(agent, liveAgents, currentPaneId);
+    const currentPane = panes.find((pane) => pane.pane_id === currentPaneId);
+    const replaceablePanes = panes.filter((pane) => pane.pane_id !== currentPaneId);
+    const selected = kind ? replaceablePanes.filter((pane) => pane.agent === kind) : replaceablePanes;
+    if (currentPane && (!kind || currentPane.agent === kind)) {
+      result.skipped.push({ handle: agent.handle, reason: `current pane ${currentPane.pane_id} is protected` });
+    }
     if (selected.length === 0) {
-      if (panes.length > 0) {
-        result.skipped.push({ handle: agent.handle, reason: `kind is ${panes.map((pane) => pane.agent).join(", ")}` });
+      if (replaceablePanes.length > 0) {
+        result.skipped.push({ handle: agent.handle, reason: `kind is ${replaceablePanes.map((pane) => pane.agent).join(", ")}` });
       }
       continue;
     }
@@ -348,17 +356,30 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
   // second copy of the agent that is running the command; the existing pane
   // is already the canonical one for that handle.
   const currentHandle = process.env.HERDR_AGENT_HANDLE || process.env.AMQ_AGENT_HANDLE || "";
+  const currentPaneId = (options.currentPaneId ?? process.env.HERDR_PANE_ID) || null;
   let workspaceId = process.env.HERDR_WORKSPACE_ID || null;
   let workspaceLookupAttempted = Boolean(workspaceId);
 
   try {
     for (const agent of targetFleet) {
       const handle = agent.handle;
+      const panes = matchingFleetPanes(agent, liveAgents, currentPaneId);
+      const currentPane = panes.find((pane) => pane.pane_id === currentPaneId);
+      if (currentPane) {
+        if (currentPane.agent === kind) {
+          result.alreadyRunning.push(handle);
+        } else {
+          result.blocked.push({
+            handle,
+            reason: `current pane ${currentPane.pane_id} is ${currentPane.agent}; refusing to close the agent issuing fleet up`,
+          });
+        }
+        continue;
+      }
       if (currentHandle && currentHandle === handle) {
         result.alreadyRunning.push(handle);
         continue;
       }
-      const panes = matchingFleetPanes(agent, liveAgents);
       const matchingKind = panes.filter((pane) => pane.agent === kind);
 
       if (matchingKind.length > 0) {

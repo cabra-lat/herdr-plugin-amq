@@ -223,6 +223,34 @@ You own ballistics.
     }
   });
 
+  await t.test("fleet up protects the named current pane even at the repository root", async () => {
+    let execCount = 0;
+    const result = await launchFleet(amqRoot, repoDir, {
+      kind: "agy",
+      agents: "coordinator",
+      currentPaneId: "w:self",
+      prepopulate: () => [{ handle: "coordinator", worktree: path.join(repoDir, ".worktrees", "coordinator") }],
+      getLiveAgents: async () => [{
+        name: "coordinator",
+        agent: "pi",
+        agent_status: "working",
+        pane_id: "w:self",
+        cwd: repoDir,
+      }],
+      execHerdr: () => {
+        execCount += 1;
+        return "{}";
+      },
+    });
+
+    assert.deepEqual(result.blocked, [{
+      handle: "coordinator",
+      reason: "current pane w:self is pi; refusing to close the agent issuing fleet up",
+    }]);
+    assert.equal(result.launched.length, 0);
+    assert.equal(execCount, 0);
+  });
+
   await t.test("fleet down closes only matching kind and preserves worktrees", async () => {
     const coordinatorWorktree = path.join(repoDir, ".worktrees", "coordinator");
     const spotterWorktree = path.join(repoDir, ".worktrees", "spotter");
