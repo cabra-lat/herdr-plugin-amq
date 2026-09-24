@@ -198,6 +198,31 @@ You own ballistics.
     assert.equal(execCount, 0);
   });
 
+  await t.test("fleet up does not duplicate the agent issuing the command", async () => {
+    const previousHandle = process.env.HERDR_AGENT_HANDLE;
+    process.env.HERDR_AGENT_HANDLE = "coordinator";
+    try {
+      let execCount = 0;
+      const result = await launchFleet(amqRoot, repoDir, {
+        kind: "pi",
+        agents: "coordinator",
+        prepopulate: () => [{ handle: "coordinator", worktree: path.join(repoDir, ".worktrees", "coordinator") }],
+        getLiveAgents: async () => [],
+        execHerdr: () => {
+          execCount += 1;
+          return "{}";
+        },
+      });
+
+      assert.deepEqual(result.alreadyRunning, ["coordinator"]);
+      assert.equal(result.launched.length, 0);
+      assert.equal(execCount, 0);
+    } finally {
+      if (previousHandle === undefined) delete process.env.HERDR_AGENT_HANDLE;
+      else process.env.HERDR_AGENT_HANDLE = previousHandle;
+    }
+  });
+
   await t.test("fleet down closes only matching kind and preserves worktrees", async () => {
     const coordinatorWorktree = path.join(repoDir, ".worktrees", "coordinator");
     const spotterWorktree = path.join(repoDir, ".worktrees", "spotter");

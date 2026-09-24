@@ -344,12 +344,20 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
   };
   const liveAgents = await getLiveAgents();
   const launcherRoots = new Set();
+  // A fleet command can be issued from inside an agent pane. Never launch a
+  // second copy of the agent that is running the command; the existing pane
+  // is already the canonical one for that handle.
+  const currentHandle = process.env.HERDR_AGENT_HANDLE || process.env.AMQ_AGENT_HANDLE || "";
   let workspaceId = process.env.HERDR_WORKSPACE_ID || null;
   let workspaceLookupAttempted = Boolean(workspaceId);
 
   try {
     for (const agent of targetFleet) {
       const handle = agent.handle;
+      if (currentHandle && currentHandle === handle) {
+        result.alreadyRunning.push(handle);
+        continue;
+      }
       const panes = matchingFleetPanes(agent, liveAgents);
       const matchingKind = panes.filter((pane) => pane.agent === kind);
 
