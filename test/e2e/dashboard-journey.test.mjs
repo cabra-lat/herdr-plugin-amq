@@ -55,16 +55,30 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
   let desktopContext;
   let mobileContext;
   let compactContext;
+  let failure = null;
+  let sidebarGeometry = null;
 
   try {
     const agents = await fetch(`${fixture.baseUrl}/api/agents`).then((response) => response.json());
     const range = agents.find((agent) => agent.handle === "range");
-    assert.equal(range.herdrStatus, "working");
-    assert.equal(range.herdrActivity.stateLabels.working, "Implementing arena refresh");
-    assert.deepEqual(range.herdrActivity.tokens, ["Gunsmith integration", "Final gate pending"]);
-     assert.equal(range.status, "working");
-     assert.equal(range.runtimeModel, "opencode/space-bunny-free (max)");
-     assert.equal(range.modelSource, "herdr-record");
+    assert.equal(
+      range?.herdrStatus,
+      "working",
+      `Expected range herdrStatus=working; received ${JSON.stringify(range)}`
+    );
+    assert.equal(
+      range?.herdrActivity?.stateLabels?.working,
+      "Implementing arena refresh",
+      `Unexpected range activity: ${JSON.stringify(range?.herdrActivity)}`
+    );
+    assert.deepEqual(
+      range?.herdrActivity?.tokens,
+      ["Gunsmith integration", "Final gate pending"],
+      `Unexpected range tokens: ${JSON.stringify(range?.herdrActivity?.tokens)}`
+    );
+    assert.equal(range.status, "working", `Unexpected range status: ${JSON.stringify(range?.status)}`);
+    assert.equal(range.runtimeModel, "opencode/space-bunny-free (max)", `Unexpected range model: ${JSON.stringify(range?.runtimeModel)}`);
+    assert.equal(range.modelSource, "herdr-record", `Unexpected range model source: ${JSON.stringify(range?.modelSource)}`);
 
     const desktopPrepared = await preparePage(browser, fixture.baseUrl, { width: 1440, height: 900, deviceScaleFactor: 1 }, errors);
     desktopContext = desktopPrepared.context;
@@ -298,7 +312,7 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     await mobile.tap("#toggle-sidebar");
     await mobile.locator("body.sidebar-open").waitFor({ state: "attached" });
     await mobile.waitForTimeout(350);
-    const sidebarGeometry = await mobile.$eval("#sidebar", (sidebar) => {
+    sidebarGeometry = await mobile.$eval("#sidebar", (sidebar) => {
       const rect = sidebar.getBoundingClientRect();
       return {
         width: rect.width,
@@ -426,8 +440,13 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     await screenshot(compact, compactTaskArtifact);
     artifacts.push(compactTaskArtifact);
 
+    assert.deepEqual(errors, [], `Browser console/page errors:\n${errors.join("\n")}`);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
     const report = {
-      ok: true,
+      ok: !failure,
       browser: browser.version(),
       baseUrl: fixture.baseUrl,
       viewports: { desktop: "1440x900", mobile: "390x844", compact: "320x568" },
@@ -435,11 +454,12 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
       journeys: ["account-hierarchy", "agent-activity", "agent-task", "latest-message", "pull-refresh-guard", "live-status-refresh", "mobile-agent-list", "mobile-inbox", "mobile-new-task-actions"],
       artifacts,
       errors,
+      failure: failure
+        ? { name: failure.name, message: failure.message, stack: failure.stack }
+        : null,
     };
     fs.mkdirSync(artifactRoot, { recursive: true });
     fs.writeFileSync(path.join(artifactRoot, "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
-    assert.deepEqual(errors, []);
-  } finally {
     if (compactContext) await compactContext.close();
     if (mobileContext) await mobileContext.close();
     if (desktopContext) await desktopContext.close();
