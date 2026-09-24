@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { addBoardTask, updateBoardTask } from "../src/board.mjs";
+import { addBoardTask, loadBoard, updateBoardTask } from "../src/board.mjs";
+import { buildCoordinatorMetrics } from "../src/metrics.mjs";
 import { runDoorbellPass, runManualCoordinatorDoorbell, sanitizeDeliveredState } from "../src/bridge.mjs";
 
 function makeFixture() {
@@ -136,6 +137,97 @@ test("changed blocked-card condition gets a new coordinator prompt", () => {
     assert.equal(prompts.length, 2);
     assert.match(prompts[1].text, /New dependency is ready for triage/);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fingerprint survives persisted state and migrates from legacy key", () => {
+  const migrated = sanitizeDeliveredState({
+    delivered: {},
+    deliveredTasks: {},
+    coordinatorAlerts: {
+      "blocked_cards:abc123": {
+        at: "2026-09-24T22:00:00.000Z",
+        to: "coordinator",
+        alert: "blocked_cards",
+        fingerprint: null,
+        attempts: 1,
+      },
+    },
+  });
+  assert.equal(migrated.coordinatorAlerts["blocked_cards:abc123"].fingerprint, "abc123");
+
+  const legacy = sanitizeDeliveredState({
+    delivered: {},
+    deliveredTasks: {},
+    coordinatorAlerts: {
+      blocked_cards: {
+        at: "2026-09-24T22:00:00.000Z",
+        to: "coordinator",
+        alert: "blocked_cards",
+        attempts: 1,
+      },
+    },
+  });
+  assert.equal(legacy.coordinatorAlerts.blocked_cards.fingerprint, null);
+});
+
+test("real state load migrates and reloads a fingerprinted alert entry", () => {
+  const { root, amqRoot } = makeFixture();
+  const oldStateDir = process.env.HERDR_PLUGIN_STATE_DIR;
+  const stateDir = path.join(root, "state");
+  process.env.HERDR_PLUGIN_STATE_DIR = stateDir;
+  try {
+    assert.ok(addBoardTask(root, amqRoot, {
+      title: "Blocked card",
+      owner: "worker",
+      status: "blocked",
+      description: "Waiting for triage.",
+      notify: false,
+    }).ok);
+    const board = loadBoard(root, amqRoot);
+    const metrics = buildCoordinatorMetrics({
+      handles: ["coordinator"],
+      agentStatuses: { coordinator: "working" },
+      board,
+      now: Date.now(),
+    });
+    const alert = metrics.alerts.find((entry) => entry.id === "blocked_cards");
+    assert.ok(alert?.fingerprint);
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "bridge-state.json"), JSON.stringify({
+      delivered: {},
+      deliveredTasks: {},
+      coordinatorAlerts: {
+        [`${alert.id}:${alert.fingerprint}`]: {
+          at: "2026-09-24T22:00:00.000Z",
+          to: "coordinator",
+          alert: alert.id,
+          fingerprint: null,
+          attempts: 1,
+        },
+      },
+    }, null, 2), "utf8");
+
+    const options = {
+      amqRoot,
+      handles: ["coordinator"],
+      getStatus: () => "working",
+      allowPrompt: false,
+      persistState: false,
+    };
+    runDoorbellPass(options);
+    const firstLoad = JSON.parse(fs.readFileSync(path.join(stateDir, "bridge-state.json"), "utf8"));
+    const key = `${alert.id}:${alert.fingerprint}`;
+    assert.equal(firstLoad.coordinatorAlerts[key].fingerprint, alert.fingerprint);
+
+    runDoorbellPass(options);
+    const secondLoad = JSON.parse(fs.readFileSync(path.join(stateDir, "bridge-state.json"), "utf8"));
+    assert.equal(secondLoad.coordinatorAlerts[key].fingerprint, alert.fingerprint);
+    assert.equal(secondLoad.coordinatorAlerts[key].attempts, 1);
+  } finally {
+    if (oldStateDir === undefined) delete process.env.HERDR_PLUGIN_STATE_DIR;
+    else process.env.HERDR_PLUGIN_STATE_DIR = oldStateDir;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -216,11 +216,14 @@ export function sanitizeDeliveredState(value) {
   for (const [id, entry] of Object.entries(value.coordinatorAlerts || {})) {
     if (!isSafeMailIdentifier(id) || !entry || typeof entry !== "object") continue;
     if (entry.to !== "coordinator" || typeof entry.at !== "string") continue;
+    const alert = safeStateText(entry.alert || id, 128);
     coordinatorAlerts[id] = {
       at: entry.at,
       to: "coordinator",
-      alert: safeStateText(entry.alert || id, 128),
-      fingerprint: typeof entry.fingerprint === "string" && isSafeMailIdentifier(entry.fingerprint, 128) ? entry.fingerprint : null,
+      alert,
+      fingerprint: typeof entry.fingerprint === "string" && isSafeMailIdentifier(entry.fingerprint, 128)
+        ? entry.fingerprint
+        : coordinatorFingerprintFromKey(id, { alert }),
       attempts: Number.isFinite(entry.attempts) ? Math.max(1, Math.trunc(entry.attempts)) : 1,
       firstAttemptAt: typeof entry.firstAttemptAt === "string" ? entry.firstAttemptAt : entry.at,
     };
@@ -241,12 +244,27 @@ export function sanitizeDeliveredState(value) {
   return { delivered, deliveredTasks, coordinatorAlerts, recoveryRequired: false };
 }
 
+function coordinatorFingerprintFromKey(id, entry) {
+  const alert = typeof entry?.alert === "string" ? entry.alert : String(id).split(":", 1)[0];
+  const prefix = `${alert}:`;
+  if (!String(id).startsWith(prefix)) return null;
+  const fingerprint = String(id).slice(prefix.length);
+  return isSafeMailIdentifier(fingerprint, 128) ? fingerprint : null;
+}
+
 function loadDeliveredState() {
   const stateFile = getStateFile();
   try {
     const content = readMaildirMessageFile(stateFile, 2 * 1024 * 1024);
     if (content === null) return { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {}, recoveryRequired: true };
-    return sanitizeDeliveredState(JSON.parse(content));
+    const raw = JSON.parse(content);
+    const sanitized = sanitizeDeliveredState(raw);
+    const needsFingerprintMigration = Object.entries(raw.coordinatorAlerts || {}).some(([id, entry]) => {
+      const inferred = coordinatorFingerprintFromKey(id, entry);
+      return inferred && entry?.fingerprint !== inferred;
+    });
+    if (!sanitized.recoveryRequired && needsFingerprintMigration) saveDeliveredState(sanitized);
+    return sanitized;
   } catch {
     return { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {}, recoveryRequired: true };
   }
