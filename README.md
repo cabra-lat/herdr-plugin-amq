@@ -182,6 +182,7 @@ At 320×568, owner guidance and the Cancel/Create Task actions remain visible wi
 ## Documentation
 
 - [Architecture and live model reporting](docs/architecture.md)
+- [Operating model: task cards, fleet resources, and local execution](docs/operating-model.md)
 - [Installation and Herdr setup](docs/installation.md)
 - [CLI, fleet lifecycle, and templates](docs/cli-and-workflows.md)
 - [Security and testing](docs/security-and-testing.md)

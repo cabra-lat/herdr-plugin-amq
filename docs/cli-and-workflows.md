@@ -27,6 +27,17 @@ herdr-amq --skill --install .opencode/skills/herdr-amq/SKILL.md
 
 Mail messages use Maildir delivery and RFC 5322 threading headers. Attachments are stored through the CAS blobstore or pinned to a Git object when migrating historical files.
 
+## Task ownership and execution policy
+
+The complete task-card contract, ownership boundaries, tuning metrics, bridge behavior, and single-workstation runner policy are documented in [Operating model](operating-model.md). The card lifecycle is intentionally small:
+
+```text
+backlog -> doing -> done
+                 \-> blocked -> doing
+```
+
+Always claim before editing, keep one owner per card, and finish with a proof string containing the relevant files, commands, exit codes/check counts, and reviewer evidence. Use the local lock policy for shared Godot resources; do not race imports against the shared `.godot/` cache.
+
 ## Fleet lifecycle
 
 ```bash
