@@ -38,6 +38,8 @@ backlog -> doing -> done
 
 Always claim before editing, keep one owner per card, and finish with a proof string containing the relevant files, commands, exit codes/check counts, and reviewer evidence. Use the local lock policy for shared Godot resources; do not race imports against the shared `.godot/` cache.
 
+Routine cards may be autonomously prioritized, assigned, claimed, and re-scoped by agents. The human owns game playtesting and product feedback, not routine implementation approval. Escalate only destructive or irreversible actions, resource/safety-limit violations, or unresolved product ambiguity. Keep the board lightweight by showing the next actor, blockers, and `test-needed` items.
+
 ## Fleet lifecycle
 
 ```bash

@@ -94,27 +94,41 @@ export function resolveStageDir(busDir, stage) {
 /**
  * Serializes a task object into a Markdown file with frontmatter.
  */
+export const TASK_SCHEMA_VERSION = 1;
+
 export function serializeTaskFile(task) {
   const safeId = task.id || `task_${Date.now()}`;
   const safeTitle = task.title || "(sem título)";
   const safeOwner = canonicalizeOwner(task.owner || "coordinator");
   const rawStatus = task.status === "doing" ? "doing" : (task.status || "backlog");
   const now = new Date().toISOString();
+  const dependsOn = Array.isArray(task.depends_on) ? task.depends_on : [];
 
   const lines = [
     "---",
+    `schema_version: ${TASK_SCHEMA_VERSION}`,
     `id: ${JSON.stringify(safeId)}`,
     `title: ${JSON.stringify(safeTitle)}`,
     `owner: ${JSON.stringify(safeOwner)}`,
     `status: ${JSON.stringify(rawStatus)}`,
+    `priority: ${JSON.stringify(task.priority || "normal")}`,
     `created: ${JSON.stringify(task.created || now)}`,
     `updated: ${JSON.stringify(task.updated || now)}`,
+    `claimed_at: ${JSON.stringify(task.claimed_at || null)}`,
+    `blocked_at: ${JSON.stringify(task.blocked_at || null)}`,
+    `done_at: ${JSON.stringify(task.done_at || null)}`,
+    `last_heartbeat_at: ${JSON.stringify(task.last_heartbeat_at || null)}`,
+    `claims: ${Number.isFinite(Number(task.claims)) ? Number(task.claims) : 0}`,
+    `blocked_ms: ${Number.isFinite(Number(task.blocked_ms)) ? Number(task.blocked_ms) : 0}`,
+    `block_reason: ${JSON.stringify(task.block_reason || null)}`,
+    `proof: ${JSON.stringify(task.proof || null)}`,
+    `depends_on: ${JSON.stringify(dependsOn)}`,
+    `next_actor: ${JSON.stringify(task.next_actor || null)}`,
     `thread: ${JSON.stringify(task.thread || `agboard/${safeId}`)}`,
     `source: "bus"`,
+    "---",
+    "",
   ];
-  if (task.priority) lines.push(`priority: ${JSON.stringify(task.priority)}`);
-  lines.push("---");
-  lines.push("");
 
   const body = (task.description || "").trim();
   if (body) {
@@ -144,11 +158,13 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
         if (colonIdx > 0) {
           const key = line.slice(0, colonIdx).trim();
           let val = line.slice(colonIdx + 1).trim();
-          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          if (val === "null" || val === "true" || val === "false") {
+            val = JSON.parse(val);
+          } else if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")) || val.startsWith("[") || val.startsWith("{")) {
             try {
               val = JSON.parse(val);
             } catch {
-              val = val.slice(1, -1);
+              if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
             }
           }
           meta[key] = val;
@@ -167,14 +183,27 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
       ? (rawStatus === "doing" ? "in_progress" : rawStatus)
       : defaultStage;
 
+    const dependsOn = Array.isArray(meta.depends_on) ? meta.depends_on : [];
     return {
+      schema_version: Number.isFinite(Number(meta.schema_version)) ? Number(meta.schema_version) : 0,
       id,
       title,
       owner,
       status,
+      priority: meta.priority || "normal",
       description: body || meta.description || "",
       created: meta.created || null,
       updated: meta.updated || null,
+      claimed_at: meta.claimed_at || null,
+      blocked_at: meta.blocked_at || null,
+      done_at: meta.done_at || null,
+      last_heartbeat_at: meta.last_heartbeat_at || null,
+      claims: Number.isFinite(Number(meta.claims)) ? Number(meta.claims) : 0,
+      blocked_ms: Number.isFinite(Number(meta.blocked_ms)) ? Number(meta.blocked_ms) : 0,
+      block_reason: meta.block_reason || null,
+      proof: meta.proof || null,
+      depends_on: dependsOn,
+      next_actor: meta.next_actor || null,
       thread: meta.thread || `agboard/${id}`,
       source: "bus",
       filePath,
@@ -607,7 +636,7 @@ export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
 export function addBoardTask(
   repoRoot,
   amqRoot,
-  { title, owner = "coordinator", status = "backlog", description = "", notify, from } = {},
+  { title, owner = "coordinator", status = "backlog", priority = "normal", description = "", depends_on = [], next_actor, notify, from } = {},
   opts = {}
 ) {
   if (!title || !title.trim()) {
@@ -622,16 +651,28 @@ export function addBoardTask(
     ? (status === "doing" ? "in_progress" : status)
     : "backlog";
   const id = `task_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
-  const now = new Date().toISOString();
+  const now = opts.now instanceof Date ? opts.now.toISOString() : new Date().toISOString();
 
   const newTask = {
+    schema_version: TASK_SCHEMA_VERSION,
     id,
     title: title.trim(),
     owner: cleanOwner,
     status: cleanStatus,
+    priority: priority || "normal",
     description: description.trim(),
     created: now,
     updated: now,
+    claimed_at: null,
+    blocked_at: null,
+    done_at: null,
+    last_heartbeat_at: null,
+    claims: 0,
+    blocked_ms: 0,
+    block_reason: null,
+    proof: null,
+    depends_on: Array.isArray(depends_on) ? depends_on : [],
+    next_actor: next_actor || cleanOwner,
     thread: `agboard/${id}`,
     source: "bus",
   };
@@ -696,17 +737,42 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   }
 
   const oldTask = { ...existingTask };
-  const targetStatus = updates.status
+  const requestedStatus = updates.status
     ? (updates.status === "doing" ? "in_progress" : updates.status)
     : existingTask.status;
+  const targetStatus = ["backlog", "in_progress", "blocked", "done"].includes(requestedStatus)
+    ? requestedStatus
+    : existingTask.status;
+  const now = opts.now instanceof Date ? opts.now.toISOString() : new Date().toISOString();
+  const nowMs = Date.parse(now);
+  const wasBlocked = existingTask.status === "blocked";
+  const isBlocked = targetStatus === "blocked";
+  let blockedMs = Number.isFinite(Number(existingTask.blocked_ms)) ? Number(existingTask.blocked_ms) : 0;
+  if (wasBlocked && !isBlocked && existingTask.blocked_at) {
+    const blockedAtMs = Date.parse(existingTask.blocked_at);
+    if (Number.isFinite(blockedAtMs)) blockedMs += Math.max(0, nowMs - blockedAtMs);
+  }
 
-  const now = new Date().toISOString();
+  const owner = updates.owner ? canonicalizeOwner(updates.owner) : existingTask.owner;
+  const enteringProgress = targetStatus === "in_progress" && existingTask.status !== "in_progress";
   const updatedTask = {
     ...existingTask,
     ...updates,
-    owner: updates.owner ? canonicalizeOwner(updates.owner) : existingTask.owner,
+    schema_version: TASK_SCHEMA_VERSION,
+    owner,
     status: targetStatus,
+    priority: updates.priority || existingTask.priority || "normal",
     updated: now,
+    claimed_at: enteringProgress ? now : (existingTask.claimed_at || null),
+    blocked_at: isBlocked ? (wasBlocked ? existingTask.blocked_at : now) : existingTask.blocked_at,
+    done_at: targetStatus === "done" ? (existingTask.done_at || now) : existingTask.done_at,
+    last_heartbeat_at: targetStatus === "in_progress" ? now : existingTask.last_heartbeat_at,
+    claims: enteringProgress ? (Number(existingTask.claims) || 0) + 1 : (Number(existingTask.claims) || 0),
+    blocked_ms: blockedMs,
+    block_reason: updates.reason ?? opts.reason ?? existingTask.block_reason ?? null,
+    proof: updates.proof ?? opts.proof ?? existingTask.proof ?? null,
+    depends_on: Array.isArray(updates.depends_on) ? updates.depends_on : (Array.isArray(existingTask.depends_on) ? existingTask.depends_on : []),
+    next_actor: updates.next_actor ?? opts.next_actor ?? (targetStatus === "done" ? null : (targetStatus === "blocked" ? "coordinator" : owner)),
     source: "bus",
   };
 
@@ -732,9 +798,9 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
       } else if (updatedTask.status === "in_progress" && oldTask.status !== "in_progress") {
         notifyTaskEvent(amqRoot, "claimed", updatedTask, { from: sender });
       } else if (updatedTask.status === "blocked" && oldTask.status !== "blocked") {
-        notifyTaskEvent(amqRoot, "blocked", updatedTask, { from: sender, reason: updates.reason || opts.reason || updates.description });
+        notifyTaskEvent(amqRoot, "blocked", updatedTask, { from: sender, reason: updatedTask.block_reason || updates.description });
       } else if (updatedTask.status === "done" && oldTask.status !== "done") {
-        notifyTaskEvent(amqRoot, "done", updatedTask, { from: sender, proof: updates.proof || opts.proof || updates.description });
+        notifyTaskEvent(amqRoot, "done", updatedTask, { from: sender, proof: updatedTask.proof || updates.description });
       }
     } catch {}
   }

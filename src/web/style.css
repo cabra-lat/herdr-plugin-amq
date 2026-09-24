@@ -241,6 +241,7 @@ body {
 .app-sidebar {
   width: 256px;
   background-color: var(--bg-app);
+  transition: width 0.2s ease, padding 0.2s ease, border-color 0.2s ease;
   display: flex;
   flex-direction: column;
   padding: 12px 12px 12px 12px;
@@ -248,6 +249,13 @@ body {
   overflow-y: auto;
   flex-shrink: 0;
   gap: 14px;
+}
+body.sidebar-collapsed .app-sidebar {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right-color: transparent;
+  overflow: hidden;
 }
 
 .compose-btn-wrap {
@@ -566,6 +574,71 @@ body {
 .panes-grid.panes-focus {
   grid-template-columns: minmax(0, 1fr);
 }
+.coordinator-metrics-panel {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  background: var(--bg-surface);
+}
+.coordinator-metrics-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.coordinator-metrics-header h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+.coordinator-metrics-header p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.coordinator-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+.coordinator-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background: var(--bg, #fff);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.coordinator-metric strong {
+  color: var(--text-primary);
+  font-size: 18px;
+}
+.coordinator-alerts {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.coordinator-alert {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 8px;
+  padding: 8px 10px;
+  border-left: 3px solid #d97706;
+  background: rgba(217, 119, 6, .08);
+  font-size: 11px;
+}
+.coordinator-alert span { grid-column: 2; }
+.coordinator-alert small { grid-column: 2; color: var(--text-secondary); }
+.coordinator-alert-clear {
+  border-left-color: #16a34a;
+  background: rgba(22, 163, 74, .08);
+}
+.severity-critical { border-left-color: #dc2626; background: rgba(220, 38, 38, .08); }
+.severity-watch { border-left-color: #d97706; }
 .panes-focus-banner {
   display: flex;
   align-items: center;
@@ -2672,7 +2745,8 @@ mark.search-highlight {
 /* ─── View Containers ──────────────────────────────────────────────────────── */
 .mail-view-section,
 .board-view-section,
-.panes-view-section {
+.panes-view-section,
+.metrics-view-section {
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -2680,6 +2754,22 @@ mark.search-highlight {
   flex-direction: column;
   overflow: hidden;
   height: 100%;
+}
+.panes-view-section {
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.metrics-view-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 16px 20px;
+  -webkit-overflow-scrolling: touch;
+}
+.metrics-view-section .coordinator-metrics-panel {
+  margin-top: 16px;
 }
 
 /* ─── Kanban Board Toolbar ─────────────────────────────────────────────────── */
@@ -3747,7 +3837,8 @@ mark.search-highlight {
 
 @media (max-width: 768px) {
   /* Off-canvas sidebar */
-  .app-sidebar {
+  .app-sidebar,
+  body.sidebar-collapsed .app-sidebar {
     position: fixed;
     top: 0;
     left: 0;
@@ -3758,6 +3849,10 @@ mark.search-highlight {
     transform: translateX(-100%);
     transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
     background-color: var(--bg-app);
+    width: 280px;
+    padding: 12px;
+    border-right: 1px solid var(--border-color);
+    overflow-y: auto;
   }
 
   .sidebar-open .app-sidebar {

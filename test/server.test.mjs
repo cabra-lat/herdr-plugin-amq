@@ -417,6 +417,10 @@ Test body`
     assert.ok(Array.isArray(data.columns.blocked));
     assert.ok(Array.isArray(data.columns.done));
     assert.ok(typeof data.stats === "object");
+    assert.ok(data.coordinator);
+    assert.ok(data.coordinator.agents);
+    assert.ok(data.coordinator.cards);
+    assert.ok(Array.isArray(data.coordinator.alerts));
   });
 
   test("POST, PATCH, and DELETE /api/board/tasks manages custom tasks", async () => {

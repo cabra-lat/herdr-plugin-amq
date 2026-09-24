@@ -129,6 +129,9 @@ export function handleDoorbell() {
     const taskInfo = r.tasksCount ? `, ${r.tasksCount} task(s)` : "";
     console.log(`  - ${r.handle} (${r.status}): ${r.count} msg(s)${taskInfo} -> ${r.action}`);
   }
+  for (const alert of res.coordinator?.alerts || []) {
+    console.warn(`  ! coordinator alert [${alert.id}]: ${alert.message} Next: ${alert.recommendedAction}`);
+  }
 }
 
 export function handleStartup() {

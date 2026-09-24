@@ -10,7 +10,8 @@ import {
   getAgentHandles,
   execCmd,
 } from "./config.mjs";
-import { listBacklogTasks, getAgentTaskStats } from "./board.mjs";
+import { listBacklogTasks, getAgentTaskStats, loadBoard } from "./board.mjs";
+import { buildCoordinatorMetrics } from "./metrics.mjs";
 import { loadLocalTemplate, renderTemplate } from "./templates.mjs";
 import { isSafeMailIdentifier, listMaildirMessageFiles, readMaildirMessageFile, writeBoundedFileAtomic } from "./protocol.mjs";
 
@@ -108,10 +109,12 @@ export function healAgentName(handle, dryRun = false, run = runHerdr) {
   try {
     const out = run(["pane", "list"]);
     const panes = JSON.parse(out)?.result?.panes ?? [];
-    const needle = `- ${handle} - `;
-    let hit = panes.find((p) =>
-      (p.terminal_title_stripped || p.terminal_title || "").includes(needle)
-    );
+    const legacyNeedle = `- ${handle} - `;
+    const piTitle = `π - ${handle}`;
+    let hit = panes.find((p) => {
+      const title = (p.terminal_title_stripped || p.terminal_title || "").trim();
+      return title.includes(legacyNeedle) || title === piTitle;
+    });
     if (!hit) {
       // Fallback: the terminal title is often overwritten by the foreground
       // program (e.g. "OpenCode"), while the tab label keeps the canonical
@@ -190,6 +193,7 @@ function sanitizeDeliveredState(value) {
       to: entry.to,
       from: entry.from,
       attempts: Number.isFinite(entry.attempts) ? Math.max(1, Math.trunc(entry.attempts)) : 1,
+      firstAttemptAt: typeof entry.firstAttemptAt === "string" ? entry.firstAttemptAt : entry.at,
     };
   }
 
@@ -201,6 +205,7 @@ function sanitizeDeliveredState(value) {
       to: entry.to,
       title: safeStateText(entry.title),
       attempts: Number.isFinite(entry.attempts) ? Math.max(1, Math.trunc(entry.attempts)) : 1,
+      firstAttemptAt: typeof entry.firstAttemptAt === "string" ? entry.firstAttemptAt : entry.at,
     };
   }
 
@@ -446,6 +451,8 @@ export function runDoorbellPass({
 
   const repoRoot = getRepoRootFromAmq(amqRoot);
   const doorbellTemplate = loadLocalTemplate(amqRoot, "doorbell");
+  const validHandles = agentList.filter((handle) => typeof handle === "string" && /^[a-z0-9_-]{1,128}$/.test(handle));
+  const statusByHandle = Object.fromEntries(validHandles.map((handle) => [handle, getStatus(handle)]));
   const state = injectedState || loadDeliveredState();
   state.delivered = state.delivered || {};
   state.deliveredTasks = state.deliveredTasks || {};
@@ -471,7 +478,7 @@ export function runDoorbellPass({
 
     if (!undeliveredMsgs.length && !undeliveredTasks.length) continue;
 
-    let status = getStatus(handle);
+    let status = statusByHandle[handle] || getStatus(handle);
     if (status === "missing") {
       const healed = healName(
         handle,
@@ -492,8 +499,10 @@ export function runDoorbellPass({
         if (!dryRun) {
           for (const m of undeliveredMsgs) {
             const prev = state.delivered[m.id];
+            const attemptedAt = new Date().toISOString();
             state.delivered[m.id] = {
-              at: new Date().toISOString(),
+              at: attemptedAt,
+              firstAttemptAt: prev?.firstAttemptAt || attemptedAt,
               to: handle,
               from: m.from,
               attempts: (prev?.attempts || 0) + 1,
@@ -501,8 +510,10 @@ export function runDoorbellPass({
           }
           for (const t of undeliveredTasks) {
             const prev = state.deliveredTasks[t.id];
+            const attemptedAt = new Date().toISOString();
             state.deliveredTasks[t.id] = {
-              at: new Date().toISOString(),
+              at: attemptedAt,
+              firstAttemptAt: prev?.firstAttemptAt || attemptedAt,
               to: handle,
               title: t.title,
               attempts: (prev?.attempts || 0) + 1,
@@ -551,6 +562,13 @@ export function runDoorbellPass({
     saveDeliveredState(state);
   }
 
+  const coordinatorMetrics = buildCoordinatorMetrics({
+    handles: validHandles,
+    agentStatuses: statusByHandle,
+    board: loadBoard(repoRoot, amqRoot),
+    deliveredState: state,
+  });
+
   return {
     ok: true,
     amqRoot,
@@ -558,6 +576,7 @@ export function runDoorbellPass({
     doorbelled: doorbelledCount,
     doorbelledTasks: doorbelledTasksCount,
     results,
+    coordinator: coordinatorMetrics,
   };
 }
 

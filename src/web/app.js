@@ -175,7 +175,9 @@
   const mailViewSection = document.getElementById("mail-view-section");
   const boardViewSection = document.getElementById("board-view-section");
   const navViewPanes = document.getElementById("nav-view-panes");
+  const navViewMetrics = document.getElementById("nav-view-metrics");
   const panesViewSection = document.getElementById("panes-view-section");
+  const metricsViewSection = document.getElementById("metrics-view-section");
   const panesGridEl = document.getElementById("panes-grid");
   const panesUpdatedAtEl = document.getElementById("panes-updated-at");
   const refreshPanesBtn = document.getElementById("refresh-panes-btn");
@@ -183,6 +185,9 @@
   const panesFocusBanner = document.getElementById("panes-focus-banner");
   const panesFocusName = document.getElementById("panes-focus-name");
   const clearPanesFocusBtn = document.getElementById("clear-panes-focus-btn");
+  const coordinatorMetricsGrid = document.getElementById("coordinator-metrics-grid");
+  const coordinatorAlerts = document.getElementById("coordinator-alerts");
+  const coordinatorMetricsUpdated = document.getElementById("coordinator-metrics-updated");
   const boardTotalCountEl = document.getElementById("board-total-count");
   const boardSearchInput = document.getElementById("board-search-input");
   const refreshBoardBtn = document.getElementById("refresh-board-btn");
@@ -404,7 +409,9 @@
       const params = new URLSearchParams({
         account: state.activeAccount,
         persona: currentPersona,
-        folder: state.searchQuery ? "all" : state.activeFolder,
+        // Starred is a local, read-only view over both inbox and sent mail.
+        // Fetch all folders, then filter against the local star set in renderList().
+        folder: state.searchQuery || state.activeFolder === "starred" ? "all" : state.activeFolder,
         query: state.searchQuery,
         page: String(state.page),
         pageSize: String(state.pageSize),
@@ -956,6 +963,14 @@
         return text.includes("brainstorm") || text.includes("survey") || text.includes("design");
       });
     }
+    if (state.activeFolder === "starred") {
+      filtered = filtered.filter((item) => state.starredIds.has(state.viewMode === "threads" ? item.threadId : item.id));
+      // Starred is client-side state, so the server's all-mail total is not
+      // the filtered total. Keep the visible result honest for this page.
+      state.total = filtered.length;
+      state.totalPages = 1;
+      state.page = 1;
+    }
 
     const countLabel = state.viewMode === "threads" ? "threads" : "messages";
     const start = state.total === 0 ? 0 : (state.page - 1) * state.pageSize + 1;
@@ -1162,6 +1177,10 @@
   }
 
   async function markMessageRead(message) {
+    // Dashboard persona/account switching is an inspection surface, not an
+    // agent action. Never move an impersonated mailbox message new -> cur;
+    // only the agent's explicit drain/read path may do that.
+    if (state.activeAccount !== "user") return;
     if (!message?.isNew || state.activeAccount === "all") return;
     const account = message.targetAccount || state.activeAccount;
     if (!account || account === "all") return;
@@ -1609,7 +1628,11 @@
       btn.classList.add("active");
       state.activeFolder = btn.dataset.folder;
       state.page = 1;
-      fetchData();
+      if (state.currentView !== "mail") {
+        switchView("mail");
+      } else {
+        fetchData();
+      }
     });
   });
 
@@ -1619,7 +1642,11 @@
       btn.classList.add("active");
       state.activeCategory = btn.dataset.category;
       state.page = 1;
-      renderList();
+      if (state.currentView !== "mail") {
+        switchView("mail");
+      } else {
+        renderList();
+      }
     });
   });
 
@@ -2104,7 +2131,10 @@
                 if (title) agent.herdrActivity.title = title;
               }
                renderPresenceList(state.agents);
-               if (state.currentView === "panes") renderPaneCards();
+               if (state.currentView === "panes") {
+                 renderPaneCards();
+                 fetchBoard();
+               }
                if (agentActivityDialog?.dataset.agentHandle === handle) renderAgentActivity();
             }
           }
@@ -2600,6 +2630,7 @@
       if (data.ok) {
          state.board = data;
          if (agentActivityDialog?.open) renderAgentActivity();
+         renderCoordinatorMetrics();
          if (state.currentView === "panes") renderPaneCards();
         if (boardTotalCountEl) {
           boardTotalCountEl.textContent = data.stats?.total || 0;
@@ -2622,14 +2653,57 @@
     navViewMail?.classList.toggle("active", viewName === "mail");
     navViewBoard?.classList.toggle("active", viewName === "board");
     navViewPanes?.classList.toggle("active", viewName === "panes");
+    navViewMetrics?.classList.toggle("active", viewName === "metrics");
     mailViewSection?.classList.toggle("hidden", viewName !== "mail");
     boardViewSection?.classList.toggle("hidden", viewName !== "board");
     panesViewSection?.classList.toggle("hidden", viewName !== "panes");
-    if (viewName === "board") {
+    metricsViewSection?.classList.toggle("hidden", viewName !== "metrics");
+    if (viewName === "board" || viewName === "metrics") {
       fetchBoard();
     } else if (viewName === "panes") {
+      fetchBoard();
       fetchPanes();
     }  }
+
+  function formatMetricDuration(ms) {
+    if (ms === null || ms === undefined) return "—";
+    const seconds = Math.max(0, Math.round(Number(ms) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}m ${seconds % 60}s`;
+  }
+
+  function renderCoordinatorMetrics() {
+    if (!coordinatorMetricsGrid || !coordinatorAlerts) return;
+    const metrics = state.board?.coordinator;
+    if (!metrics) {
+      coordinatorMetricsGrid.innerHTML = `<div class="kanban-empty">Coordinator metrics are unavailable.</div>`;
+      coordinatorAlerts.innerHTML = "";
+      return;
+    }
+    const byStatus = metrics.agents?.byStatus || {};
+    const stages = metrics.cards?.byStage || {};
+    const cards = [
+      ["Working agents", byStatus.working ?? 0],
+      ["Blocked agents", byStatus.blocked ?? 0],
+      ["Stopped agents", byStatus.stopped ?? 0],
+      ["Idle agents", byStatus.idle ?? 0],
+      ["Backlog cards", stages.backlog ?? 0],
+      ["Doing cards", stages.doing ?? 0],
+      ["Review cards", stages.review ?? 0],
+      ["Blocked cards", stages.blocked ?? 0],
+      ["Oldest queue", formatMetricDuration(metrics.queue?.oldestAgeMs)],
+      ["Retries", metrics.retries?.count ?? 0],
+    ];
+    coordinatorMetricsGrid.innerHTML = cards.map(([label, value]) =>
+      `<div class="coordinator-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`
+    ).join("");
+    const alerts = Array.isArray(metrics.alerts) ? metrics.alerts : [];
+    coordinatorAlerts.innerHTML = alerts.length
+      ? alerts.map((alert) => `<div class="coordinator-alert severity-${escapeHtml(alert.severity || "warning")}"><strong>${escapeHtml(alert.id)}</strong><span>${escapeHtml(alert.message)}</span><small>Next: ${escapeHtml(alert.recommendedAction || "Inspect coordinator dashboard.")}</small></div>`).join("")
+      : `<div class="coordinator-alert coordinator-alert-clear"><strong>Clear</strong><span>No current threshold alerts.</span></div>`;
+    if (coordinatorMetricsUpdated) coordinatorMetricsUpdated.textContent = `Updated ${new Date(metrics.generatedAt || Date.now()).toLocaleTimeString()}`;
+  }
 
   // Terminal-style autofit: measure the longest line and shrink the
   // monospace type so it fits without wrapping (real terminals never wrap;
@@ -3421,6 +3495,7 @@
     navViewMail?.addEventListener("click", () => switchView("mail"));
     navViewBoard?.addEventListener("click", () => switchView("board"));
     navViewPanes?.addEventListener("click", () => openPanesFocus(null));
+    navViewMetrics?.addEventListener("click", () => switchView("metrics"));
     refreshPanesBtn?.addEventListener("click", () => fetchPanes());
     panesLinesSelect?.addEventListener("change", () => {
       state.panesLines = parseInt(panesLinesSelect.value, 10) || 40;
@@ -3612,14 +3687,28 @@
 
   function setupMobileLayout() {
     if (toggleSidebarBtn && sidebarBackdrop) {
+      const isMobile = () => window.matchMedia("(max-width: 768px)").matches;
       toggleSidebarBtn.addEventListener("click", () => {
-        document.body.classList.toggle("sidebar-open");
-        sidebarBackdrop.classList.toggle("hidden", !document.body.classList.contains("sidebar-open"));
+        if (isMobile()) {
+          document.body.classList.toggle("sidebar-open");
+          sidebarBackdrop.classList.toggle("hidden", !document.body.classList.contains("sidebar-open"));
+        } else {
+          // Desktop uses an in-flow collapse; it must not show the mobile
+          // full-screen backdrop or dim the application.
+          document.body.classList.toggle("sidebar-collapsed");
+        }
       });
 
       sidebarBackdrop.addEventListener("click", () => {
         document.body.classList.remove("sidebar-open");
         sidebarBackdrop.classList.add("hidden");
+      });
+
+      window.addEventListener("resize", () => {
+        if (!isMobile()) {
+          document.body.classList.remove("sidebar-open");
+          sidebarBackdrop.classList.add("hidden");
+        }
       });
 
       // On mobile, clicking any nav folder item closes drawer

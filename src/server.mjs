@@ -55,6 +55,7 @@ import {
   readGitRef,
   storeBlob,
 } from "./blobs.mjs";
+import { buildCoordinatorMetrics } from "./metrics.mjs";
 
 
 
@@ -570,8 +571,14 @@ export function startWebServer({
     if (pathname === "/api/board" && req.method === "GET") {
       const repoRoot = path.resolve(path.dirname(amqRoot));
       const board = loadBoard(repoRoot, amqRoot);
+      const statusMap = await getHerdrStatusMap();
+      const coordinator = buildCoordinatorMetrics({
+        handles: getAgentHandles(amqRoot),
+        agentStatuses: Object.fromEntries(statusMap),
+        board,
+      });
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, ...board }));
+      res.end(JSON.stringify({ ok: true, ...board, coordinator }));
       return;
     }
 

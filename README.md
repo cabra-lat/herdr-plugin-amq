@@ -121,10 +121,14 @@ Messages are RFC 5322 Markdown files in Maildir, with real `In-Reply-To`, `Refer
 AGmail is a local webmail and Kanban interface for the swarm. It provides:
 
 - Inbox, sent mail, starred mail, all-mail search, and threaded conversations.
+  - **Inbox** is the selected account's received Maildir; **Sent** is its outbox; **All Mail** is both.
+  - **Starred** is a local browser view over the currently loaded Inbox + Sent items; starring never changes Maildir read state.
+  - Switching to an agent persona is read-only inspection. Opening a message in that view does not move `inbox/new` to `inbox/cur`; only an explicit agent drain/read action does that.
 - A responsive board with owners, stage controls, linked transmissions, and dispatch composer.
 - Agent presence with pane state, unread counts, current activity, and the model reported by the live harness when available. `Working` means an active turn; `Idle` means the turn ended and the agent is ready for input.
 - Human personas, including an explicit God Mode identity for sending as the operator without impersonating an agent.
 - Responsive desktop, tablet, and mobile layouts with a pull-to-refresh guard and compact task actions.
+- A dedicated Metrics view in the sideboard shows read-only coordinator workload, queue, retry, and advisory alert projections; Panes remains focused on independently scrollable live terminal cards.
 
 ### Fleet lifecycle and worktree isolation
 

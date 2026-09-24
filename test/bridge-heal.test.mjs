@@ -35,6 +35,14 @@ test("heal matches legacy title pattern without touching tabs", () => {
   assert.ok(!calls.some((c) => c[0] === "tab"), "tab list must not be consulted");
 });
 
+test("heal matches the live Pi title without touching tabs", () => {
+  const panes = [{ ...OPENCODE_PANE, terminal_title_stripped: "π - range", terminal_title: "π - range" }];
+  const { run, calls } = runnerFactory({ panes, tabs: [] });
+  assert.equal(healAgentName("range", false, run), true);
+  assert.deepEqual(calls.at(-1), ["agent", "rename", "w4:p1G", "range"]);
+  assert.ok(!calls.some((c) => c[0] === "tab"), "tab list must not be consulted");
+});
+
 test("heal falls back to exact tab label when title is overwritten", () => {
   const panes = [{ ...OPENCODE_PANE }];
   const tabs = [{ tab_id: "w4:t1F", label: "agsuite-dev" }];

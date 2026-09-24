@@ -124,6 +124,10 @@
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-9 14H7v-2h4v2zm7-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
           <span class="nav-label">Panes</span>
         </button>
+        <button class="nav-item view-tab-btn" id="nav-view-metrics" data-view="metrics">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M5 9.2h3V19H5V9.2zm5.5-5h3V19h-3V4.2zm5.5 8H19v6.8h-3V12.2z"/></svg>
+          <span class="nav-label">Metrics</span>
+        </button>
       </div>
 
       <!-- Mailbox Folders -->
@@ -408,6 +412,31 @@
         </div>
         <div class="panes-grid" id="panes-grid">
           <div class="kanban-empty">Open this view to load live pane tails.</div>
+        </div>
+      </div>
+
+      <!-- Dedicated coordinator metrics view -->
+      <div class="metrics-view-section hidden" id="metrics-view-section">
+        <div class="board-toolbar">
+          <div class="board-title-group">
+            <h2 class="board-title">Metrics</h2>
+            <span class="board-subtitle">Read-only coordinator workload, queue, and health projection</span>
+          </div>
+          <span class="board-subtitle" id="coordinator-metrics-updated"></span>
+        </div>
+        <div class="metrics-view-scroll">
+          <section class="coordinator-metrics-panel" id="coordinator-metrics-panel" aria-live="polite">
+            <div class="coordinator-metrics-header">
+              <div>
+                <h3>Coordinator metrics</h3>
+                <p>Alerts recommend a next action; they never auto-approve destructive work.</p>
+              </div>
+            </div>
+            <div class="coordinator-metrics-grid" id="coordinator-metrics-grid">
+              <div class="kanban-empty">Open Metrics to load coordinator metrics.</div>
+            </div>
+            <div class="coordinator-alerts" id="coordinator-alerts"></div>
+          </section>
         </div>
       </div>
     </main>
