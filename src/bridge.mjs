@@ -220,6 +220,7 @@ export function sanitizeDeliveredState(value) {
       at: entry.at,
       to: "coordinator",
       alert: safeStateText(entry.alert || id, 128),
+      fingerprint: typeof entry.fingerprint === "string" && isSafeMailIdentifier(entry.fingerprint, 128) ? entry.fingerprint : null,
       attempts: Number.isFinite(entry.attempts) ? Math.max(1, Math.trunc(entry.attempts)) : 1,
       firstAttemptAt: typeof entry.firstAttemptAt === "string" ? entry.firstAttemptAt : entry.at,
     };
@@ -265,6 +266,13 @@ function saveDeliveredState(state) {
     taskIds.sort();
     for (const id of taskIds.slice(0, taskIds.length - 1500)) {
       delete state.deliveredTasks[id];
+    }
+  }
+  const alertIds = Object.keys(state.coordinatorAlerts || {});
+  if (alertIds.length > 500) {
+    alertIds.sort((left, right) => String(state.coordinatorAlerts[left]?.at || "").localeCompare(String(state.coordinatorAlerts[right]?.at || "")));
+    for (const id of alertIds.slice(0, alertIds.length - 500)) {
+      delete state.coordinatorAlerts[id];
     }
   }
   writeBoundedFileAtomic(stateFile, JSON.stringify(state, null, 1), 2 * 1024 * 1024);
@@ -449,6 +457,53 @@ export function isItemPendingDrain(deliveryEntry, cooldownMs = DEFAULT_DOORBELL_
   return Date.now() - deliveredAt < cooldownMs;
 }
 
+function coordinatorAlertKey(alert) {
+  return alert.fingerprint ? `${alert.id}:${alert.fingerprint}` : alert.id;
+}
+
+function isCoordinatorAlertPending(state, alert, cooldownMs, force = false) {
+  if (force) return false;
+  if (alert.fingerprint) {
+    const key = coordinatorAlertKey(alert);
+    if (state.coordinatorAlerts[key]) return true;
+  }
+  // Alerts without a condition fingerprint retain cooldown-based behavior so
+  // an id:null key can never suppress them forever. Legacy alert-id state is
+  // also respected while migrating to fingerprint-specific keys.
+  const legacy = state.coordinatorAlerts[alert.id] || state.coordinatorAlerts[coordinatorAlertKey(alert)];
+  return legacy ? isItemPendingDrain(legacy, cooldownMs, force) : false;
+}
+
+function formatAge(value) {
+  if (!Number.isFinite(Number(value))) return "unknown";
+  const seconds = Math.max(0, Math.round(Number(value) / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.round(seconds / 60)}m`;
+}
+
+function buildCoordinatorAlertPrompt(alert) {
+  const lines = [
+    "Coordinator re-evaluation (advisory; no auto-approval).",
+    `Alert: ${alert.id} — ${alert.message}`,
+    alert.recommendedAction ? `Recommended action: ${alert.recommendedAction}` : "Recommended action: inspect the current board and keep work moving.",
+  ];
+  if (Array.isArray(alert.cards) && alert.cards.length > 0) {
+    lines.push("Triage snapshot:");
+    for (const card of alert.cards.slice(0, 32)) {
+      lines.push([
+        `- ${card.id}:`,
+        `age=${formatAge(card.ageMs)}`,
+        `owner=${card.owner || "unknown"}`,
+        `next-actor=${card.nextActor || card.owner || "unassigned"}`,
+        `dependency=${JSON.stringify(card.dependency || null)}`,
+        `reason=${card.reason || "unspecified"}`,
+      ].join(" "));
+    }
+  }
+  lines.push("Classify each card as delegate, re-scope/unblock, wait-with-owner, or close/superseded; return the next actor.");
+  lines.push("Do not auto-approve destructive or ambiguous work.");
+  return boundDoorbellPrompt(lines.join("\n"));
+}
+
 // ─── Doorbell Pass ────────────────────────────────────────────────────────────
 
 export function runDoorbellPass({
@@ -595,24 +650,21 @@ export function runDoorbellPass({
     deliveredState: state,
   });
 
-  let coordinatorDoorbellResult = { attempted: false, prompted: false, alert: null };
-  const coordinatorAlert = (coordinatorMetrics.alerts || []).find((alert) =>
-    alert.severity === "critical" || alert.id === "backlog_idle" || alert.id === "retry_failure_trend" || alert.id === "blocked_cards"
-  );
+  let coordinatorDoorbellResult = { attempted: false, prompted: false, alert: null, fingerprint: null };
+  const alerts = coordinatorMetrics.alerts || [];
+  const coordinatorAlert = alerts.find((alert) => alert.severity === "critical")
+    || alerts.find((alert) => ["backlog_idle", "retry_failure_trend", "blocked_cards", "blocked_age"].includes(alert.id));
   const coordinatorHandle = "coordinator";
   const coordinatorStatus = statusByHandle[coordinatorHandle] || (validHandles.includes(coordinatorHandle) ? getStatus(coordinatorHandle) : "missing");
-  const alertKey = coordinatorAlert?.id || null;
-  const alertPending = alertKey ? isItemPendingDrain(state.coordinatorAlerts[alertKey], coordinatorDoorbell.cooldownMs, force) : false;
+  const alertKey = coordinatorAlert ? coordinatorAlertKey(coordinatorAlert) : null;
+  const alertPending = coordinatorAlert
+    ? isCoordinatorAlertPending(state, coordinatorAlert, coordinatorDoorbell.cooldownMs, force)
+    : false;
   if (coordinatorDoorbell.enabled && coordinatorAlert && (coordinatorStatus === "idle" || coordinatorStatus === "done") && !alertPending) {
-    const promptText = [
-      "Coordinator metrics require re-evaluation.",
-      `Alert: ${coordinatorAlert.id} — ${coordinatorAlert.message}`,
-      `Recommended action: ${coordinatorAlert.recommendedAction || "Inspect the coordinator metrics and keep work moving."}`,
-      "Review blocked/stalled work, delegate or re-scope cards, and continue the swarm. Do not auto-approve destructive actions.",
-    ].join("\n");
+    const promptText = buildCoordinatorAlertPrompt(coordinatorAlert);
     const ok = prompt(coordinatorHandle, promptText, dryRun || !allowPrompt);
     const prompted = Boolean(ok && allowPrompt && !dryRun);
-    coordinatorDoorbellResult = { attempted: true, prompted, alert: coordinatorAlert.id };
+    coordinatorDoorbellResult = { attempted: true, prompted, alert: coordinatorAlert.id, fingerprint: coordinatorAlert.fingerprint || null };
     if (prompted) {
       recordCoordinatorAlert(`${coordinatorAlert.id}: ${coordinatorAlert.message}`);
       state.coordinatorAlerts[alertKey] = {
@@ -620,6 +672,7 @@ export function runDoorbellPass({
         firstAttemptAt: state.coordinatorAlerts[alertKey]?.firstAttemptAt || new Date().toISOString(),
         to: coordinatorHandle,
         alert: coordinatorAlert.id,
+        fingerprint: coordinatorAlert.fingerprint || null,
         attempts: (state.coordinatorAlerts[alertKey]?.attempts || 0) + 1,
       };
     }

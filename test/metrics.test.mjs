@@ -70,7 +70,7 @@ test("blocked cards alert separately and do not fake retry evidence", () => {
           next_actor: "coordinator",
           depends_on: ["qa proof"],
           block_reason: "Waiting for QA",
-          updated: "2026-09-24T16:59:00.000Z",
+          updated: "2026-09-24T16:40:00.000Z",
         }],
         done: [],
       },
@@ -86,6 +86,11 @@ test("blocked cards alert separately and do not fake retry evidence", () => {
   assert.equal(blocked.cards[0].nextActor, "coordinator");
   assert.deepEqual(blocked.cards[0].dependency, ["qa proof"]);
   assert.match(blocked.recommendedAction, /next actor\/dependency/);
+  assert.match(blocked.fingerprint, /^[a-f0-9]{16}$/);
+  const blockedAge = result.alerts.find((alert) => alert.id === "blocked_age");
+  assert.ok(blockedAge);
+  assert.deepEqual(blockedAge.cards.map((card) => card.id), ["blocked-1"]);
+  assert.notEqual(blockedAge.fingerprint, blocked.fingerprint);
 });
 
 test("real retry evidence still raises retry_failure_trend", () => {

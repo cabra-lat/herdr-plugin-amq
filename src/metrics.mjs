@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const DEFAULT_THRESHOLDS = Object.freeze({
   queueWarnMs: 300 * 1000,
   queueCriticalMs: 900 * 1000,
@@ -33,6 +35,20 @@ function timestamp(value) {
 function ageMs(value, now) {
   const created = timestamp(value);
   return created === null ? null : Math.max(0, now - created);
+}
+
+function conditionFingerprint(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+}
+
+function cardCondition(cards) {
+  return (cards || []).map((card) => ({
+    id: card.id,
+    owner: card.owner || null,
+    nextActor: card.nextActor || null,
+    dependency: card.dependency || null,
+    reason: card.reason || null,
+  }));
 }
 
 function normalizeStatus(value) {
@@ -195,21 +211,26 @@ export function buildCoordinatorMetrics({
     });
   }
   if (blockedWork.length > 0) {
+    const severity = blockedWork.some((task) => task.ageMs !== null && task.ageMs >= limits.blockedCriticalMs) ? "critical" : "warning";
     alerts.push({
       id: "blocked_cards",
-      severity: blockedWork.some((task) => task.ageMs !== null && task.ageMs >= limits.blockedCriticalMs) ? "critical" : "warning",
+      severity,
+      fingerprint: conditionFingerprint({ id: "blocked_cards", severity, cards: cardCondition(blockedWork) }),
       message: `${blockedWork.length} blocked card(s) need coordinator attention.`,
       recommendedAction: "Review each next actor/dependency, then delegate or explicitly re-scope the blocker.",
       cards: blockedWork,
     });
   }
-  if (blockedWork.some((task) => task.ageMs !== null && task.ageMs >= limits.blockedWarnMs)) {
+  const agedBlockedWork = blockedWork.filter((task) => task.ageMs !== null && task.ageMs >= limits.blockedWarnMs);
+  if (agedBlockedWork.length > 0) {
+    const severity = agedBlockedWork.some((task) => task.ageMs >= limits.blockedCriticalMs) ? "critical" : "warning";
     alerts.push({
       id: "blocked_age",
-      severity: blockedWork.some((task) => task.ageMs >= limits.blockedCriticalMs) ? "critical" : "warning",
-      message: `${blockedWork.filter((task) => task.ageMs >= limits.blockedWarnMs).length} blocked card(s) exceed the blocked-age threshold.`,
+      severity,
+      fingerprint: conditionFingerprint({ id: "blocked_age", severity, cards: cardCondition(agedBlockedWork) }),
+      message: `${agedBlockedWork.length} blocked card(s) exceed the blocked-age threshold.`,
       recommendedAction: "Name the next actor and resolve or explicitly re-scope the blocker.",
-      cards: blockedWork,
+      cards: agedBlockedWork,
     });
   }
   if (staleHeartbeats.length > 0) {
