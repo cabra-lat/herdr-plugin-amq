@@ -418,6 +418,11 @@ body {
   border-color: var(--border-light);
 }
 
+.presence-item.presence-current {
+  background: var(--blue-surface);
+  border-color: var(--primary-blue);
+}
+
 .presence-item:focus-visible {
   outline: 2px solid var(--primary-blue);
   outline-offset: -2px;
@@ -4267,6 +4272,190 @@ mark.search-highlight {
   border-top: 1px solid var(--border-light);
 }
 
+.hangout-dialog {
+  width: min(960px, calc(100vw - 32px));
+}
+
+.hangout-shell {
+  max-height: min(820px, calc(100dvh - 32px));
+}
+
+.hangout-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hangout-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 22px 22px;
+  overflow-y: auto;
+}
+
+.hangout-note {
+  padding: 11px 13px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--blue-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hangout-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.hangout-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: var(--bg-app);
+}
+
+.hangout-card:hover {
+  border-color: var(--primary-blue);
+}
+
+.hangout-card-header,
+.hangout-card-name-row,
+.hangout-card-actions,
+.hangout-message-meta {
+  display: flex;
+  align-items: center;
+}
+
+.hangout-card-header,
+.hangout-card-name-row,
+.hangout-card-actions,
+.hangout-message-meta {
+  gap: 8px;
+}
+
+.hangout-card-header {
+  justify-content: space-between;
+}
+
+.hangout-card-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.hangout-card-avatar {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hangout-card-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hangout-card-role {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hangout-card-activity,
+.hangout-card-task,
+.hangout-latest {
+  min-width: 0;
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: var(--bg-surface);
+}
+
+.hangout-card-activity {
+  border-left: 3px solid var(--primary-blue);
+}
+
+.hangout-card-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.hangout-card-activity strong,
+.hangout-card-task strong,
+.hangout-message {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text-main);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.hangout-card-task strong {
+  font-weight: 600;
+}
+
+.hangout-latest {
+  border: 1px solid var(--border-light);
+}
+
+.hangout-message {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.hangout-message-meta {
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.hangout-card-actions {
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.hangout-card-actions .btn {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.hangout-empty {
+  grid-column: 1 / -1;
+  padding: 28px 16px;
+  border: 1px dashed var(--border-light);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
 #splitter-view[data-reading-layout="full"].detail-open .mail-list-container {
   display: none;
 }
@@ -4811,6 +5000,20 @@ html[data-theme="dark"] ::placeholder {
 
   .agent-activity-actions .btn {
     min-height: 44px;
+    flex: 1;
+    justify-content: center;
+  }
+
+  .hangout-body {
+    padding: 16px;
+  }
+
+  .hangout-list {
+    grid-template-columns: 1fr;
+  }
+
+  .hangout-card-actions .btn {
+    min-height: 40px;
     flex: 1;
     justify-content: center;
   }

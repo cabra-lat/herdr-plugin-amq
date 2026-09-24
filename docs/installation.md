@@ -9,17 +9,45 @@
 
 The runtime has no npm production dependencies. `playwright-core` is a development-only dependency for the browser suite.
 
+## Published CLI
+
+Install the CLI and dashboard entry point from npm:
+
+```bash
+npm install --global herdr-plugin-amq
+herdr-amq status
+herdr-amq dashboard
+```
+
+For a one-off command, use `npx` instead of a global install:
+
+```bash
+npx --yes herdr-plugin-amq status
+npx --yes herdr-plugin-amq dashboard
+```
+
+The npm package does not automatically register Herdr actions or panes. Use the checkout flow below when you want the full plugin integration.
+
 ## Link the plugin
 
 ```bash
 git clone https://github.com/cabra-lat/herdr-plugin-amq.git herdr-plugin-amq
 cd herdr-plugin-amq
+npm ci --ignore-scripts
 herdr plugin link .
 herdr plugin list
 herdr plugin action list --plugin cabra.amq
 ```
 
-The dashboard and queue root are discovered from the current workspace. The web server binds to `127.0.0.1` and refuses foreign `Host` headers.
+The dashboard and queue root are discovered from the current workspace. Run commands from the project or worktree that owns the queue. The web server binds to `127.0.0.1` and refuses foreign `Host` headers.
+
+From the checkout, the dashboard can be started without a global CLI link:
+
+```bash
+node bin/herdr-amq.mjs dashboard
+```
+
+Run `npm link` if you want the `herdr-amq` command available globally while developing from this checkout. For a new swarm, `herdr-amq bootstrap --kind opencode` provisions the queue, worktrees, bridge daemon, and first doorbell pass.
 
 ## Herdr actions
 

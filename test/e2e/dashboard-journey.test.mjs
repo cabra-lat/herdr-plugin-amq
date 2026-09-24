@@ -97,6 +97,36 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     artifacts.push(accountArtifact);
 
     await desktop.click("#user-profile-btn");
+    const initialPresenceOrder = await desktop.$$eval(".presence-item", (items) => items.map((item) => item.dataset.agentHandle));
+    assert.deepEqual(initialPresenceOrder, ["user", "qa", "range"]);
+    assert.equal(await desktop.locator('.presence-item[data-agent-handle="qa"] .presence-status-pill').textContent(), "Idle");
+    assert.equal(await desktop.locator('.presence-item[data-agent-handle="qa"] .presence-status-pill').getAttribute("title"), "Turn ended · ready for input");
+    assert.equal(await desktop.locator('.presence-item[data-agent-handle="range"] .presence-status-pill').textContent(), "Working");
+    assert.equal(await desktop.locator('.presence-item[data-agent-handle="range"] .presence-status-pill').getAttribute("title"), "Active turn");
+
+    await desktop.click("#user-profile-btn");
+    await desktop.click('.account-item-btn[data-handle="qa"]');
+    await desktop.locator("#header-account-label", { hasText: "Quality Auditor" }).waitFor({ state: "visible" });
+    const activePresenceOrder = await desktop.$$eval(".presence-item", (items) => items.map((item) => item.dataset.agentHandle));
+    assert.equal(activePresenceOrder[0], "qa");
+    assert.equal(await desktop.locator('.presence-item[data-agent-handle="qa"]').getAttribute("aria-current"), "true");
+    assert.equal(await desktop.locator('.presence-item[data-agent-handle="range"]').getAttribute("aria-current"), "false");
+
+    await desktop.click("#user-profile-btn");
+    await desktop.click('.account-item-btn[data-handle="range"]');
+    await desktop.locator("#header-account-label", { hasText: "Range Owner" }).waitFor({ state: "visible" });
+
+    await desktop.click("#open-hangouts-btn");
+    await desktop.waitForSelector("#hangout-dialog[open]");
+    await desktop.locator(".hangout-card").first().waitFor({ state: "visible", timeout: 10000 });
+    assert.equal(await desktop.locator(".hangout-card").count(), 3);
+    assert.match(await desktop.locator('.hangout-card[data-hangout-agent="range"] .hangout-message').textContent(), /Latest gate evidence is ready/);
+    await desktop.click('.hangout-card[data-hangout-agent="range"] [data-hangout-action="message"]');
+    await desktop.waitForSelector("#compose-modal:not(.hidden)");
+    assert.equal(await desktop.locator("#compose-to").inputValue(), "range");
+    assert.match(await desktop.locator("#compose-subject").inputValue(), /Status check: Range Owner/);
+    await desktop.click("#close-compose-btn");
+
     await desktop.click('.presence-item[data-agent-handle="range"]');
     await desktop.waitForSelector("#agent-activity-dialog[open]");
     await desktop.locator("#view-agent-task-btn").waitFor({ state: "visible" });
@@ -204,8 +234,17 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
         interactive_ready: true,
       },
     ]);
-    fixture.herdr.emit({ type: "pane.agent_status_changed", pane_id: "pane-range" });
+    fixture.herdr.emit({
+      type: "pane_agent_status_changed",
+      name: "range",
+      pane_id: "pane-range",
+      workspace_id: "workspace-range",
+      agent_status: "idle",
+      state_labels: { idle: "Waiting for the next gate" },
+    });
     await desktop.locator('.presence-item[data-agent-handle="range"] .presence-status-pill', { hasText: "Idle" }).waitFor({ state: "visible", timeout: 10000 });
+    const stablePresenceOrder = await desktop.$$eval(".presence-item", (items) => items.map((item) => item.dataset.agentHandle));
+    assert.deepEqual(stablePresenceOrder, ["range", "user", "qa"]);
 
     const mobilePrepared = await preparePage(browser, fixture.baseUrl, { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, errors);
     mobileContext = mobilePrepared.context;

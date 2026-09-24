@@ -13,6 +13,7 @@ const PALETTE = [
   "#9c27b0", "#009688", "#e91e63", "#3f51b5", "#00bcd4",
   "#795548", "#607d8b", "#673ab7", "#2e7d32", "#c2185b"
 ];
+const LEGACY_PLACEHOLDER_MODEL = "gemini 3.8 flash (high)";
 
 export function getAgentColor(handle = "") {
   let hash = 0;
@@ -822,7 +823,7 @@ export function loadAgentDirectory(amqRoot) {
     const brief = briefs.get(h) || null;
     const name = customProfile?.name || presence?.name || brief?.name || formatAgentTitle(h);
     const role = customProfile?.role || (presence?.role && presence.role !== "Swarm Agent" ? presence.role : null) || brief?.role || brief?.description || (h === "user" ? "Human Operator" : "Swarm Agent");
-    const model = customProfile?.model || brief?.model || "claude-3-7-sonnet";
+    const model = normalizeModel(customProfile?.model) || normalizeModel(brief?.model);
     const emoji = customProfile?.emoji || presence?.emoji || (h === "user" ? "👤" : h.slice(0, 1).toUpperCase());
     const color = customProfile?.color || presence?.color || getAgentColor(h);
     const worktree = customProfile?.worktree || null;
@@ -881,6 +882,12 @@ function normalizeText(value, fallback, maxLength) {
     .replace(/\s+/g, " ")
     .trim();
   return normalized ? normalized.slice(0, maxLength) : fallback;
+}
+
+function normalizeModel(value, fallback = null) {
+  const normalized = normalizeText(value, fallback, 200);
+  if (typeof normalized !== "string") return normalized;
+  return normalized.toLowerCase() === LEGACY_PLACEHOLDER_MODEL ? null : normalized;
 }
 
 function normalizeMultiline(value, fallback, maxLength) {
@@ -980,7 +987,7 @@ function registerAgentLocked(amqRoot, agentDir, safeHandle, options) {
     handle: safeHandle,
     name: normalizeText(name, normalizeText(existingProfile?.name, defaultName, 120), 120),
     role: normalizeText(role, normalizeText(existingProfile?.role, "Autonomous Specialist", 240), 240),
-    model: normalizeText(model, normalizeText(existingProfile?.model, "claude-3-7-sonnet", 200), 200),
+    model: normalizeModel(model, normalizeModel(existingProfile?.model)),
     emoji: normalizeText(emoji, normalizeText(existingProfile?.emoji, defaultEmoji, 16), 16),
     color: normalizeText(color, normalizeText(existingProfile?.color, getAgentColor(safeHandle), 64), 64),
     worktree: normalizeText(worktree, normalizeText(existingProfile?.worktree, "", 1024), 1024) || null,

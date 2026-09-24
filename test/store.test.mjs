@@ -103,10 +103,12 @@ Acknowledged beta, processing task.`;
     assert.equal(alpha.unreadCount, 1);
     assert.ok(alpha.profile.name);
     assert.ok(alpha.profile.color);
+    assert.equal(alpha.profile.model, null);
 
     const beta = agents.find((a) => a.handle === "agent-beta");
     assert.ok(beta);
     assert.equal(beta.unreadCount, 0);
+    assert.equal(beta.profile.model, null);
   });
 
   test("parseMessageFile detects metadata, folder, and image attachments", () => {
@@ -243,6 +245,29 @@ Acknowledged beta, processing task.`;
     const updated = JSON.parse(fs.readFileSync(profileFile, "utf8"));
     assert.equal(updated.welcome.sentAt, sentAt);
     assert.equal(fs.readdirSync(inboxDir).filter((file) => file.endsWith(".md")).length, 1);
+  });
+
+  test("does not invent or preserve a placeholder model", () => {
+    const registered = registerAgent(tempRoot, {
+      handle: "placeholder-free",
+      name: "Placeholder Free",
+      role: "No invented model",
+      model: "Gemini 3.8 Flash (High)",
+      syncDisk: false,
+    });
+    assert.equal(registered.ok, true);
+    assert.equal(registered.agent.model, null);
+
+    const legacyDir = path.join(tempRoot, "agents", "legacy-placeholder");
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, "profile.json"),
+      JSON.stringify({ model: "Gemini 3.8 Flash (High)" }),
+      "utf8",
+    );
+    const loaded = loadAgentDirectory(tempRoot).find((agent) => agent.handle === "legacy-placeholder");
+    assert.ok(loaded);
+    assert.equal(loaded.profile.model, null);
   });
 
   test("getCachedMessage caches parsed messages and invalidates on request", () => {

@@ -264,8 +264,11 @@ Test body`
     const res = await fetch(`${baseUrl}/`);
     assert.equal(res.status, 200);
     const text = await res.text();
-    assert.ok(text.includes("AGmail"));
-    assert.ok(text.includes("search-input"));
+     assert.ok(text.includes("AGmail"));
+     assert.ok(text.includes("Working = active turn"));
+     assert.ok(text.includes("open-hangouts-btn"));
+     assert.ok(text.includes("hangout-dialog"));
+     assert.ok(text.includes("search-input"));
     assert.ok(text.includes("sidebar-backdrop"));
     assert.ok(text.includes("chat-context-menu"));
     assert.ok(text.includes("model-suggestions"));

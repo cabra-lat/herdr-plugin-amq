@@ -88,6 +88,9 @@ You own ballistics.
       const agentMaildir = path.join(amqRoot, "agents", r.handle, "inbox", "new");
       assert.ok(fs.existsSync(agentMaildir), `Expected ${agentMaildir} to exist`);
     }
+
+    const coordinatorProfile = JSON.parse(fs.readFileSync(path.join(amqRoot, "agents", "coordinator", "profile.json"), "utf8"));
+    assert.equal(coordinatorProfile.model, null);
   });
 
   await t.test("buildFleetEnvPath includes ~/.local/bin and system paths", () => {

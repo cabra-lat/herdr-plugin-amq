@@ -146,10 +146,11 @@
 
       <!-- Agent Presence (Google Hangouts style) -->
       <div class="sidebar-section-header">
-        <span>SWARM PRESENCE</span>
-        <div class="section-actions">
-          <button class="section-add-btn" id="open-register-agent-btn" title="Register new agent profile">+</button>
-        </div>
+        <span title="Working = active turn · Idle = ready for input">SWARM PRESENCE</span>
+         <div class="section-actions">
+           <button class="section-add-btn" id="open-hangouts-btn" title="Open Swarm Hangouts" aria-label="Open Swarm Hangouts">☰</button>
+           <button class="section-add-btn" id="open-register-agent-btn" title="Register new agent profile">+</button>
+         </div>
       </div>
       <div class="hangouts-list" id="presence-list">
         <!-- Populated dynamically -->
@@ -511,7 +512,7 @@
 
         <div class="agent-field">
           <label for="new-agent-model">Backend Model Profile:</label>
-          <input type="text" id="new-agent-model" list="model-suggestions" placeholder="e.g. claude-3-7-sonnet, gemini-2.5-flash, ollama/qwen2.5-coder..." autocomplete="off">
+          <input type="text" id="new-agent-model" list="model-suggestions" placeholder="Optional; leave blank to use live harness metadata" autocomplete="off">
           <datalist id="model-suggestions"></datalist>
           <span class="field-hint">Specified model or custom endpoint for this persona</span>
         </div>
@@ -630,6 +631,28 @@
         <button class="btn btn-secondary" id="view-agent-inbox-btn">View inbox</button>
         <button class="btn btn-primary" id="view-agent-task-btn" hidden>Open task</button>
       </footer>
+    </div>
+  </dialog>
+
+  <dialog class="agent-activity-dialog hangout-dialog" id="hangout-dialog" aria-labelledby="hangout-title">
+    <div class="agent-activity-shell hangout-shell">
+      <header class="agent-activity-header">
+        <div>
+          <span class="agent-activity-kicker">Swarm hangouts</span>
+          <h2 id="hangout-title">What agents are doing</h2>
+          <span>Live Herdr state, assigned tasks, and latest AMQ reports</span>
+        </div>
+        <div class="hangout-header-actions">
+          <button class="icon-btn-small" id="refresh-hangouts-btn" title="Refresh hangouts" aria-label="Refresh hangouts">↻</button>
+          <button class="icon-btn-small" id="close-hangouts-btn" title="Close hangouts" aria-label="Close hangouts">✕</button>
+        </div>
+      </header>
+      <div class="hangout-body">
+        <div class="hangout-note">Read-only peek: opening this feed does not mark messages as read. Use <strong>Message</strong> when you intentionally want to wake an agent.</div>
+        <div class="hangout-list" id="hangout-list" aria-live="polite">
+          <div class="loading-state">Loading swarm activity...</div>
+        </div>
+      </div>
     </div>
   </dialog>
 

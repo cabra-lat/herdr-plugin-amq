@@ -113,7 +113,7 @@ export function prepopulateFleet(amqRoot, repoRoot) {
       role: persona.role || persona.description,
       description: persona.description,
       prompt: persona.prompt,
-      model: persona.model || "Gemini 3.8 Flash (High)",
+      model: persona.model || null,
       worktree: worktreeResult.ok ? worktreeResult.path : undefined,
     });
 

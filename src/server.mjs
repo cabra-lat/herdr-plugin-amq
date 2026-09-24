@@ -37,6 +37,7 @@ import {
 import {
   getHerdrAgents,
   getHerdrStatusMap,
+  normalizeHerdrStatus,
   subscribeHerdrEvents,
   isHerdrAvailable,
   getSocketPath,
@@ -58,6 +59,50 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = path.join(__dirname, "web");
+const HERDR_STATUS_EVENT_TYPES = new Set(["pane_agent_status_changed", "pane.agent_status_changed", "pane.updated", "agent.state_changed", "agent.updated"]);
+const HERDR_REFRESH_EVENT_TYPES = new Set(["pane_agent_detected", "pane.created", "pane.closed", "workspace.created", "workspace.closed", "agent.created", "agent.closed"]);
+
+export function isHerdrStatusEvent(type) {
+  return HERDR_STATUS_EVENT_TYPES.has(String(type || ""));
+}
+
+export function isHerdrRefreshEvent(type) {
+  return HERDR_REFRESH_EVENT_TYPES.has(String(type || ""));
+}
+
+export function findHerdrEventHandle(cache, event) {
+  if (!cache || !event) return null;
+  const directHandle = String(event.name || event.handle || "").trim();
+  if (directHandle && cache.has(directHandle)) return directHandle;
+  const paneId = String(event.pane_id || "").trim();
+  if (!paneId) return null;
+  for (const [handle, activity] of cache.entries()) {
+    if (activity?.herdrPaneId === paneId) return handle;
+  }
+  return null;
+}
+
+export function mergeHerdrStatusEvent(cache, event, observedAt = new Date().toISOString()) {
+  const handle = findHerdrEventHandle(cache, event);
+  if (!handle || !event?.agent_status) return null;
+  const current = cache.get(handle) || {};
+  const nextSeq = Number(event.state_change_seq);
+  const currentSeq = Number(current.herdrStateChangeSeq);
+  if (Number.isFinite(nextSeq) && Number.isFinite(currentSeq) && nextSeq < currentSeq) return null;
+
+  const next = {
+    ...current,
+    herdrStatus: normalizeHerdrStatus(event.agent_status),
+    herdrObservedAt: observedAt,
+  };
+  if (Number.isFinite(nextSeq)) next.herdrStateChangeSeq = nextSeq;
+  if (event.state_labels && typeof event.state_labels === "object" && !Array.isArray(event.state_labels)) {
+    next.herdrStateLabels = { ...event.state_labels };
+  }
+  if (typeof event.title === "string" && event.title.trim()) next.herdrTitle = event.title.trim();
+  cache.set(handle, next);
+  return { handle, activity: next };
+}
 
 export function startWebServer({
   port = 8505,
@@ -77,6 +122,8 @@ export function startWebServer({
   let herdrStatusCache = new Map();
   let herdrSubscription = null;
   let herdrRefreshDebounce = null;
+  let herdrStatusFlushTimer = null;
+  const pendingHerdrStatusEvents = new Map();
 
   function broadcastSSE(payload) {
     const msg = `data: ${JSON.stringify(payload)}\n\n`;
@@ -100,6 +147,36 @@ export function startWebServer({
     }, 80);
   }
 
+  function queueHerdrStatusEvent(event) {
+    const handle = findHerdrEventHandle(herdrStatusCache, event);
+    if (!handle || !event?.agent_status) {
+      scheduleHerdrRefresh("status");
+      return;
+    }
+    const current = herdrStatusCache.get(handle);
+    const nextStatus = normalizeHerdrStatus(event.agent_status);
+    if (current?.herdrStatus === nextStatus && !event.state_labels && !event.title) return;
+    pendingHerdrStatusEvents.set(handle, event);
+    if (herdrStatusFlushTimer) return;
+    herdrStatusFlushTimer = setTimeout(() => {
+      herdrStatusFlushTimer = null;
+      const pending = new Map(pendingHerdrStatusEvents);
+      pendingHerdrStatusEvents.clear();
+      for (const [pendingHandle, pendingEvent] of pending) {
+        const merged = mergeHerdrStatusEvent(herdrStatusCache, pendingEvent);
+        if (!merged || merged.handle !== pendingHandle) continue;
+        broadcastSSE({
+          type: "herdr_agent_update",
+          handle: merged.handle,
+          herdrStatus: merged.activity.herdrStatus,
+          stateLabels: merged.activity.herdrStateLabels || {},
+          title: merged.activity.herdrTitle || null,
+          at: merged.activity.herdrObservedAt,
+        });
+      }
+    }, 250);
+  }
+
   let isClosing = false;
   let herdrReconnectTimeout = null;
 
@@ -114,17 +191,17 @@ export function startWebServer({
       },
       onEvent: (event) => {
         const type = String(event?.type || "");
-        if (
-          type.startsWith("pane.") ||
-          type.startsWith("agent.") ||
-          type === "workspace.created" ||
-          type === "workspace.closed"
-        ) {
+        if (isHerdrStatusEvent(type)) {
+          queueHerdrStatusEvent(event);
+        } else if (isHerdrRefreshEvent(type)) {
           scheduleHerdrRefresh(type);
         }
       },
       onDisconnect: () => {
         herdrStatusCache = new Map();
+        pendingHerdrStatusEvents.clear();
+        if (herdrStatusFlushTimer) clearTimeout(herdrStatusFlushTimer);
+        herdrStatusFlushTimer = null;
         broadcastSSE({ type: "herdr_agents_refresh", reason: "disconnected", at: new Date().toISOString() });
         if (!isClosing) {
           herdrReconnectTimeout = setTimeout(startHerdrSubscription, 5000);
@@ -813,6 +890,8 @@ export function startWebServer({
     }
     if (herdrReconnectTimeout) clearTimeout(herdrReconnectTimeout);
     if (herdrRefreshDebounce) clearTimeout(herdrRefreshDebounce);
+    if (herdrStatusFlushTimer) clearTimeout(herdrStatusFlushTimer);
+    pendingHerdrStatusEvents.clear();
     if (watchDebounce) clearTimeout(watchDebounce);
     if (herdrSubscription) {
       try { herdrSubscription.close(); } catch {}

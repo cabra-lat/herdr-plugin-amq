@@ -10,8 +10,9 @@
     selectedThreadId: null,
     selectedMessageId: null,
     starredIds: new Set(JSON.parse(localStorage.getItem("agmail_starred") || "[]")),
-    items: [], // threads or messages depending on viewMode
-    page: 1,
+     items: [], // threads or messages depending on viewMode
+     hangoutThreads: [],
+     page: 1,
     pageSize: 50,
     total: 0,
     totalPages: 1,
@@ -98,6 +99,11 @@
   const agentActivityObserved = document.getElementById("agent-activity-observed");
   const viewAgentInboxBtn = document.getElementById("view-agent-inbox-btn");
   const viewAgentTaskBtn = document.getElementById("view-agent-task-btn");
+  const openHangoutsBtn = document.getElementById("open-hangouts-btn");
+  const hangoutDialog = document.getElementById("hangout-dialog");
+  const closeHangoutsBtn = document.getElementById("close-hangouts-btn");
+  const refreshHangoutsBtn = document.getElementById("refresh-hangouts-btn");
+  const hangoutListEl = document.getElementById("hangout-list");
 
   // Context Menu Elements
   const chatContextMenu = document.getElementById("chat-context-menu");
@@ -356,9 +362,10 @@
       const res = await fetch("/api/agents");
       const list = await res.json();
       state.agents = list;
-      renderAccountDropdown(list);
-      renderPresenceList(list);
-      populateComposeDropdowns(list);
+       renderAccountDropdown(list);
+       renderPresenceList(list);
+       if (hangoutDialog?.open) renderHangouts();
+       populateComposeDropdowns(list);
     } catch {}
   }
 
@@ -366,8 +373,9 @@
     try {
       const res = await fetch("/api/worktrees");
       const list = await res.json();
-      state.worktrees = Array.isArray(list) ? list : [];
-      renderPresenceList(state.agents);
+       state.worktrees = Array.isArray(list) ? list : [];
+       renderPresenceList(state.agents);
+       if (hangoutDialog?.open) renderHangouts();
     } catch {}
   }
 
@@ -433,7 +441,7 @@
       </button>
     `;
 
-    for (const agent of agents) {
+    for (const agent of sortAgentsForPresence(agents)) {
       const active = state.activeAccount === agent.handle;
       const profile = agent.profile || {};
       const name = profile.name || agent.handle;
@@ -499,6 +507,7 @@
 
     replyAsUserEl.textContent = currentPersona;
     renderAccountDropdown(state.agents);
+    renderPresenceList(state.agents);
     fetchData();
   }
 
@@ -529,12 +538,12 @@
     const raw = String(agent?.herdrStatus && agent.herdrStatus !== "unknown" ? agent.herdrStatus : agent?.status || "offline").toLowerCase();
     const status = raw === "online" || raw === "active" ? "idle" : raw;
     const views = {
-      working: { label: "Working", tone: "working" },
-      idle: { label: "Idle", tone: "idle" },
-      done: { label: "Done", tone: "done" },
-      blocked: { label: "Blocked", tone: "blocked" },
-      error: { label: "Needs attention", tone: "blocked" },
-      offline: { label: "Offline", tone: "offline" },
+      working: { label: "Working", description: "Active turn", tone: "working" },
+      idle: { label: "Idle", description: "Turn ended · ready for input", tone: "idle" },
+      done: { label: "Done", description: "Turn completed · ready for input", tone: "done" },
+      blocked: { label: "Blocked", description: "Waiting for intervention", tone: "blocked" },
+      error: { label: "Needs attention", description: "State error", tone: "blocked" },
+      offline: { label: "Offline", description: "No live Herdr state", tone: "offline" },
     };
     return { status, ...(views[status] || views.offline) };
   }
@@ -566,16 +575,34 @@
     if (token) return token;
     if (title) return title;
     if (task?.title) return task.title;
-    if (agent?.herdrStatus && agent.herdrStatus !== "unknown") return statusView.tone === "working" ? "Working in Herdr" : "Live in Herdr";
+    if (agent?.herdrStatus && agent.herdrStatus !== "unknown") return statusView.description;
     return "No live Herdr activity signal";
   }
 
-  function renderPresenceList(agents) {
-    const priority = { working: 0, blocked: 1, idle: 2, done: 3, error: 4, offline: 5 };
-    const sorted = [...agents].sort((left, right) => {
-      const statusDelta = (priority[agentStatusView(left).status] ?? 9) - (priority[agentStatusView(right).status] ?? 9);
-      return statusDelta || left.handle.localeCompare(right.handle);
+  function agentDisplayName(agent) {
+    return String(agent?.profile?.name || agent?.handle || "").trim();
+  }
+
+  function compareAgentNames(left, right) {
+    const nameDelta = agentDisplayName(left).localeCompare(agentDisplayName(right), "en", { sensitivity: "base" });
+    if (nameDelta !== 0) return nameDelta;
+    return String(left?.handle || "").localeCompare(String(right?.handle || ""), "en", { sensitivity: "base" });
+  }
+
+  function activePresenceHandle() {
+    return state.activeAccount && state.activeAccount !== "all" ? state.activeAccount : "";
+  }
+
+  function sortAgentsForPresence(agents) {
+    const activeHandle = activePresenceHandle();
+    return [...agents].sort((left, right) => {
+      const activeDelta = Number(left?.handle !== activeHandle) - Number(right?.handle !== activeHandle);
+      return activeDelta || compareAgentNames(left, right);
     });
+  }
+
+  function renderPresenceList(agents) {
+    const sorted = sortAgentsForPresence(agents);
     let html = "";
     for (const agent of sorted) {
       const profile = agent.profile || {};
@@ -585,11 +612,12 @@
       const color = safeCssColor(profile.color);
       const statusView = agentStatusView(agent);
       const live = Boolean(agent.herdrStatus && agent.herdrStatus !== "unknown");
+      const current = state.activeAccount === agent.handle;
       const task = getAgentTask(agent.handle);
       const activity = agentActivityText(agent, task);
 
       html += `
-        <button type="button" class="presence-item${live ? " presence-live" : ""}" data-agent-handle="${escapeHtml(agent.handle)}" aria-haspopup="dialog" aria-label="View activity for ${escapeHtml(name)}, ${statusView.label}" title="${escapeHtml(activity)}">
+        <button type="button" class="presence-item${live ? " presence-live" : ""}${current ? " presence-current" : ""}" data-agent-handle="${escapeHtml(agent.handle)}" aria-current="${current ? "true" : "false"}" aria-haspopup="dialog" aria-label="View activity for ${escapeHtml(name)}, ${escapeHtml(statusView.description)}" title="${escapeHtml(activity)}">
           <span class="presence-avatar-wrap">
             <span class="mini-avatar" style="background:${escapeHtml(color)};color:#fff;">${escapeHtml(emoji)}</span>
             <span class="presence-dot ${statusView.tone}"></span>
@@ -597,7 +625,7 @@
           <span class="presence-details">
             <span class="presence-name-row">
               <span class="presence-name">${escapeHtml(agent.handle)}</span>
-              <span class="presence-status-pill ${statusView.tone}">${statusView.label}</span>
+              <span class="presence-status-pill ${statusView.tone}" title="${escapeHtml(statusView.description)}">${statusView.label}</span>
             </span>
             <span class="presence-role">${escapeHtml(role)}</span>
           </span>
@@ -631,6 +659,7 @@
     agentActivityHandle.textContent = `${handle}@amq`;
     agentActivityRole.textContent = profile.role || "Swarm Agent";
     agentActivityStatus.textContent = statusView.label;
+    agentActivityStatus.title = statusView.description;
     agentActivityStatus.className = `agent-activity-status ${statusView.tone}`;
     agentActivityHeadline.textContent = agentActivityText(agent, task);
     agentActivityTask.textContent = task?.title || "No board task is currently assigned to this agent.";
@@ -698,6 +727,137 @@
     requestAnimationFrame(() => openTaskSheet(task.id));
   });
 
+
+  function hangoutTimestamp(value) {
+    if (!value) return "No timestamp";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "No timestamp" : date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function latestHangoutMessage(agent) {
+    let latest = null;
+    let latestTime = -1;
+    for (const thread of state.hangoutThreads) {
+      for (const message of thread.messages || []) {
+        const recipients = Array.isArray(message.to) ? message.to : [message.to].filter(Boolean);
+        const relevant = message.from === agent.handle || message.targetAccount === agent.handle || recipients.includes(agent.handle);
+        if (!relevant) continue;
+        const time = message.created ? new Date(message.created).getTime() : 0;
+        if (time >= latestTime) {
+          latest = message;
+          latestTime = time;
+        }
+      }
+    }
+    return latest;
+  }
+
+  function renderHangouts() {
+    if (!hangoutListEl) return;
+    const agents = sortAgentsForPresence(state.agents);
+    if (!agents.length) {
+      hangoutListEl.innerHTML = '<div class="hangout-empty">No agent profiles found.</div>';
+      return;
+    }
+
+    hangoutListEl.innerHTML = agents.map((agent) => {
+      const profile = agent.profile || {};
+      const statusView = agentStatusView(agent);
+      const task = getAgentTask(agent.handle);
+      const activity = agentActivityText(agent, task);
+      const message = latestHangoutMessage(agent);
+      const messageText = message ? (message.snippet || message.body || "No report text") : "No AMQ report yet";
+      const messageMeta = message ? `${message.from || "unknown"} · ${hangoutTimestamp(message.created)}` : "Reports appear here when agents send AMQ updates";
+      const name = profile.name || agent.handle;
+      const role = profile.role || "Swarm Agent";
+      const emoji = profile.emoji || agent.handle.slice(0, 1).toUpperCase();
+      const color = safeCssColor(profile.color);
+      return `
+        <article class="hangout-card" data-hangout-agent="${escapeHtml(agent.handle)}">
+          <div class="hangout-card-header">
+            <div class="hangout-card-identity">
+              <span class="hangout-card-avatar" style="background:${escapeHtml(color)};color:#fff;">${escapeHtml(emoji)}</span>
+              <div>
+                <div class="hangout-card-name-row"><strong class="hangout-card-name">${escapeHtml(name)}</strong><span class="presence-status-pill ${statusView.tone}" title="${escapeHtml(statusView.description)}">${statusView.label}</span></div>
+                <span class="hangout-card-role">${escapeHtml(role)}</span>
+              </div>
+            </div>
+            <span class="hangout-card-role">${escapeHtml(agent.handle)}</span>
+          </div>
+          <div class="hangout-card-activity"><span class="hangout-card-label">Current activity</span><strong>${escapeHtml(activity)}</strong></div>
+          <div class="hangout-card-task"><span class="hangout-card-label">Assigned task</span><strong>${escapeHtml(task ? task.title : "No active task assigned")}</strong></div>
+          <div class="hangout-latest"><span class="hangout-card-label">Latest AMQ report</span><span class="hangout-message">${escapeHtml(messageText)}</span><span class="hangout-message-meta"><span>${escapeHtml(messageMeta)}</span><span>${agent.unreadCount || 0} unread</span></span></div>
+          <div class="hangout-card-actions">
+            <button type="button" class="btn btn-secondary" data-hangout-action="activity" data-hangout-handle="${escapeHtml(agent.handle)}">Activity</button>
+            <button type="button" class="btn btn-primary" data-hangout-action="message" data-hangout-handle="${escapeHtml(agent.handle)}">Message</button>
+          </div>
+        </article>
+      `;
+    }).join("");
+
+    hangoutListEl.querySelectorAll("[data-hangout-action]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const agent = state.agents.find((item) => item.handle === button.dataset.hangoutHandle);
+        if (!agent) return;
+        if (button.dataset.hangoutAction === "activity") {
+          closeHangouts();
+          openAgentActivity(agent.handle);
+        } else {
+          openComposeForAgent(agent);
+        }
+      });
+    });
+  }
+
+  async function fetchHangoutFeed() {
+    if (!hangoutListEl) return;
+    if (refreshHangoutsBtn) refreshHangoutsBtn.disabled = true;
+    try {
+      const response = await fetch("/api/threads?account=all&folder=all&pageSize=100&paginate=true");
+      const data = await response.json();
+      state.hangoutThreads = Array.isArray(data) ? data : (data.items || []);
+      renderHangouts();
+    } catch {
+      hangoutListEl.innerHTML = '<div class="hangout-empty">Unable to load the latest AMQ reports.</div>';
+    } finally {
+      if (refreshHangoutsBtn) refreshHangoutsBtn.disabled = false;
+    }
+  }
+
+  function openHangouts() {
+    if (!hangoutDialog) return;
+    if (!hangoutDialog.open) {
+      if (typeof hangoutDialog.showModal === "function") hangoutDialog.showModal();
+      else hangoutDialog.setAttribute("open", "");
+    }
+    renderHangouts();
+    fetchHangoutFeed();
+  }
+
+  function closeHangouts() {
+    if (!hangoutDialog) return;
+    if (typeof hangoutDialog.close === "function") hangoutDialog.close();
+    else hangoutDialog.removeAttribute("open");
+  }
+
+  function openComposeForAgent(agent) {
+    closeHangouts();
+    openComposeBtn.click();
+    composeToEl.value = agent.handle;
+    composeThreadEl.value = `hangout/${agent.handle}`;
+    composeSubjectEl.value = `Status check: ${agent.profile?.name || agent.handle}`;
+    composeBodyEl.value = `Checking in on ${agent.profile?.name || agent.handle}.\n\nCurrent activity: ${agentActivityText(agent, getAgentTask(agent.handle))}\n\n`;
+  }
+
+  openHangoutsBtn?.addEventListener("click", openHangouts);
+  closeHangoutsBtn?.addEventListener("click", closeHangouts);
+  refreshHangoutsBtn?.addEventListener("click", fetchHangoutFeed);
+  hangoutDialog?.addEventListener("click", (event) => {
+    if (event.target !== hangoutDialog) return;
+    const bounds = hangoutDialog.getBoundingClientRect();
+    const outside = event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom;
+    if (outside) closeHangouts();
+  });
 
   function levenshtein(a, b) {
     if (a.length === 0) return b.length;
@@ -1899,8 +2059,9 @@
           if (payload.type === "mail_update" || payload.type === "presence_update") {
             fetchStatus();
             fetchAgents();
-            fetchData();
-            if (state.selectedTaskId) {
+             fetchData();
+             if (hangoutDialog?.open) fetchHangoutFeed();
+             if (state.selectedTaskId) {
               const currentTask = findTaskById(state.selectedTaskId);
               if (currentTask) renderSheetTransmissions(currentTask);
             }
@@ -1921,14 +2082,22 @@
           } else if (payload.type === "herdr_agents_refresh") {
             fetchAgents();
           } else if (payload.type === "herdr_agent_update") {
-            const { handle, herdrStatus } = payload;
+            const { handle, herdrStatus, stateLabels, title, at } = payload;
             const agent = state.agents.find((item) => item.handle === handle);
             if (agent && herdrStatus) {
               agent.status = herdrStatus !== "unknown" ? herdrStatus : agent.status;
               agent.herdrStatus = herdrStatus;
-              renderPresenceList(state.agents);
+              agent.herdrObservedAt = at || agent.herdrObservedAt;
+              if (agent.herdrActivity) {
+                agent.herdrActivity.status = herdrStatus;
+                agent.herdrActivity.observedAt = at || agent.herdrActivity.observedAt;
+                if (stateLabels) agent.herdrActivity.stateLabels = stateLabels;
+                if (title) agent.herdrActivity.title = title;
+              }
+               renderPresenceList(state.agents);
+               if (hangoutDialog?.open) renderHangouts();
+               if (agentActivityDialog?.dataset.agentHandle === handle) renderAgentActivity();
             }
-            fetchAgents();
           }
         } catch {}
       };
@@ -2387,7 +2556,7 @@
           handle,
           name: newAgentNameInput.value.trim() || undefined,
           role: newAgentRoleInput.value.trim() || undefined,
-          model: (newAgentModelInput?.value || "").trim() || "claude-3-7-sonnet",
+          model: (newAgentModelInput?.value || "").trim() || null,
           prompt: newAgentPromptInput ? newAgentPromptInput.value.trim() || undefined : undefined,
         };
 
@@ -2420,8 +2589,9 @@
       const res = await fetch("/api/board");
       const data = await res.json();
       if (data.ok) {
-        state.board = data;
-        if (agentActivityDialog?.open) renderAgentActivity();
+         state.board = data;
+         if (agentActivityDialog?.open) renderAgentActivity();
+         if (hangoutDialog?.open) renderHangouts();
         if (boardTotalCountEl) {
           boardTotalCountEl.textContent = data.stats?.total || 0;
         }

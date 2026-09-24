@@ -120,7 +120,8 @@ export async function getHerdrStatusMap() {
 
 export function normalizeHerdrStatus(value) {
   const status = String(value || "").trim().toLowerCase();
-  if (status === "online" || status === "active") return "idle";
+  if (status === "online") return "idle";
+  if (status === "active") return "working";
   if (["idle", "working", "blocked", "done", "error", "unknown"].includes(status)) return status;
   return "unknown";
 }
@@ -180,6 +181,18 @@ export function mapHerdrAgentActivity(agent, observedAt = new Date().toISOString
   };
 }
 
+export function normalizeHerdrEvent(message) {
+  if (!message || typeof message !== "object") return null;
+  if (message.method && message.params && typeof message.params === "object") {
+    return { type: String(message.method), ...message.params };
+  }
+  if (message.event && message.data && typeof message.data === "object") {
+    const payload = message.data.pane && typeof message.data.pane === "object" ? message.data.pane : message.data;
+    return { ...payload, type: String(message.event).replace("_", ".") };
+  }
+  return null;
+}
+
 // ─── Long-lived event subscription ──────────────────────────────────────────
 
 /**
@@ -200,7 +213,9 @@ export function subscribeHerdrEvents({ onEvent, onDisconnect, onConnect } = {}) 
     JSON.stringify({
       id: subId,
       method: "events.subscribe",
-      params: {},
+      params: {
+        subscriptions: [{ type: "pane.updated" }],
+      },
     }) + "\n";
 
   let sock = null;
@@ -226,11 +241,9 @@ export function subscribeHerdrEvents({ onEvent, onDisconnect, onConnect } = {}) 
           if (!line.trim()) continue;
           try {
             const msg = JSON.parse(line);
-            // Skip the ack for the subscribe call itself
             if (msg.id === subId && msg.result) continue;
-            if (msg.method && msg.params && onEvent) {
-              onEvent({ type: msg.method, ...msg.params });
-            }
+            const event = normalizeHerdrEvent(msg);
+            if (event && onEvent) onEvent(event);
           } catch {}
         }
       });

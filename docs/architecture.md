@@ -12,6 +12,8 @@ Synchronous group chat does not fit autonomous coding sessions:
 
 AMQ provides persistent Maildir messages, a file-based task bus, and immutable CAS attachments. The bridge watches Herdr panes and prompts only agents that are `idle` or `done`. Working panes are left alone; blocked panes raise an actionable alert.
 
+Herdr lifecycle semantics are explicit: `working` is an active turn, while `idle` and `done` are terminal turn states where a new prompt can be delivered. AGmail coalesces rapid status events before rendering so transient output or stale snapshots do not make the indicator flicker.
+
 ## Data flow
 
 ```mermaid
@@ -45,6 +47,6 @@ flowchart TD
 
 ## Live model reporting
 
-The profile model is configuration metadata, not proof of the model currently selected by a running harness. When Herdr exposes model fields, AGmail uses them first. For OpenCode panes, the Herdr `agent_session.value` is resolved against the local OpenCode session database and rendered as `provider/model (variant)`. The API also returns `modelSource` so the UI and operators can distinguish live harness data from a profile fallback.
+The profile model is optional configuration metadata, not proof of the model currently selected by a running harness. When Herdr exposes model fields, AGmail uses them first. For OpenCode panes, the Herdr `agent_session.value` is resolved against the local OpenCode session database and rendered as `provider/model (variant)`. The API returns `modelSource` when a model is known; when neither live nor explicit profile metadata is available, the model remains `null` and the UI shows `Not configured`.
 
 The resolver is best-effort: unavailable Herdr/OpenCode data leaves the configured profile visible rather than inventing a model.
