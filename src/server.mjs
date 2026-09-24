@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findAmqRoot, getAgentHandles, getHerdrBin, getCoordinatorDoorbellConfig, saveCoordinatorDoorbellConfig } from "./config.mjs";
@@ -35,6 +36,7 @@ import {
   stopDaemon,
   listInbox,
   getCoordinatorDoorbellLog,
+  runManualCoordinatorDoorbell,
 } from "./bridge.mjs";
 import {
   getHerdrAgents,
@@ -118,6 +120,8 @@ export function startWebServer({
   port = 8505,
   host = process.env.AGMAIL_HOST || "127.0.0.1",
   amqRoot = findAmqRoot(),
+  jobTokenOverride,
+  doorbellTokenOverride,
 } = {}) {
   if (!amqRoot) {
     console.error("❌ Cannot start web server: No .agent-mail directory found.");
@@ -127,7 +131,9 @@ export function startWebServer({
   // Durable executable queue is separate from the one-heavy-job Godot lock.
   const jobQueue = getJobQueue({ amqRoot });
   const metricsHistoryFile = path.join(amqRoot, "coordinator-metrics-history.json");
-  const jobToken = String(process.env.AGMAIL_JOB_TOKEN || "");
+  const jobToken = String(jobTokenOverride ?? process.env.AGMAIL_JOB_TOKEN ?? "");
+  const doorbellToken = String(doorbellTokenOverride ?? process.env.AGMAIL_DOORBELL_TOKEN ?? "");
+  const doorbellCookie = `agmail_doorbell_${crypto.randomBytes(24).toString("hex")}`;
 
   function authorizeJobMutation(req, res) {
     if (!jobToken) {
@@ -138,6 +144,20 @@ export function startWebServer({
     if (req.headers["x-agmail-job-token"] !== jobToken) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "job mutation authorization failed" }));
+      return false;
+    }
+    return true;
+  }
+
+  function authorizeManualDoorbell(req, res) {
+    if (jobToken && req.headers["x-agmail-job-token"] === jobToken) return true;
+    if (doorbellToken && req.headers["x-agmail-doorbell-token"] === doorbellToken) return true;
+    const origin = String(req.headers.origin || "");
+    const expectedOrigin = `http://${req.headers.host}`;
+    const cookie = String(req.headers.cookie || "").split(";").map((part) => part.trim()).find((part) => part.startsWith(`${doorbellCookie}=`));
+    if (origin !== expectedOrigin || req.headers["x-agmail-doorbell"] !== "1" || cookie !== `${doorbellCookie}=1`) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "manual doorbell requires same-origin dashboard authorization" }));
       return false;
     }
     return true;
@@ -591,8 +611,18 @@ export function startWebServer({
     // ─── Coordinator doorbell controls ───────────────────────────────────────
 
     if (pathname === "/api/coordinator-doorbell" && req.method === "GET") {
+      res.setHeader("Set-Cookie", `${doorbellCookie}=1; HttpOnly; SameSite=Strict; Path=/`);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, config: getCoordinatorDoorbellConfig(), log: getCoordinatorDoorbellLog(20) }));
+      return;
+    }
+
+    if (pathname === "/api/coordinator-doorbell/ping" && req.method === "POST") {
+      if (!authorizeManualDoorbell(req, res)) return;
+      const result = runManualCoordinatorDoorbell({ amqRoot });
+      broadcastSSE({ type: "coordinator_doorbell_manual", at: new Date().toISOString() });
+      res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ...result, config: getCoordinatorDoorbellConfig(), log: getCoordinatorDoorbellLog(20) }));
       return;
     }
 

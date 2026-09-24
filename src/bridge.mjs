@@ -641,6 +641,34 @@ export function runDoorbellPass({
   };
 }
 
+export function runManualCoordinatorDoorbell({
+  amqRoot = findAmqRoot(),
+  dryRun = false,
+  allowPrompt = true,
+  prompt = promptAgent,
+} = {}) {
+  if (!amqRoot) return { ok: false, error: "No .agent-mail queue found." };
+  const state = loadDeliveredState();
+  const text = [
+    "Manual coordinator doorbell requested from the AGmail dashboard.",
+    "Review current swarm metrics, blocked work, and queue state, then delegate or re-scope as needed.",
+    "This is advisory only; do not auto-approve destructive actions.",
+  ].join("\n");
+  const ok = prompt("coordinator", text, dryRun || !allowPrompt);
+  const prompted = Boolean(ok && allowPrompt && !dryRun);
+  if (prompted) {
+    state.coordinatorAlerts.manual = {
+      at: new Date().toISOString(),
+      to: "coordinator",
+      alert: "manual",
+      attempts: 1,
+    };
+    saveDeliveredState(state);
+    recordCoordinatorAlert("manual: dashboard requested coordinator re-evaluation");
+  }
+  return { ok: true, prompted, manual: true };
+}
+
 // ─── Continuous Daemon Loop ───────────────────────────────────────────────────
 
 export function startDaemonLoop({ interval = 3000, dryRun = false } = {}) {

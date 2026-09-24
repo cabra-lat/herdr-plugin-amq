@@ -24,6 +24,7 @@ Scope: plugin infrastructure only; no Godot/game files changed.
   - `GET /api/jobs/:id` for job detail;
   - `GET /api/coordinator/history`.
 - All job mutations require `AGMAIL_JOB_TOKEN` and the `X-AGmail-Job-Token` header. If the environment variable is unset, mutations fail closed with HTTP 503; loopback binding is not treated as authorization.
+- The manual coordinator doorbell uses the same token when configured; without a token it requires a same-origin `Origin` plus `X-AGmail-Doorbell: 1` CSRF header. The dashboard receives an HttpOnly, SameSite=Strict session cookie from the settings endpoint, so privileged job tokens are never exposed to page JavaScript. Missing or invalid authorization fails closed.
 - The dashboard Metrics view now exposes queue depth, active jobs, outcomes, concurrency, and retained history sample count.
 - Existing coordinator alerts remain advisory; no queue operation auto-approves work or destructive actions.
 
@@ -37,7 +38,7 @@ Scope: plugin infrastructure only; no Godot/game files changed.
 ## Verification
 
 - `npm run check` — PASS
-- `npm test` — **178 passed, 0 failed**
+- `npm test` — **180 passed, 0 failed**
 - `npm run test:e2e` — **2 passed, 0 failed**
 - `git diff --check` — PASS
 - Focused coverage includes:
@@ -49,6 +50,7 @@ Scope: plugin infrastructure only; no Godot/game files changed.
   - lease expiry fail-closed behavior;
   - legacy migration and bounded retention;
   - API enqueue/list/detail/run/cancel, mutation authorization, and metrics history;
+  - configured-token manual ping, no-token same-origin cookie/CSRF ping, and missing/invalid credential cases;
   - canonical-wrapper rejection, durable lease recovery through metrics/list/expired heartbeat, and interrupted/idempotent migration fixtures.
 
 ## Review notes

@@ -642,6 +642,12 @@ body.sidebar-collapsed .app-sidebar {
   cursor: pointer;
 }
 .coordinator-toggle input { accent-color: var(--google-blue); }
+.cooldown-indicator {
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
 .coordinator-doorbell-log-wrap { margin-top: 12px; }
 .coordinator-doorbell-log-wrap h4 {
   margin: 0 0 6px;

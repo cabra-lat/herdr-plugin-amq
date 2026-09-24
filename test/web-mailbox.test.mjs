@@ -32,6 +32,11 @@ test("Panes and coordinator metrics are separate scrollable sideboard views", ()
   assert.match(app, /renderCoordinatorMetrics\(\)/);
   assert.match(html, /id="coordinator-doorbell-enabled"/);
   assert.match(html, /id="coordinator-doorbell-log"/);
+  assert.match(html, /id="coordinator-doorbell-cooldown"/);
+  assert.match(html, /id="coordinator-doorbell-manual"/);
+  assert.match(app, /coordinatorDoorbellManual\?\.addEventListener\("click"/);
+  assert.match(app, /\/api\/coordinator-doorbell\/ping/);
+  assert.match(app, /coordinatorDoorbellCooldown\.textContent = `Cooldown: \$\{cooldown\}`/);
   assert.match(app, /\/api\/coordinator-doorbell/);
   assert.match(css, /\.coordinator-metrics-panel/);
   assert.match(css, /\.coordinator-doorbell-log/);

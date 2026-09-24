@@ -190,6 +190,8 @@
   const coordinatorMetricsUpdated = document.getElementById("coordinator-metrics-updated");
   const coordinatorDoorbellEnabled = document.getElementById("coordinator-doorbell-enabled");
   const coordinatorDoorbellStatus = document.getElementById("coordinator-doorbell-status");
+  const coordinatorDoorbellCooldown = document.getElementById("coordinator-doorbell-cooldown");
+  const coordinatorDoorbellManual = document.getElementById("coordinator-doorbell-manual");
   const coordinatorDoorbellLog = document.getElementById("coordinator-doorbell-log");
   const boardTotalCountEl = document.getElementById("board-total-count");
   const boardSearchInput = document.getElementById("board-search-input");
@@ -2686,7 +2688,9 @@
       const data = await res.json();
       if (!data.ok) return;
       coordinatorDoorbellEnabled.checked = Boolean(data.config?.enabled);
+      const cooldown = formatMetricDuration(data.config?.cooldownMs);
       if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = data.config?.enabled ? "Enabled · deduplicated with cooldown" : "Disabled";
+      if (coordinatorDoorbellCooldown) coordinatorDoorbellCooldown.textContent = `Cooldown: ${cooldown}`;
       if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : "No coordinator doorbells recorded.";
     } catch (err) {
       if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = `Unavailable: ${err.message}`;
@@ -2730,6 +2734,21 @@
     if (coordinatorMetricsUpdated) coordinatorMetricsUpdated.textContent = `Updated ${new Date(metrics.generatedAt || Date.now()).toLocaleTimeString()}`;
   }
 
+  coordinatorDoorbellManual?.addEventListener("click", async () => {
+    coordinatorDoorbellManual.disabled = true;
+    try {
+      const res = await fetch("/api/coordinator-doorbell/ping", { method: "POST", headers: { "X-AGmail-Doorbell": "1" } });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Manual doorbell failed");
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = "Manual doorbell sent · advisory";
+      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : "No coordinator doorbells recorded.";
+    } catch (err) {
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = `Manual doorbell failed: ${err.message}`;
+    } finally {
+      coordinatorDoorbellManual.disabled = false;
+    }
+  });
+
   coordinatorDoorbellEnabled?.addEventListener("change", async () => {
     try {
       const res = await fetch("/api/coordinator-doorbell", {
@@ -2739,7 +2758,9 @@
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Unable to save setting");
+      const cooldown = formatMetricDuration(data.config?.cooldownMs);
       if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = data.config.enabled ? "Enabled · deduplicated with cooldown" : "Disabled";
+      if (coordinatorDoorbellCooldown) coordinatorDoorbellCooldown.textContent = `Cooldown: ${cooldown}`;
       if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : "No coordinator doorbells recorded.";
     } catch (err) {
       if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = `Save failed: ${err.message}`;

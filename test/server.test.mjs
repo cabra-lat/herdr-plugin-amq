@@ -419,6 +419,8 @@ Test body`
     const getRes = await fetch(`${baseUrl}/api/coordinator-doorbell`);
     assert.equal(getRes.status, 200);
     const initial = await getRes.json();
+    const doorbellCookie = (getRes.headers.get("set-cookie") || "").split(";")[0];
+    assert.match(doorbellCookie, /^agmail_doorbell_[a-f0-9]+=1$/);
     assert.equal(initial.ok, true);
     assert.equal(initial.config.enabled, true);
     assert.ok(Array.isArray(initial.log));
@@ -432,6 +434,47 @@ Test body`
     const updated = await postRes.json();
     assert.equal(updated.ok, true);
     assert.equal(updated.config.enabled, false);
+    const oldDisablePrompt = process.env.HERDR_DISABLE_PROMPT;
+    process.env.HERDR_DISABLE_PROMPT = "1";
+    const missingAuth = await fetch(`${baseUrl}/api/coordinator-doorbell/ping`, { method: "POST" });
+    assert.equal(missingAuth.status, 403);
+    const invalidAuth = await fetch(`${baseUrl}/api/coordinator-doorbell/ping`, { method: "POST", headers: { "X-AGmail-Job-Token": "wrong" } });
+    assert.equal(invalidAuth.status, 403);
+    const ping = await (await fetch(`${baseUrl}/api/coordinator-doorbell/ping`, { method: "POST", headers: { "X-AGmail-Job-Token": "test-job-token" } })).json();
+    assert.equal(ping.prompted, true);
+    const uiPing = await fetch(`${baseUrl}/api/coordinator-doorbell/ping`, { method: "POST", headers: { Origin: baseUrl, "X-AGmail-Doorbell": "1", Cookie: doorbellCookie } });
+    assert.equal(uiPing.status, 200);
+    if (oldDisablePrompt === undefined) delete process.env.HERDR_DISABLE_PROMPT;
+    else process.env.HERDR_DISABLE_PROMPT = oldDisablePrompt;
+    assert.equal((await uiPing.json()).prompted, true);
+    /* The token path above is the API path; the cookie path is the dashboard path. */
+    if (oldDisablePrompt === undefined) delete process.env.HERDR_DISABLE_PROMPT;
+    else process.env.HERDR_DISABLE_PROMPT = oldDisablePrompt;
+    assert.equal(ping.ok, true);
+    assert.equal(ping.manual, true);
+    assert.equal(ping.prompted, true);
+  });
+
+  test("manual doorbell supports same-origin dashboard authorization without a token", async () => {
+    const noTokenServer = startWebServer({ port: 0, amqRoot: tempRoot, jobTokenOverride: "", doorbellTokenOverride: "" });
+    await new Promise((resolve) => noTokenServer.once("listening", resolve));
+    const noTokenBase = `http://127.0.0.1:${noTokenServer.address().port}`;
+    const oldDisablePrompt = process.env.HERDR_DISABLE_PROMPT;
+    process.env.HERDR_DISABLE_PROMPT = "1";
+    try {
+      const settings = await fetch(`${noTokenBase}/api/coordinator-doorbell`);
+      const cookie = (settings.headers.get("set-cookie") || "").split(";")[0];
+      assert.equal((await fetch(`${noTokenBase}/api/coordinator-doorbell/ping`, { method: "POST" })).status, 403);
+      assert.equal((await fetch(`${noTokenBase}/api/coordinator-doorbell/ping`, { method: "POST", headers: { Origin: noTokenBase, "X-AGmail-Doorbell": "1", Cookie: "agmail_doorbell_wrong=1" } })).status, 403);
+      const ok = await fetch(`${noTokenBase}/api/coordinator-doorbell/ping`, { method: "POST", headers: { Origin: noTokenBase, "X-AGmail-Doorbell": "1", Cookie: cookie } });
+      assert.equal(ok.status, 200);
+      assert.equal((await ok.json()).prompted, true);
+    } finally {
+      if (oldDisablePrompt === undefined) delete process.env.HERDR_DISABLE_PROMPT;
+      else process.env.HERDR_DISABLE_PROMPT = oldDisablePrompt;
+      noTokenServer.closeAllConnections?.();
+      await new Promise((resolve) => noTokenServer.close(resolve));
+    }
   });
 
   test("GET /api/board returns board structure and stats", async () => {
