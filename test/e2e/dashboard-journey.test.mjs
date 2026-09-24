@@ -445,25 +445,59 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     failure = error;
     throw error;
   } finally {
-    const report = {
-      ok: !failure,
-      browser: browser.version(),
-      baseUrl: fixture.baseUrl,
-      viewports: { desktop: "1440x900", mobile: "390x844", compact: "320x568" },
-      sidebarGeometry,
-      journeys: ["account-hierarchy", "agent-activity", "agent-task", "latest-message", "pull-refresh-guard", "live-status-refresh", "mobile-agent-list", "mobile-inbox", "mobile-new-task-actions"],
-      artifacts,
-      errors,
-      failure: failure
-        ? { name: failure.name, message: failure.message, stack: failure.stack }
-        : null,
+    const cleanupErrors = [];
+    const recordCleanupError = (label, error) => {
+      cleanupErrors.push(`${label}: ${error?.message || String(error)}`);
     };
-    fs.mkdirSync(artifactRoot, { recursive: true });
-    fs.writeFileSync(path.join(artifactRoot, "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
-    if (compactContext) await compactContext.close();
-    if (mobileContext) await mobileContext.close();
-    if (desktopContext) await desktopContext.close();
-    await browser.close();
-    await fixture.close();
+    const closeResource = async (label, resource) => {
+      if (!resource) return;
+      try {
+        await resource.close();
+      } catch (error) {
+        recordCleanupError(label, error);
+      }
+    };
+
+    let browserVersion = null;
+    try {
+      browserVersion = browser.version();
+    } catch (error) {
+      recordCleanupError("browser-version", error);
+    }
+
+    await closeResource("compactContext", compactContext);
+    await closeResource("mobileContext", mobileContext);
+    await closeResource("desktopContext", desktopContext);
+    await closeResource("browser", browser);
+    await closeResource("fixture", fixture);
+
+    try {
+      const report = {
+        ok: !failure,
+        browser: browserVersion,
+        baseUrl: fixture.baseUrl,
+        viewports: { desktop: "1440x900", mobile: "390x844", compact: "320x568" },
+        sidebarGeometry,
+        journeys: ["account-hierarchy", "agent-activity", "agent-task", "latest-message", "pull-refresh-guard", "live-status-refresh", "mobile-agent-list", "mobile-inbox", "mobile-new-task-actions"],
+        artifacts,
+        errors,
+        failure: failure
+          ? { name: failure.name, message: failure.message, stack: failure.stack }
+          : null,
+        cleanupErrors,
+      };
+      fs.mkdirSync(artifactRoot, { recursive: true });
+      fs.writeFileSync(path.join(artifactRoot, "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    } catch (error) {
+      recordCleanupError("report", error);
+    }
+
+    if (failure) {
+      failure.cleanupErrors = cleanupErrors;
+      throw failure;
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "E2E cleanup failed");
+    }
   }
 });
