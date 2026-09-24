@@ -42,6 +42,10 @@ async function screenshot(page, filePath) {
   await page.screenshot({ path: filePath, fullPage: false });
 }
 
+function equalWithContext(actual, expected, label) {
+  assert.strictEqual(actual, expected, `${label}\nactual: ${JSON.stringify(actual)}\nexpected: ${JSON.stringify(expected)}`);
+}
+
 test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async () => {
   const artifactRoot = path.resolve(process.env.E2E_ARTIFACT_DIR || "artifacts/e2e");
   let fixture = null;
@@ -244,7 +248,7 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     assert.equal(messagePosition.headerPosition, "sticky");
     assert.ok(Math.abs(messagePosition.headerOffset) <= 1);
     assert.ok(messagePosition.latestOffset >= 0 && messagePosition.latestOffset <= 24);
-    assert.equal(messagePosition.latestId, "2026-09-24T08-05-00-000Z_fixture-message-3");
+    equalWithContext(messagePosition.latestId, fixture.latestMessageId, "Expected the latest desktop message to be the fixture's latest message");
     await desktop.$eval("body", () => {
       const dispatchTouch = (type, clientY) => {
         const event = new Event(type, { bubbles: true, cancelable: true });
@@ -400,7 +404,7 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
       scrollTop: detail.scrollTop,
     }));
     assert.equal(mobileMessage.activeIsMessage, true);
-    assert.equal(mobileMessage.activeId, "2026-09-24T08-05-00-000Z_fixture-message-3");
+    equalWithContext(mobileMessage.activeId, fixture.latestMessageId, "Expected the latest mobile message to be the fixture's latest message");
     assert.equal(mobileMessage.backDisplay, "flex");
     assert.equal(mobileMessage.headerPosition, "sticky");
     assert.ok(mobileMessage.scrollTop > 0);

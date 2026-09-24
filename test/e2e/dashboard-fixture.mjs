@@ -119,6 +119,7 @@ function seedMessage(agentDir) {
     const content = `---json\n${JSON.stringify(metadata, null, 2)}\n---\n${message.body}\n`;
     fs.writeFileSync(path.join(agentDir, "inbox", "new", `${message.id}.md`), content, "utf8");
   }
+  return messages.at(-1).id;
 }
 
 function seedUserMessage(amqRoot) {
@@ -198,7 +199,7 @@ export async function createDashboardFixture() {
   };
   const rangeDir = seedAgent(amqRoot, "range", rangeProfile);
   seedAgent(amqRoot, "qa", qaProfile);
-  seedMessage(rangeDir);
+  const latestMessageId = seedMessage(rangeDir);
   seedUserMessage(amqRoot);
   seedTask(amqRoot);
 
@@ -254,6 +255,7 @@ export async function createDashboardFixture() {
   return {
     baseUrl,
     herdr,
+    latestMessageId,
     async close() {
       if (typeof server.closeAllConnections === "function") server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
