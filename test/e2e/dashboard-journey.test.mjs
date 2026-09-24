@@ -44,12 +44,8 @@ async function screenshot(page, filePath) {
 
 test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async () => {
   const artifactRoot = path.resolve(process.env.E2E_ARTIFACT_DIR || "artifacts/e2e");
-  const fixture = await createDashboardFixture();
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: findChromium(),
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
+  let fixture = null;
+  let browser = null;
   const errors = [];
   const artifacts = [];
   let desktopContext;
@@ -59,6 +55,12 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
   let sidebarGeometry = null;
 
   try {
+    fixture = await createDashboardFixture();
+    browser = await chromium.launch({
+      headless: true,
+      executablePath: findChromium(),
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
     const agents = await fetch(`${fixture.baseUrl}/api/agents`).then((response) => response.json());
     const range = agents.find((agent) => agent.handle === "range");
     assert.equal(
@@ -460,7 +462,7 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
 
     let browserVersion = null;
     try {
-      browserVersion = browser.version();
+      browserVersion = browser?.version?.() || null;
     } catch (error) {
       recordCleanupError("browser-version", error);
     }
@@ -473,9 +475,9 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
 
     try {
       const report = {
-        ok: !failure,
+        ok: !failure && cleanupErrors.length === 0,
         browser: browserVersion,
-        baseUrl: fixture.baseUrl,
+        baseUrl: fixture?.baseUrl || null,
         viewports: { desktop: "1440x900", mobile: "390x844", compact: "320x568" },
         sidebarGeometry,
         journeys: ["account-hierarchy", "agent-activity", "agent-task", "latest-message", "pull-refresh-guard", "live-status-refresh", "mobile-agent-list", "mobile-inbox", "mobile-new-task-actions"],
@@ -493,7 +495,6 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     }
 
     if (failure) {
-      failure.cleanupErrors = cleanupErrors;
       throw failure;
     }
     if (cleanupErrors.length > 0) {
