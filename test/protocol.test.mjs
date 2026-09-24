@@ -123,6 +123,40 @@ test("markMaildirMessageRead moves only the addressed message to cur", () => {
   }
 });
 
+test("reply and read resolve IDs when AMQ filename uses dot milliseconds", () => {
+  const tmpAmq = fs.mkdtempSync(path.join(os.tmpdir(), "amq-wire-id-test-"));
+  try {
+    const sent = sendMaildirMessage(tmpAmq, {
+      from: "coordinator",
+      to: ["spotter"],
+      subject: "Wire ID compatibility",
+      body: "Please verify the original message.",
+    });
+    const canonical = path.join(tmpAmq, "agents", "spotter", "inbox", "new", `${sent.id}.md`);
+    const wireId = sent.id.replace(/-(\d{3}Z_pid)/, ".$1");
+    const wireName = `${wireId}.md`;
+    const canonicalContent = fs.readFileSync(canonical, "utf8").replace(sent.id, wireId);
+    fs.writeFileSync(canonical, canonicalContent);
+    fs.renameSync(canonical, path.join(tmpAmq, "agents", "spotter", "inbox", "new", wireName));
+
+    const reply = replyMaildirMessage(tmpAmq, {
+      from: "spotter",
+      replyToId: sent.id,
+      body: "Reply found the wire-format message.",
+    });
+    assert.equal(reply.ok, true);
+    assert.deepEqual(reply.to, ["coordinator"]);
+    assert.deepEqual(reply.refs, [sent.id]);
+
+    const read = markMaildirMessageRead(tmpAmq, "spotter", sent.id);
+    assert.equal(read.ok, true);
+    assert.equal(read.alreadyRead, false);
+    assert.equal(read.filePath.endsWith(wireName), true);
+  } finally {
+    fs.rmSync(tmpAmq, { recursive: true, force: true });
+  }
+});
+
 test("Native Maildir reply with RFC 5322 References chaining", () => {
   const tmpAmq = fs.mkdtempSync(path.join(os.tmpdir(), "amq-reply-test-"));
   try {

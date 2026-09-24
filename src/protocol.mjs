@@ -44,6 +44,14 @@ export function isSafeMailIdentifier(value, maxLength = 200) {
   return !value.includes("/") && !value.includes("\\") && !value.includes("\0");
 }
 
+function canonicalMessageId(value) {
+  return String(value || "").replace(/[:.]/g, "-");
+}
+
+function messageIdsMatch(left, right) {
+  return left === right || canonicalMessageId(left) === canonicalMessageId(right);
+}
+
 function resolveAgentDirectory(amqRoot, handle, create = false) {
   if (!amqRoot || !fs.existsSync(amqRoot) || !isSafeMailIdentifier(handle, 128)) {
     throw new Error("Invalid AMQ agent path");
@@ -470,6 +478,25 @@ export function sendMaildirMessage(amqRoot, options = {}) {
 /**
  * Locate any message across all agent maildirs by ID.
  */
+function findMessageInDirectory(dir, msgId) {
+  if (!isSafeMailIdentifier(msgId)) return null;
+  let files;
+  try {
+    files = listMaildirMessageFiles(dir);
+  } catch {
+    return null;
+  }
+  for (const fileName of files) {
+    if (!fileName.endsWith(".md")) continue;
+    const filePath = path.join(dir, fileName);
+    const content = readMaildirMessageFile(filePath);
+    if (content === null) continue;
+    const { header, body } = parseMessage(content);
+    if (messageIdsMatch(header.id, msgId)) return { fileName, filePath, header, body };
+  }
+  return null;
+}
+
 export function markMaildirMessageRead(amqRoot, handle, msgId) {
   if (!amqRoot || !isSafeMailIdentifier(handle, 128) || !isSafeMailIdentifier(msgId)) {
     return { ok: false, error: "Invalid mailbox or message identifier" };
@@ -478,23 +505,22 @@ export function markMaildirMessageRead(amqRoot, handle, msgId) {
   try {
     const agentDir = resolveAgentDirectory(amqRoot, handle, false);
     if (!agentDir) return { ok: false, error: "Mailbox not found" };
-    const newPath = path.join(agentDir, "inbox", "new", `${msgId}.md`);
-    const curPath = path.join(agentDir, "inbox", "cur", `${msgId}.md`);
-    const logicalCurPath = path.join(amqRoot, "agents", handle, "inbox", "cur", `${msgId}.md`);
-    if (!fs.existsSync(newPath)) {
-      if (fs.existsSync(curPath)) return { ok: true, alreadyRead: true, id: msgId, filePath: logicalCurPath };
-      return { ok: false, error: "Message not found" };
-    }
+    const newDir = path.join(agentDir, "inbox", "new");
+    const curDir = path.join(agentDir, "inbox", "cur");
+    const foundNew = findMessageInDirectory(newDir, msgId);
+    const found = foundNew || findMessageInDirectory(curDir, msgId);
+    if (!found) return { ok: false, error: "Message not found" };
 
-    const content = readMaildirMessageFile(newPath);
-    if (content === null) return { ok: false, error: "Message could not be read" };
-    const { header } = parseMessage(content);
+    const { header } = found;
     const recipients = Array.isArray(header.to) ? header.to : [header.to];
-    if (header.id !== msgId || !recipients.includes(handle)) {
+    if (!recipients.includes(handle)) {
       return { ok: false, error: "Message is not addressed to this mailbox" };
     }
 
-    const filePath = moveMaildirMessage(amqRoot, handle, "new", "cur", `${msgId}.md`);
+    const logicalCurPath = path.join(amqRoot, "agents", handle, "inbox", "cur", found.fileName);
+    if (!foundNew) return { ok: true, alreadyRead: true, id: msgId, filePath: logicalCurPath };
+
+    const filePath = moveMaildirMessage(amqRoot, handle, "new", "cur", found.fileName);
     if (!filePath) return { ok: false, error: "Message could not be marked read" };
     return { ok: true, alreadyRead: false, id: msgId, filePath: logicalCurPath };
   } catch (error) {
@@ -510,14 +536,11 @@ export function findMessageForRecipient(amqRoot, recipient, msgId) {
     if (!agentDir) return null;
 
     for (const dir of [path.join(agentDir, "inbox", "new"), path.join(agentDir, "inbox", "cur")]) {
-      const filePath = path.join(dir, `${msgId}.md`);
-      if (!fs.existsSync(filePath)) continue;
-      const content = readMaildirMessageFile(filePath);
-      if (content === null) continue;
-      const { header, body } = parseMessage(content);
-      const recipients = Array.isArray(header.to) ? header.to : [header.to];
-      if (header.id === msgId && recipients.includes(recipient)) {
-        return { id: msgId, header, body, filePath, foundIn: recipient };
+      const found = findMessageInDirectory(dir, msgId);
+      if (!found) continue;
+      const recipients = Array.isArray(found.header.to) ? found.header.to : [found.header.to];
+      if (recipients.includes(recipient)) {
+        return { id: msgId, header: found.header, body: found.body, filePath: found.filePath, foundIn: recipient };
       }
     }
   } catch {}
@@ -542,12 +565,8 @@ export function findMessageById(amqRoot, msgId) {
       ];
 
       for (const dir of candidateDirs) {
-        const filePath = path.join(dir, `${msgId}.md`);
-        if (!fs.existsSync(filePath)) continue;
-        const content = readMaildirMessageFile(filePath);
-      if (content === null) continue;
-        const { header, body } = parseMessage(content);
-        if (header.id === msgId) return { id: msgId, header, body, filePath, foundIn: agent };
+        const found = findMessageInDirectory(dir, msgId);
+        if (found) return { id: msgId, header: found.header, body: found.body, filePath: found.filePath, foundIn: agent };
       }
     } catch {}
   }
