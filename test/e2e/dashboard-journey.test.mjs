@@ -116,18 +116,47 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     await desktop.click('.account-item-btn[data-handle="range"]');
     await desktop.locator("#header-account-label", { hasText: "Range Owner" }).waitFor({ state: "visible" });
 
-    await desktop.click("#open-hangouts-btn");
-    await desktop.waitForSelector("#hangout-dialog[open]");
-    await desktop.locator(".hangout-card").first().waitFor({ state: "visible", timeout: 10000 });
-    assert.equal(await desktop.locator(".hangout-card").count(), 3);
-    assert.match(await desktop.locator('.hangout-card[data-hangout-agent="range"] .hangout-message').textContent(), /Latest gate evidence is ready/);
-    await desktop.click('.hangout-card[data-hangout-agent="range"] [data-hangout-action="message"]');
+    // Unified Panes view: status + task + latest report + live tail per lane.
+    await desktop.click("#nav-view-panes");
+    await desktop.waitForSelector("#panes-view-section:not(.hidden)");
+    await desktop.locator(".pane-card").first().waitFor({ state: "visible", timeout: 15000 });
+    assert.ok((await desktop.locator(".pane-card").count()) >= 3);
+    await desktop.waitForFunction(
+      () => [...document.querySelectorAll(".pane-card-output")].some((el) => el.textContent && !el.textContent.includes("Reading live pane")),
+      { timeout: 20000 }
+    );
+    const rangeCard = desktop.locator('.pane-card[data-pane-handle="range"]');
+    await rangeCard.waitFor({ state: "visible" });
+    assert.match(await rangeCard.locator(".presence-status-pill").textContent(), /Working|Idle/);
+    assert.ok(((await rangeCard.locator(".pane-card-output").textContent()) || "").length > 0);
+    // Terminal-style: no wrapping, type autofits the longest line.
+    assert.equal(await rangeCard.locator(".pane-card-output").evaluate((el) => getComputedStyle(el).whiteSpace), "pre");
+    const panesArtifact = path.join(artifactRoot, "desktop", "panes-view.png");
+    await screenshot(desktop, panesArtifact);
+    artifacts.push(panesArtifact);
+    await rangeCard.locator('[data-pane-action="message"]').click();
     await desktop.waitForSelector("#compose-modal:not(.hidden)");
     assert.equal(await desktop.locator("#compose-to").inputValue(), "range");
     assert.match(await desktop.locator("#compose-subject").inputValue(), /Status check: Range Owner/);
     await desktop.click("#close-compose-btn");
+    await desktop.click("#nav-view-mail");
 
+    // Sidebar click focuses the Panes view on that single lane, fullscreen.
     await desktop.click('.presence-item[data-agent-handle="range"]');
+    await desktop.waitForSelector("#panes-view-section:not(.hidden)");
+    await desktop.locator(".pane-card").first().waitFor({ state: "visible", timeout: 15000 });
+    assert.equal(await desktop.locator(".pane-card").count(), 1);
+    assert.ok(await desktop.locator("#panes-focus-banner:not(.hidden)").isVisible());
+    assert.match(await desktop.locator("#panes-focus-name").textContent(), /range/);
+    const focusArtifact = path.join(artifactRoot, "desktop", "panes-focus.png");
+    await screenshot(desktop, focusArtifact);
+    artifacts.push(focusArtifact);
+    // Lines selector changes the snapshot height (the meaningful "resize").
+    await desktop.locator("#panes-lines-select").selectOption("100");
+    await desktop.waitForTimeout(1500);
+
+    // Full activity dialog still opens from the focused card.
+    await desktop.locator('.pane-card[data-pane-handle="range"] [data-pane-action="activity"]').click();
     await desktop.waitForSelector("#agent-activity-dialog[open]");
     await desktop.locator("#view-agent-task-btn").waitFor({ state: "visible" });
     const activity = await desktop.$eval("#agent-activity-dialog", (dialog) => ({
@@ -147,6 +176,23 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     const desktopActivityArtifact = path.join(artifactRoot, "desktop", "agent-activity.png");
     await screenshot(desktop, desktopActivityArtifact);
     artifacts.push(desktopActivityArtifact);
+
+    // Messenger-style detail: live pane tail appended to the activity card.
+    await desktop.locator("#agent-activity-pane-output").waitFor({ state: "visible", timeout: 15000 });
+    await desktop.waitForFunction(
+      () => !document.getElementById("agent-activity-pane-output")?.textContent?.includes("Reading live pane"),
+      { timeout: 15000 }
+    );
+    const paneText = await desktop.$eval("#agent-activity-pane-output", (el) => el.textContent);
+    assert.ok(paneText.length > 0, "pane tail resolves to output or an unavailable note, never a stuck loader");
+    const paneBox = await desktop.$eval("#agent-activity-pane-output", (el) => {
+      const rect = el.getBoundingClientRect();
+      return { width: rect.width, innerWidth: window.innerWidth };
+    });
+    assert.ok(paneBox.width <= paneBox.innerWidth);
+    const desktopPaneArtifact = path.join(artifactRoot, "desktop", "agent-pane.png");
+    await screenshot(desktop, desktopPaneArtifact);
+    artifacts.push(desktopPaneArtifact);
 
     await desktop.click("#view-agent-task-btn");
     await desktop.waitForSelector("#task-sheet-drawer:not(.hidden)");
@@ -271,6 +317,20 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     await screenshot(mobile, mobileSidebarArtifact);
     artifacts.push(mobileSidebarArtifact);
     await mobile.tap('.presence-item[data-agent-handle="range"]');
+    // Mobile focus: single fullscreen-width pane card, no overflow.
+    await mobile.waitForSelector("#panes-view-section:not(.hidden)");
+    await mobile.locator(".pane-card").first().waitFor({ state: "visible", timeout: 15000 });
+    assert.equal(await mobile.locator(".pane-card").count(), 1);
+    const mobileFocusBox = await mobile.$eval(".pane-card", (el) => {
+      const rect = el.getBoundingClientRect();
+      return { width: rect.width, innerWidth: window.innerWidth };
+    });
+    assert.ok(mobileFocusBox.width <= mobileFocusBox.innerWidth);
+    const mobileFocusArtifact = path.join(artifactRoot, "mobile", "panes-focus.png");
+    await screenshot(mobile, mobileFocusArtifact);
+    artifacts.push(mobileFocusArtifact);
+    // Full dialog from the focused card's Activity action.
+    await mobile.tap('.pane-card[data-pane-handle="range"] [data-pane-action="activity"]');
     await mobile.waitForSelector("#agent-activity-dialog[open]");
     const mobileDialog = await mobile.$eval("#agent-activity-dialog", (dialog) => {
       const rect = dialog.getBoundingClientRect();
@@ -290,6 +350,21 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     const mobileActivityArtifact = path.join(artifactRoot, "mobile", "agent-activity.png");
     await screenshot(mobile, mobileActivityArtifact);
     artifacts.push(mobileActivityArtifact);
+    // Mobile messenger detail: pane tail fits the narrow dialog, no overflow.
+    await mobile.locator("#agent-activity-pane-output").waitFor({ state: "visible", timeout: 15000 });
+    await mobile.waitForFunction(
+      () => !document.getElementById("agent-activity-pane-output")?.textContent?.includes("Reading live pane"),
+      { timeout: 15000 }
+    );
+    const mobilePaneBox = await mobile.$eval("#agent-activity-pane-output", (el) => {
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return { width: rect.width, whiteSpace: style.whiteSpace, overflowX: style.overflowX };
+    });
+    assert.ok(mobilePaneBox.width <= 390);
+    // Terminal semantics: never wrap (autofit shrinks type; extremes scroll).
+    assert.equal(mobilePaneBox.whiteSpace, "pre");
+    assert.ok(["auto", "scroll"].includes(mobilePaneBox.overflowX));
     await mobile.tap("#view-agent-inbox-btn");
     await mobile.locator("#header-account-label", { hasText: "Range Owner" }).waitFor({ state: "attached" });
     assert.equal(await mobile.$eval("body", (body) => body.classList.contains("sidebar-open")), false);

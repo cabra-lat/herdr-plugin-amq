@@ -389,7 +389,7 @@ body {
   border-radius: 8px;
 }
 
-/* Hangouts Presence Widget */
+/* Swarm presence list */
 .hangouts-list {
   display: flex;
   flex-direction: column;
@@ -542,6 +542,101 @@ body {
 .agent-task-status.offline {
   background: var(--bg-hover);
   color: var(--text-muted);
+}
+
+/* Stale Herdr snapshot: dashed outline so a dead "Working" can't pass as live. */
+.presence-status-pill[data-stale="true"] {
+  outline: 2px dashed var(--text-muted);
+  outline-offset: 1px;
+  opacity: 0.75;
+}
+
+/* Panes view: live terminal tails */
+.panes-view-section {
+  padding: 12px 16px;
+  overflow-y: auto;
+}
+.panes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
+  gap: 12px;
+  margin-top: 12px;
+  align-content: start;
+}
+.panes-grid.panes-focus {
+  grid-template-columns: minmax(0, 1fr);
+}
+.panes-focus-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.panes-focus-banner.hidden {
+  display: none;
+}
+.pane-card {
+  border: 1px solid var(--border, #dadce0);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg, #fff);
+}
+.pane-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #dadce0);
+}
+.pane-card-name {
+  font-size: 13px;
+}
+.pane-card-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.pane-card-output {
+  margin: 0;
+  padding: 10px;
+  max-height: 320px;
+  overflow: auto;
+  font-family: monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre;
+  overflow-x: auto;
+  word-break: normal;
+  background: #0d1117;
+  color: #c9d1d9;
+}
+
+/* Live pane tail inside the agent activity card (mobile: full-width, capped). */
+.agent-activity-pane-card {
+  margin-top: 10px;
+}
+.agent-activity-pane-card .agent-activity-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.agent-pane-output {
+  border-radius: 8px;
+  max-height: 240px;
+}
+@media (max-width: 480px) {
+  .agent-pane-output {
+    font-size: 10.5px;
+    max-height: 200px;
+  }
 }
 
 .presence-role {
@@ -2576,7 +2671,8 @@ mark.search-highlight {
 
 /* ─── View Containers ──────────────────────────────────────────────────────── */
 .mail-view-section,
-.board-view-section {
+.board-view-section,
+.panes-view-section {
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -4272,127 +4368,30 @@ mark.search-highlight {
   border-top: 1px solid var(--border-light);
 }
 
-.hangout-dialog {
-  width: min(960px, calc(100vw - 32px));
-}
-
-.hangout-shell {
-  max-height: min(820px, calc(100dvh - 32px));
-}
-
-.hangout-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.hangout-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 18px 22px 22px;
-  overflow-y: auto;
-}
-
-.hangout-note {
-  padding: 11px 13px;
-  border: 1px solid var(--border-light);
-  border-radius: 10px;
-  background: var(--blue-surface);
+.pane-card-sub {
+  min-width: 0;
+  padding: 8px 10px 0;
   color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11.5px;
+  line-height: 1.45;
 }
 
-.hangout-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px;
-}
-
-.hangout-card {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 12px;
-  padding: 15px;
-  border: 1px solid var(--border-light);
-  border-radius: 14px;
-  background: var(--bg-app);
-}
-
-.hangout-card:hover {
-  border-color: var(--primary-blue);
-}
-
-.hangout-card-header,
-.hangout-card-name-row,
-.hangout-card-actions,
-.hangout-message-meta {
-  display: flex;
-  align-items: center;
-}
-
-.hangout-card-header,
-.hangout-card-name-row,
-.hangout-card-actions,
-.hangout-message-meta {
-  gap: 8px;
-}
-
-.hangout-card-header {
-  justify-content: space-between;
-}
-
-.hangout-card-identity {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 9px;
-}
-
-.hangout-card-avatar {
-  display: flex;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.hangout-card-name {
-  min-width: 0;
-  overflow: hidden;
+.pane-card-sub strong {
   color: var(--text-main);
-  font-size: 13px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12px;
 }
 
-.hangout-card-role {
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.pane-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
 }
 
-.hangout-card-activity,
-.hangout-card-task,
-.hangout-latest {
-  min-width: 0;
-  padding: 10px 11px;
-  border-radius: 10px;
-  background: var(--bg-surface);
-}
-
-.hangout-card-activity {
-  border-left: 3px solid var(--primary-blue);
+.pane-card-actions .btn {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 11px;
 }
 
 .hangout-card-label {
@@ -4405,55 +4404,12 @@ mark.search-highlight {
   text-transform: uppercase;
 }
 
-.hangout-card-activity strong,
-.hangout-card-task strong,
 .hangout-message {
   display: block;
   overflow-wrap: anywhere;
-  color: var(--text-main);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.hangout-card-task strong {
-  font-weight: 600;
-}
-
-.hangout-latest {
-  border: 1px solid var(--border-light);
-}
-
-.hangout-message {
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.45;
-}
-
-.hangout-message-meta {
-  justify-content: space-between;
-  margin-top: 6px;
-  color: var(--text-muted);
-  font-size: 10px;
-}
-
-.hangout-card-actions {
-  flex-wrap: wrap;
-  margin-top: auto;
-}
-
-.hangout-card-actions .btn {
-  min-height: 30px;
-  padding: 6px 10px;
-  font-size: 11px;
-}
-
-.hangout-empty {
-  grid-column: 1 / -1;
-  padding: 28px 16px;
-  border: 1px dashed var(--border-light);
-  border-radius: 12px;
-  color: var(--text-secondary);
-  text-align: center;
 }
 
 #splitter-view[data-reading-layout="full"].detail-open .mail-list-container {
@@ -5004,15 +4960,7 @@ html[data-theme="dark"] ::placeholder {
     justify-content: center;
   }
 
-  .hangout-body {
-    padding: 16px;
-  }
-
-  .hangout-list {
-    grid-template-columns: 1fr;
-  }
-
-  .hangout-card-actions .btn {
+  .pane-card-actions .btn {
     min-height: 40px;
     flex: 1;
     justify-content: center;

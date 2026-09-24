@@ -266,8 +266,9 @@ Test body`
     const text = await res.text();
      assert.ok(text.includes("AGmail"));
      assert.ok(text.includes("Working = active turn"));
-     assert.ok(text.includes("open-hangouts-btn"));
-     assert.ok(text.includes("hangout-dialog"));
+     assert.ok(text.includes("nav-view-panes"));
+     assert.ok(text.includes("panes-view-section"));
+     assert.ok(!text.includes("hangout-dialog"));
      assert.ok(text.includes("search-input"));
     assert.ok(text.includes("sidebar-backdrop"));
     assert.ok(text.includes("chat-context-menu"));
@@ -324,6 +325,23 @@ Test body`
     const appText = await (await fetch(`${baseUrl}/app.js`)).text();
     assert.ok(appText.includes("<video controls"));
     assert.ok(appText.includes('preload="metadata"'));
+  });
+
+  test("GET /api/panes returns bounded terminal tails per lane", async () => {
+    const res = await fetch(`${baseUrl}/api/panes?lines=10`);
+    assert.equal(res.status, 200);
+    const panes = await res.json();
+    assert.equal(Array.isArray(panes), true);
+    assert.ok(panes.length >= 1);
+    for (const p of panes) {
+      assert.equal(typeof p.handle, "string");
+      assert.equal(typeof p.ok, "boolean");
+      assert.equal(typeof p.output, "string");
+      assert.ok(p.output.length <= 6000);
+      assert.ok(typeof p.at === "string");
+    }
+    const filtered = await (await fetch(`${baseUrl}/api/panes?handle=agent-one`)).json();
+    assert.ok(filtered.every((p) => p.handle === "agent-one"));
   });
 
   test("GET /api/agent-briefs returns array of disk agent definitions", async () => {

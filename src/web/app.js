@@ -97,13 +97,10 @@
   const agentActivityUnread = document.getElementById("agent-activity-unread");
   const agentActivityPane = document.getElementById("agent-activity-pane");
   const agentActivityObserved = document.getElementById("agent-activity-observed");
+  const agentPaneOutput = document.getElementById("agent-activity-pane-output");
+  const refreshAgentPaneBtn = document.getElementById("refresh-agent-pane-btn");
   const viewAgentInboxBtn = document.getElementById("view-agent-inbox-btn");
   const viewAgentTaskBtn = document.getElementById("view-agent-task-btn");
-  const openHangoutsBtn = document.getElementById("open-hangouts-btn");
-  const hangoutDialog = document.getElementById("hangout-dialog");
-  const closeHangoutsBtn = document.getElementById("close-hangouts-btn");
-  const refreshHangoutsBtn = document.getElementById("refresh-hangouts-btn");
-  const hangoutListEl = document.getElementById("hangout-list");
 
   // Context Menu Elements
   const chatContextMenu = document.getElementById("chat-context-menu");
@@ -177,6 +174,15 @@
   const navViewBoard = document.getElementById("nav-view-board");
   const mailViewSection = document.getElementById("mail-view-section");
   const boardViewSection = document.getElementById("board-view-section");
+  const navViewPanes = document.getElementById("nav-view-panes");
+  const panesViewSection = document.getElementById("panes-view-section");
+  const panesGridEl = document.getElementById("panes-grid");
+  const panesUpdatedAtEl = document.getElementById("panes-updated-at");
+  const refreshPanesBtn = document.getElementById("refresh-panes-btn");
+  const panesLinesSelect = document.getElementById("panes-lines-select");
+  const panesFocusBanner = document.getElementById("panes-focus-banner");
+  const panesFocusName = document.getElementById("panes-focus-name");
+  const clearPanesFocusBtn = document.getElementById("clear-panes-focus-btn");
   const boardTotalCountEl = document.getElementById("board-total-count");
   const boardSearchInput = document.getElementById("board-search-input");
   const refreshBoardBtn = document.getElementById("refresh-board-btn");
@@ -364,7 +370,7 @@
       state.agents = list;
        renderAccountDropdown(list);
        renderPresenceList(list);
-       if (hangoutDialog?.open) renderHangouts();
+       if (state.currentView === "panes") renderPaneCards();
        populateComposeDropdowns(list);
     } catch {}
   }
@@ -375,7 +381,7 @@
       const list = await res.json();
        state.worktrees = Array.isArray(list) ? list : [];
        renderPresenceList(state.agents);
-       if (hangoutDialog?.open) renderHangouts();
+       if (state.currentView === "panes") renderPaneCards();
     } catch {}
   }
 
@@ -537,6 +543,12 @@
   function agentStatusView(agent) {
     const raw = String(agent?.herdrStatus && agent.herdrStatus !== "unknown" ? agent.herdrStatus : agent?.status || "offline").toLowerCase();
     const status = raw === "online" || raw === "active" ? "idle" : raw;
+    // Stale snapshot detection: the server re-polls Herdr on a safety timer,
+    // but if the observed-at timestamp lags, the pill may show a dead state.
+    // Flag it via data-stale (CSS only — label text stays stable for tests).
+    const live = ["working", "idle", "done", "blocked"].includes(status);
+    const observedMs = agent?.herdrObservedAt ? Date.parse(agent.herdrObservedAt) : NaN;
+    const stale = live && Number.isFinite(observedMs) && Date.now() - observedMs > 120000;
     const views = {
       working: { label: "Working", description: "Active turn", tone: "working" },
       idle: { label: "Idle", description: "Turn ended · ready for input", tone: "idle" },
@@ -545,7 +557,7 @@
       error: { label: "Needs attention", description: "State error", tone: "blocked" },
       offline: { label: "Offline", description: "No live Herdr state", tone: "offline" },
     };
-    return { status, ...(views[status] || views.offline) };
+    return { status, stale, ...(views[status] || views.offline) };
   }
 
   function getAgentTask(handle) {
@@ -625,7 +637,7 @@
           <span class="presence-details">
             <span class="presence-name-row">
               <span class="presence-name">${escapeHtml(agent.handle)}</span>
-              <span class="presence-status-pill ${statusView.tone}" title="${escapeHtml(statusView.description)}">${statusView.label}</span>
+              <span class="presence-status-pill ${statusView.tone}"${statusView.stale ? ' data-stale="true"' : ""} title="${escapeHtml(statusView.description)}${statusView.stale ? " · snapshot may be stale" : ""}">${statusView.label}</span>
             </span>
             <span class="presence-role">${escapeHtml(role)}</span>
           </span>
@@ -635,7 +647,7 @@
     }
     presenceListEl.innerHTML = html;
     presenceListEl.querySelectorAll(".presence-item").forEach((button) => {
-      button.addEventListener("click", () => openAgentActivity(button.dataset.agentHandle));
+      button.addEventListener("click", () => openPanesFocus(button.dataset.agentHandle));
     });
     if (agentActivityDialog?.open) renderAgentActivity();
   }
@@ -678,7 +690,42 @@
     agentActivityObserved.textContent = observedAt ? new Date(observedAt).toLocaleString() : "No live snapshot";
     viewAgentTaskBtn.hidden = !task;
     agentActivityDialog.dataset.agentHandle = handle;
+    fetchAgentPane(handle);
     return true;
+  }
+
+  // Live pane tail appended to the activity card (messenger-style detail).
+  // Fire-and-forget with a generation guard: slow reads never overwrite a
+  // newer agent selection, and refreshes never blank existing content.
+  let agentPaneGen = 0;
+  async function fetchAgentPane(handle) {
+    if (!agentPaneOutput || !handle) return;
+    const myGen = ++agentPaneGen;
+    const firstPaint = !agentPaneOutput.dataset.loadedFor;
+    if (firstPaint || agentPaneOutput.dataset.loadedFor !== handle) {
+      agentPaneOutput.textContent = "Reading live pane…";
+    }
+    if (refreshAgentPaneBtn) refreshAgentPaneBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/panes?handle=${encodeURIComponent(handle)}&lines=40`);
+      const panes = await res.json();
+      if (myGen !== agentPaneGen) return;
+      const pane = Array.isArray(panes) ? panes[0] : null;
+      if (!pane) {
+        agentPaneOutput.textContent = "No live pane tracked for this agent.";
+      } else if (pane.ok) {
+        agentPaneOutput.textContent = pane.output || "(pane produced no output)";
+      } else {
+        agentPaneOutput.textContent = "Pane unavailable (Herdr not connected).";
+      }
+      agentPaneOutput.dataset.loadedFor = handle;
+      requestAnimationFrame(() => fitPaneOutput(agentPaneOutput));
+    } catch {
+      if (myGen !== agentPaneGen) return;
+      agentPaneOutput.textContent = "Unable to read the live pane.";
+    } finally {
+      if (refreshAgentPaneBtn) refreshAgentPaneBtn.disabled = false;
+    }
   }
 
   function openAgentActivity(handle) {
@@ -699,6 +746,9 @@
   }
 
   closeAgentActivityBtn?.addEventListener("click", closeAgentActivity);
+  refreshAgentPaneBtn?.addEventListener("click", () => {
+    if (state.activeAgentHandle) fetchAgentPane(state.activeAgentHandle);
+  });
   agentActivityDialog?.addEventListener("click", (event) => {
     if (event.target !== agentActivityDialog) return;
     const bounds = agentActivityDialog.getBoundingClientRect();
@@ -734,130 +784,57 @@
     return Number.isNaN(date.getTime()) ? "No timestamp" : date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
+  // Latest *report* per agent: prefer messages authored by the agent itself
+  // (their own status reports), ignore anything older than 7 days so a
+  // stale thread can't masquerade as current activity.
+  const HANGOUT_RECENCY_MS = 7 * 24 * 60 * 60 * 1000;
   function latestHangoutMessage(agent) {
-    let latest = null;
-    let latestTime = -1;
+    let own = null;
+    let ownTime = -1;
+    let mention = null;
+    let mentionTime = -1;
+    const cutoff = Date.now() - HANGOUT_RECENCY_MS;
     for (const thread of state.hangoutThreads) {
       for (const message of thread.messages || []) {
-        const recipients = Array.isArray(message.to) ? message.to : [message.to].filter(Boolean);
-        const relevant = message.from === agent.handle || message.targetAccount === agent.handle || recipients.includes(agent.handle);
-        if (!relevant) continue;
         const time = message.created ? new Date(message.created).getTime() : 0;
-        if (time >= latestTime) {
-          latest = message;
-          latestTime = time;
+        if (!Number.isFinite(time) || time < cutoff) continue;
+        if (message.from === agent.handle) {
+          if (time >= ownTime) {
+            own = message;
+            ownTime = time;
+          }
+          continue;
+        }
+        const recipients = Array.isArray(message.to) ? message.to : [message.to].filter(Boolean);
+        const relevant = message.targetAccount === agent.handle || recipients.includes(agent.handle);
+        if (!relevant) continue;
+        if (time >= mentionTime) {
+          mention = message;
+          mentionTime = time;
         }
       }
     }
-    return latest;
+    return own || mention;
   }
 
-  function renderHangouts() {
-    if (!hangoutListEl) return;
-    const agents = sortAgentsForPresence(state.agents);
-    if (!agents.length) {
-      hangoutListEl.innerHTML = '<div class="hangout-empty">No agent profiles found.</div>';
-      return;
-    }
-
-    hangoutListEl.innerHTML = agents.map((agent) => {
-      const profile = agent.profile || {};
-      const statusView = agentStatusView(agent);
-      const task = getAgentTask(agent.handle);
-      const activity = agentActivityText(agent, task);
-      const message = latestHangoutMessage(agent);
-      const messageText = message ? (message.snippet || message.body || "No report text") : "No AMQ report yet";
-      const messageMeta = message ? `${message.from || "unknown"} · ${hangoutTimestamp(message.created)}` : "Reports appear here when agents send AMQ updates";
-      const name = profile.name || agent.handle;
-      const role = profile.role || "Swarm Agent";
-      const emoji = profile.emoji || agent.handle.slice(0, 1).toUpperCase();
-      const color = safeCssColor(profile.color);
-      return `
-        <article class="hangout-card" data-hangout-agent="${escapeHtml(agent.handle)}">
-          <div class="hangout-card-header">
-            <div class="hangout-card-identity">
-              <span class="hangout-card-avatar" style="background:${escapeHtml(color)};color:#fff;">${escapeHtml(emoji)}</span>
-              <div>
-                <div class="hangout-card-name-row"><strong class="hangout-card-name">${escapeHtml(name)}</strong><span class="presence-status-pill ${statusView.tone}" title="${escapeHtml(statusView.description)}">${statusView.label}</span></div>
-                <span class="hangout-card-role">${escapeHtml(role)}</span>
-              </div>
-            </div>
-            <span class="hangout-card-role">${escapeHtml(agent.handle)}</span>
-          </div>
-          <div class="hangout-card-activity"><span class="hangout-card-label">Current activity</span><strong>${escapeHtml(activity)}</strong></div>
-          <div class="hangout-card-task"><span class="hangout-card-label">Assigned task</span><strong>${escapeHtml(task ? task.title : "No active task assigned")}</strong></div>
-          <div class="hangout-latest"><span class="hangout-card-label">Latest AMQ report</span><span class="hangout-message">${escapeHtml(messageText)}</span><span class="hangout-message-meta"><span>${escapeHtml(messageMeta)}</span><span>${agent.unreadCount || 0} unread</span></span></div>
-          <div class="hangout-card-actions">
-            <button type="button" class="btn btn-secondary" data-hangout-action="activity" data-hangout-handle="${escapeHtml(agent.handle)}">Activity</button>
-            <button type="button" class="btn btn-primary" data-hangout-action="message" data-hangout-handle="${escapeHtml(agent.handle)}">Message</button>
-          </div>
-        </article>
-      `;
-    }).join("");
-
-    hangoutListEl.querySelectorAll("[data-hangout-action]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const agent = state.agents.find((item) => item.handle === button.dataset.hangoutHandle);
-        if (!agent) return;
-        if (button.dataset.hangoutAction === "activity") {
-          closeHangouts();
-          openAgentActivity(agent.handle);
-        } else {
-          openComposeForAgent(agent);
-        }
-      });
-    });
-  }
-
-  async function fetchHangoutFeed() {
-    if (!hangoutListEl) return;
-    if (refreshHangoutsBtn) refreshHangoutsBtn.disabled = true;
+  // Latest-report threads backing the Panes view (unified "what agents are
+  // doing" screen; the old Hangouts dialog was removed as redundant).
+  async function fetchPaneReports() {
     try {
       const response = await fetch("/api/threads?account=all&folder=all&pageSize=100&paginate=true");
       const data = await response.json();
       state.hangoutThreads = Array.isArray(data) ? data : (data.items || []);
-      renderHangouts();
-    } catch {
-      hangoutListEl.innerHTML = '<div class="hangout-empty">Unable to load the latest AMQ reports.</div>';
-    } finally {
-      if (refreshHangoutsBtn) refreshHangoutsBtn.disabled = false;
-    }
-  }
-
-  function openHangouts() {
-    if (!hangoutDialog) return;
-    if (!hangoutDialog.open) {
-      if (typeof hangoutDialog.showModal === "function") hangoutDialog.showModal();
-      else hangoutDialog.setAttribute("open", "");
-    }
-    renderHangouts();
-    fetchHangoutFeed();
-  }
-
-  function closeHangouts() {
-    if (!hangoutDialog) return;
-    if (typeof hangoutDialog.close === "function") hangoutDialog.close();
-    else hangoutDialog.removeAttribute("open");
+      if (state.currentView === "panes") renderPaneCards();
+    } catch {}
   }
 
   function openComposeForAgent(agent) {
-    closeHangouts();
     openComposeBtn.click();
     composeToEl.value = agent.handle;
     composeThreadEl.value = `hangout/${agent.handle}`;
     composeSubjectEl.value = `Status check: ${agent.profile?.name || agent.handle}`;
     composeBodyEl.value = `Checking in on ${agent.profile?.name || agent.handle}.\n\nCurrent activity: ${agentActivityText(agent, getAgentTask(agent.handle))}\n\n`;
   }
-
-  openHangoutsBtn?.addEventListener("click", openHangouts);
-  closeHangoutsBtn?.addEventListener("click", closeHangouts);
-  refreshHangoutsBtn?.addEventListener("click", fetchHangoutFeed);
-  hangoutDialog?.addEventListener("click", (event) => {
-    if (event.target !== hangoutDialog) return;
-    const bounds = hangoutDialog.getBoundingClientRect();
-    const outside = event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom;
-    if (outside) closeHangouts();
-  });
 
   function levenshtein(a, b) {
     if (a.length === 0) return b.length;
@@ -2092,7 +2069,7 @@
             fetchStatus();
             fetchAgents();
              fetchData();
-             if (hangoutDialog?.open) fetchHangoutFeed();
+             if (state.currentView === "panes") fetchPanes();
              if (state.selectedTaskId) {
               const currentTask = findTaskById(state.selectedTaskId);
               if (currentTask) renderSheetTransmissions(currentTask);
@@ -2127,7 +2104,7 @@
                 if (title) agent.herdrActivity.title = title;
               }
                renderPresenceList(state.agents);
-               if (hangoutDialog?.open) renderHangouts();
+               if (state.currentView === "panes") renderPaneCards();
                if (agentActivityDialog?.dataset.agentHandle === handle) renderAgentActivity();
             }
           }
@@ -2623,7 +2600,7 @@
       if (data.ok) {
          state.board = data;
          if (agentActivityDialog?.open) renderAgentActivity();
-         if (hangoutDialog?.open) renderHangouts();
+         if (state.currentView === "panes") renderPaneCards();
         if (boardTotalCountEl) {
           boardTotalCountEl.textContent = data.stats?.total || 0;
         }
@@ -2642,18 +2619,137 @@
   function switchView(viewName) {
     state.currentView = viewName;
 
+    navViewMail?.classList.toggle("active", viewName === "mail");
+    navViewBoard?.classList.toggle("active", viewName === "board");
+    navViewPanes?.classList.toggle("active", viewName === "panes");
+    mailViewSection?.classList.toggle("hidden", viewName !== "mail");
+    boardViewSection?.classList.toggle("hidden", viewName !== "board");
+    panesViewSection?.classList.toggle("hidden", viewName !== "panes");
     if (viewName === "board") {
-      navViewMail?.classList.remove("active");
-      navViewBoard?.classList.add("active");
-      mailViewSection?.classList.add("hidden");
-      boardViewSection?.classList.remove("hidden");
       fetchBoard();
-    } else {
-      navViewBoard?.classList.remove("active");
-      navViewMail?.classList.add("active");
-      boardViewSection?.classList.add("hidden");
-      mailViewSection?.classList.remove("hidden");
+    } else if (viewName === "panes") {
+      fetchPanes();
+    }  }
+
+  // Terminal-style autofit: measure the longest line and shrink the
+  // monospace type so it fits without wrapping (real terminals never wrap;
+  // they scroll). Falls back to horizontal scroll for extreme cases.
+  const paneMeasureCtx = document.createElement("canvas").getContext("2d");
+  function fitPaneOutput(el) {
+    if (!el || !el.isConnected) return;
+    const text = el.textContent || "";
+    const longest = text.split("\n").reduce((m, l) => Math.max(m, l.length), 0) || 1;
+    const style = getComputedStyle(el);
+    const avail = Math.max(50, el.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0"));
+    let size = parseFloat(style.fontSize) || 11.5;
+    paneMeasureCtx.font = `${size}px ${style.fontFamily}`;
+    const ratio = paneMeasureCtx.measureText("0".repeat(100)).width / 100 / size;
+    size = Math.min(11.5, Math.max(7, avail / (longest * (ratio || 0.6))));
+    el.style.fontSize = `${size.toFixed(2)}px`;
+  }
+  function fitVisiblePaneOutputs() {
+    document.querySelectorAll(".pane-card-output, .agent-pane-output").forEach(fitPaneOutput);
+  }
+  let paneFitTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(paneFitTimer);
+    paneFitTimer = setTimeout(fitVisiblePaneOutputs, 150);
+  });
+
+  // ─── Panes View: live terminal tails ──────────────────────────────────────
+  let panesFetchGen = 0;
+  async function fetchPanes() {
+    if (!panesGridEl) return;
+    const myGen = ++panesFetchGen;
+    const focus = state.panesFocus || "";
+    const lines = state.panesLines || 40;
+    const firstPaint = !panesGridEl.querySelector(".pane-card");
+    if (firstPaint) {
+      panesGridEl.innerHTML = `<div class="kanban-empty">Reading live pane tails…</div>`;
     }
+    if (refreshPanesBtn) refreshPanesBtn.disabled = true;
+    try {
+      const params = new URLSearchParams({ lines: String(lines) });
+      if (focus) params.set("handle", focus);
+      const res = await fetch(`/api/panes?${params.toString()}`);
+      const panes = await res.json();
+      if (myGen !== panesFetchGen || state.currentView !== "panes") return;
+      state.lastPanes = Array.isArray(panes) ? panes : [];
+      renderPaneCards();
+      if (panesUpdatedAtEl) panesUpdatedAtEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      fetchPaneReports();
+    } catch {
+      if (myGen !== panesFetchGen) return;
+      panesGridEl.innerHTML = `<div class="kanban-empty">Unable to read pane tails.</div>`;
+    } finally {
+      if (refreshPanesBtn) refreshPanesBtn.disabled = false;
+    }
+  }
+
+  // Single-lane focus: sidebar click opens Panes showing only that agent,
+  // fullscreen-width, with its parsed status header.
+  function openPanesFocus(handle) {
+    state.panesFocus = handle || null;
+    if (window.innerWidth <= 768) {
+      document.body.classList.remove("sidebar-open");
+      sidebarBackdrop?.classList.add("hidden");
+    }
+    switchView("panes");
+  }
+  function renderPanesFocusBanner() {
+    const focus = state.panesFocus || "";
+    panesFocusBanner?.classList.toggle("hidden", !focus);
+    if (panesFocusName) panesFocusName.textContent = focus;
+    panesGridEl?.classList.toggle("panes-focus", Boolean(focus));
+  }
+
+  // Unified lane card: live status + assigned task + latest AMQ report +
+  // live terminal tail. This is the single "what agents are doing" screen.
+  function renderPaneCards() {
+    if (!panesGridEl) return;
+    renderPanesFocusBanner();
+    const list = Array.isArray(state.lastPanes) ? state.lastPanes : [];
+    if (!list.length) {
+      panesGridEl.innerHTML = `<div class="kanban-empty">No registered lanes.</div>`;
+      return;
+    }    panesGridEl.innerHTML = list
+      .map((p) => {
+        const agent = state.agents.find((a) => a.handle === p.handle);
+        const statusView = agentStatusView(agent || { handle: p.handle, status: "offline" });
+        const task = getAgentTask(p.handle);
+        const activity = agent ? agentActivityText(agent, task) : "No live activity signal";
+        const message = latestHangoutMessage({ handle: p.handle });
+        const messageText = message ? message.snippet || message.body || "No report text" : "No AMQ report yet";
+        return `
+        <article class="pane-card" data-pane-handle="${escapeHtml(p.handle)}">
+          <div class="pane-card-header">
+            <strong class="pane-card-name">${escapeHtml(p.handle)}</strong>
+            <span class="presence-status-pill ${statusView.tone}"${statusView.stale ? ' data-stale="true"' : ""}>${statusView.label}</span>
+            <span class="pane-card-time">${escapeHtml(hangoutTimestamp(p.at))}</span>
+          </div>
+          <div class="pane-card-sub"><span class="hangout-card-label">Activity</span><strong>${escapeHtml(activity)}</strong></div>
+          <div class="pane-card-sub"><span class="hangout-card-label">Task</span><span>${escapeHtml(task ? task.title : "No active task assigned")}</span></div>
+          <div class="pane-card-sub"><span class="hangout-card-label">Latest report</span><span class="hangout-message">${escapeHtml(messageText)}</span></div>
+              <pre class="pane-card-output">${p.ok ? escapeHtml(p.output || "(empty)") : "Pane unavailable (Herdr not connected)."}</pre>
+          <div class="pane-card-actions">
+            <button type="button" class="btn btn-secondary" data-pane-action="activity" data-pane-handle="${escapeHtml(p.handle)}">Activity</button>
+            <button type="button" class="btn btn-primary" data-pane-action="message" data-pane-handle="${escapeHtml(p.handle)}">Message</button>
+          </div>
+        </article>`;
+      })
+      .join("");
+    panesGridEl.querySelectorAll("[data-pane-action]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const agent = state.agents.find((item) => item.handle === button.dataset.paneHandle);
+        if (!agent) return;
+        if (button.dataset.paneAction === "activity") {
+          openAgentActivity(agent.handle);
+        } else {
+          openComposeForAgent(agent);
+        }
+      });
+    });
+    requestAnimationFrame(fitVisiblePaneOutputs);
   }
 
   function renderBoard() {
@@ -3324,6 +3420,13 @@
     // Navigation view switching
     navViewMail?.addEventListener("click", () => switchView("mail"));
     navViewBoard?.addEventListener("click", () => switchView("board"));
+    navViewPanes?.addEventListener("click", () => openPanesFocus(null));
+    refreshPanesBtn?.addEventListener("click", () => fetchPanes());
+    panesLinesSelect?.addEventListener("change", () => {
+      state.panesLines = parseInt(panesLinesSelect.value, 10) || 40;
+      fetchPanes();
+    });
+    clearPanesFocusBtn?.addEventListener("click", () => openPanesFocus(null));
 
     // Board search filter
     boardSearchInput?.addEventListener("input", (e) => {

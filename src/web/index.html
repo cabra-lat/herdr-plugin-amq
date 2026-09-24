@@ -120,6 +120,10 @@
           <span class="nav-label">AGboard</span>
           <span class="badge" id="board-total-count" style="background:var(--google-blue);color:#fff;">0</span>
         </button>
+        <button class="nav-item view-tab-btn" id="nav-view-panes" data-view="panes">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-9 14H7v-2h4v2zm7-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+          <span class="nav-label">Panes</span>
+        </button>
       </div>
 
       <!-- Mailbox Folders -->
@@ -148,7 +152,6 @@
       <div class="sidebar-section-header">
         <span title="Working = active turn · Idle = ready for input">SWARM PRESENCE</span>
          <div class="section-actions">
-           <button class="section-add-btn" id="open-hangouts-btn" title="Open Swarm Hangouts" aria-label="Open Swarm Hangouts">☰</button>
            <button class="section-add-btn" id="open-register-agent-btn" title="Register new agent profile">+</button>
          </div>
       </div>
@@ -376,6 +379,35 @@
               <div class="kanban-empty">No completed tasks</div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Panes View Section: live terminal tails per lane -->
+      <div class="panes-view-section hidden" id="panes-view-section">
+        <div class="board-toolbar">
+          <div class="board-toolbar-left">
+            <div class="board-title-group">
+              <h2 class="board-title">Panes</h2>
+              <span class="board-subtitle">Live terminal tails via herdr agent read</span>
+            </div>
+          </div>
+          <div class="board-toolbar-right">
+            <span class="board-subtitle" id="panes-updated-at"></span>
+            <label class="board-subtitle" for="panes-lines-select">Lines</label>
+            <select class="btn btn-secondary" id="panes-lines-select">
+              <option value="40" selected>40</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+            <button class="btn btn-secondary" id="refresh-panes-btn" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="panes-focus-banner hidden" id="panes-focus-banner">
+          <span>Focusing <strong id="panes-focus-name"></strong></span>
+          <button class="btn btn-secondary" id="clear-panes-focus-btn" type="button">Show all lanes</button>
+        </div>
+        <div class="panes-grid" id="panes-grid">
+          <div class="kanban-empty">Open this view to load live pane tails.</div>
         </div>
       </div>
     </main>
@@ -626,33 +658,18 @@
           <div><dt>Herdr pane</dt><dd id="agent-activity-pane">Not tracked</dd></div>
           <div><dt>Observed</dt><dd id="agent-activity-observed">No live snapshot</dd></div>
         </dl>
+        <section class="agent-activity-card agent-activity-pane-card">
+          <div class="agent-activity-card-heading">
+            <span class="agent-activity-label">Live pane</span>
+            <button class="btn btn-secondary" id="refresh-agent-pane-btn" type="button">Refresh</button>
+          </div>
+          <pre class="pane-card-output agent-pane-output" id="agent-activity-pane-output">Opening live pane…</pre>
+        </section>
       </div>
       <footer class="agent-activity-actions">
         <button class="btn btn-secondary" id="view-agent-inbox-btn">View inbox</button>
         <button class="btn btn-primary" id="view-agent-task-btn" hidden>Open task</button>
       </footer>
-    </div>
-  </dialog>
-
-  <dialog class="agent-activity-dialog hangout-dialog" id="hangout-dialog" aria-labelledby="hangout-title">
-    <div class="agent-activity-shell hangout-shell">
-      <header class="agent-activity-header">
-        <div>
-          <span class="agent-activity-kicker">Swarm hangouts</span>
-          <h2 id="hangout-title">What agents are doing</h2>
-          <span>Live Herdr state, assigned tasks, and latest AMQ reports</span>
-        </div>
-        <div class="hangout-header-actions">
-          <button class="icon-btn-small" id="refresh-hangouts-btn" title="Refresh hangouts" aria-label="Refresh hangouts">↻</button>
-          <button class="icon-btn-small" id="close-hangouts-btn" title="Close hangouts" aria-label="Close hangouts">✕</button>
-        </div>
-      </header>
-      <div class="hangout-body">
-        <div class="hangout-note">Read-only peek: opening this feed does not mark messages as read. Use <strong>Message</strong> when you intentionally want to wake an agent.</div>
-        <div class="hangout-list" id="hangout-list" aria-live="polite">
-          <div class="loading-state">Loading swarm activity...</div>
-        </div>
-      </div>
     </div>
   </dialog>
 

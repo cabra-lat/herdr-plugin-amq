@@ -1,8 +1,9 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { findAmqRoot, getAgentHandles } from "./config.mjs";
+import { findAmqRoot, getAgentHandles, getHerdrBin } from "./config.mjs";
 import { markMaildirMessageRead } from "./protocol.mjs";
 import {
   loadAllMessages,
@@ -218,6 +219,26 @@ export function startWebServer({
   // Start Herdr integration (non-fatal if Herdr not running)
   refreshHerdrCache().then(() => startHerdrSubscription()).catch(() => {});
 
+  // Safety poll: socket events alone left the cache 28+ minutes stale when
+  // status transitions arrived under an unsubscribed type. Re-poll on a
+  // timer and broadcast only when the status signature actually changed.
+  const HERDR_SAFETY_POLL_MS = parseInt(process.env.HERDR_SAFETY_POLL_MS || "20000", 10);
+  const herdrCacheSignature = () =>
+    [...herdrStatusCache].map(([h, v]) => `${h}:${v?.herdrStatus || "?"}`).sort().join("|");
+  let lastHerdrSignature = herdrCacheSignature();
+  const herdrSafetyTimer = setInterval(async () => {
+    if (isClosing) return;
+    try {
+      await refreshHerdrCache();
+      const sig = herdrCacheSignature();
+      if (sig !== lastHerdrSignature) {
+        lastHerdrSignature = sig;
+        broadcastSSE({ type: "herdr_agents_refresh", reason: "safety-poll", at: new Date().toISOString() });
+      }
+    } catch {}
+  }, HERDR_SAFETY_POLL_MS);
+  if (herdrSafetyTimer.unref) herdrSafetyTimer.unref();
+
   let watchDebounce = null;
   let watcher = null;
   try {
@@ -388,8 +409,47 @@ export function startWebServer({
     if (pathname === "/api/herdr-agents" && req.method === "GET") {
       // Raw Herdr agent snapshot — all panes, not just named ones
       const agents = await getHerdrAgents();
-      res.writeHead(200, { "Content-Type": "application/json" });
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(agents));
+      return;
+    }
+
+    if (pathname === "/api/panes" && req.method === "GET") {
+      // Live terminal tails per registered lane via `herdr agent read`.
+      // Bounded: clamped line count, per-pane timeout, truncated output.
+      const rawLines = parseInt(url.searchParams.get("lines") || "40", 10);
+      const lineCount = Number.isFinite(rawLines) ? Math.min(200, Math.max(5, rawLines)) : 40;
+      const only = (url.searchParams.get("handle") || "").trim();
+      const agents = loadAgentDirectory(amqRoot).filter((a) => !only || a.handle === only);
+      const panes = await Promise.all(
+        agents.map(
+          (a) =>
+            new Promise((resolve) => {
+              execFile(
+                getHerdrBin(),
+                ["agent", "read", a.handle, "--lines", String(lineCount), "--format", "text"],
+                { timeout: 8000, maxBuffer: 1024 * 1024 },
+                (err, stdout) => {
+                  const clean = String(stdout || "")
+                    // eslint-disable-next-line no-control-regex
+                    .replace(/\u001b\[[0-9;]*m/g, "")
+                    .replace(/\r/g, "");
+                  // Stable error code only: raw spawn errors leak tmp paths
+                  // and binary locations into the UI (and API responses).
+                  resolve({
+                    handle: a.handle,
+                    ok: !err,
+                    error: err ? "herdr-unavailable" : null,
+                    output: clean.slice(-6000),
+                    at: new Date().toISOString(),
+                  });
+                }
+              );
+            })
+        )
+      );
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(panes));
       return;
     }
 
@@ -896,6 +956,7 @@ export function startWebServer({
     if (herdrReconnectTimeout) clearTimeout(herdrReconnectTimeout);
     if (herdrRefreshDebounce) clearTimeout(herdrRefreshDebounce);
     if (herdrStatusFlushTimer) clearTimeout(herdrStatusFlushTimer);
+    if (herdrSafetyTimer) clearInterval(herdrSafetyTimer);
     pendingHerdrStatusEvents.clear();
     if (watchDebounce) clearTimeout(watchDebounce);
     if (herdrSubscription) {
