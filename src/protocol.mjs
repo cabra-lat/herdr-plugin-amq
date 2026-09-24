@@ -83,17 +83,48 @@ function openNoFollow(filePath, flags, mode) {
   return fs.openSync(filePath, flags | noFollow, mode);
 }
 
-function descriptorPath(fd) {
-  const base = process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd";
-  return path.join(base, String(fd));
+function isDirectoryHandle(handle) {
+  return Boolean(handle && typeof handle === "object");
 }
 
-function openRelativeNoFollow(dirFd, name, flags, mode) {
+function closeDirectory(handle) {
+  if (!isDirectoryHandle(handle)) fs.closeSync(handle);
+}
+
+function descriptorPath(handle) {
+  if (isDirectoryHandle(handle)) return handle.path;
+  const base = process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd";
+  return path.join(base, String(handle));
+}
+
+function openRelativeNoFollow(dirHandle, name, flags, mode) {
   if (!name || path.basename(name) !== name) throw new Error("Invalid relative Maildir name");
-  return openNoFollow(path.join(descriptorPath(dirFd), name), flags, mode);
+  return openNoFollow(path.join(descriptorPath(dirHandle), name), flags, mode);
+}
+
+function resolveDarwinDirectory(dirPath) {
+  const resolved = path.resolve(dirPath);
+  const parsed = path.parse(resolved);
+  const segments = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  const systemSymlinkRoots = new Set(["/private", "/tmp", "/var"]);
+  let current = parsed.root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink()) {
+      if (!systemSymlinkRoots.has(current)) throw new Error("Symlinked directory is not allowed");
+      current = fs.realpathSync(current);
+      continue;
+    }
+    if (!stat.isDirectory()) throw new Error("Maildir path is not a directory");
+  }
+  const realPath = fs.realpathSync(current);
+  if (!fs.statSync(realPath).isDirectory()) throw new Error("Maildir path is not a directory");
+  return realPath;
 }
 
 function openDirectorySecure(dirPath) {
+  if (process.platform === "darwin") return { path: resolveDarwinDirectory(dirPath) };
   const resolved = path.resolve(dirPath);
   const parsed = path.parse(resolved);
   const segments = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
@@ -102,12 +133,12 @@ function openDirectorySecure(dirPath) {
   try {
     for (const segment of segments) {
       const next = openRelativeNoFollow(current, segment, directoryFlag);
-      fs.closeSync(current);
+      closeDirectory(current);
       current = next;
     }
     return current;
   } catch (error) {
-    fs.closeSync(current);
+    closeDirectory(current);
     throw error;
   }
 }
@@ -145,7 +176,7 @@ export function writeBoundedFileAtomic(filePath, content, maxBytes = MAX_MAILDIR
   try {
     writeFileAtomicBetweenDirectories(path.basename(filePath), dirFd, dirFd, content, maxBytes);
   } finally {
-    fs.closeSync(dirFd);
+    closeDirectory(dirFd);
   }
 }
 
@@ -154,7 +185,7 @@ export function listMaildirMessageFiles(dirPath) {
   try {
     return fs.readdirSync(descriptorPath(dirFd));
   } finally {
-    fs.closeSync(dirFd);
+    closeDirectory(dirFd);
   }
 }
 
@@ -176,8 +207,8 @@ export function moveMaildirMessage(amqRoot, handle, fromFolder, toFolder, fileNa
     );
     return path.join(toDir, fileName);
   } finally {
-    fs.closeSync(fromFd);
-    if (toFd !== undefined) fs.closeSync(toFd);
+    closeDirectory(fromFd);
+    if (toFd !== undefined) closeDirectory(toFd);
   }
 }
 
@@ -206,7 +237,7 @@ export function readMaildirMessageFile(filePath, maxBytes = MAX_MAILDIR_FILE_BYT
     return Buffer.concat(chunks, total).toString("utf8");
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
-    fs.closeSync(dirFd);
+    closeDirectory(dirFd);
   }
 }
 
@@ -410,8 +441,8 @@ export function sendMaildirMessage(amqRoot, options = {}) {
       newFd = openDirectorySecure(path.join(recipientDir, "inbox", "new"));
       writeFileAtomicBetweenDirectories(`${msgId}.md`, tmpFd, newFd, fileText);
     } finally {
-      fs.closeSync(tmpFd);
-      if (newFd !== undefined) fs.closeSync(newFd);
+      closeDirectory(tmpFd);
+      if (newFd !== undefined) closeDirectory(newFd);
     }
   }
 
@@ -420,7 +451,7 @@ export function sendMaildirMessage(amqRoot, options = {}) {
   try {
     writeFileAtomicBetweenDirectories(`${msgId}.md`, sentFd, sentFd, fileText);
   } finally {
-    fs.closeSync(sentFd);
+    closeDirectory(sentFd);
   }
 
   return {
