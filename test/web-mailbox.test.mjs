@@ -35,7 +35,8 @@ test("Panes and coordinator metrics are separate scrollable sideboard views", ()
 
 test("mailbox navigation returns to mail view and desktop menu collapses in-flow", () => {
   assert.match(app, /state\.activeFolder = btn\.dataset\.folder;[\s\S]*?switchView\("mail"\)/);
-  assert.match(app, /state\.activeCategory = btn\.dataset\.category;[\s\S]*?switchView\("mail"\)/);
+  assert.match(app, /state\.activeCategory = btn\.dataset\.category;[\s\S]*?if \(state\.detailOpen\) hideMessageDetail\(\);[\s\S]*?switchView\("mail"\)/);
+  assert.match(app, /state\.activeFolder = btn\.dataset\.folder;[\s\S]*?if \(state\.detailOpen\) hideMessageDetail\(\)/);
   assert.match(app, /document\.body\.classList\.toggle\("sidebar-collapsed"\)/);
   assert.match(app, /window\.innerWidth <= 768/);
   assert.match(css, /body\.sidebar-collapsed \.app-sidebar/);

@@ -1628,6 +1628,7 @@
       btn.classList.add("active");
       state.activeFolder = btn.dataset.folder;
       state.page = 1;
+      if (state.detailOpen) hideMessageDetail();
       if (state.currentView !== "mail") {
         switchView("mail");
       } else {
@@ -1642,6 +1643,7 @@
       btn.classList.add("active");
       state.activeCategory = btn.dataset.category;
       state.page = 1;
+      if (state.detailOpen) hideMessageDetail();
       if (state.currentView !== "mail") {
         switchView("mail");
       } else {
