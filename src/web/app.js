@@ -2714,6 +2714,11 @@
       ["Blocked cards", stages.blocked ?? 0],
       ["Oldest queue", formatMetricDuration(metrics.queue?.oldestAgeMs)],
       ["Retries", metrics.retries?.count ?? 0],
+      ["Executable jobs queued", metrics.jobs?.queueDepth ?? 0],
+      ["Executable jobs active", metrics.jobs?.active ?? 0],
+      ["Job outcomes", `S${metrics.jobs?.outcomes?.succeeded ?? 0} / F${metrics.jobs?.outcomes?.failed ?? 0} / C${metrics.jobs?.outcomes?.cancelled ?? 0}`],
+      ["Job concurrency", `${metrics.jobs?.concurrency?.current ?? 0} / ${metrics.jobs?.concurrency?.max ?? 0}`],
+      ["Metrics history samples", state.board?.coordinatorHistory?.samples?.length ?? 0],
     ];
     coordinatorMetricsGrid.innerHTML = cards.map(([label, value]) =>
       `<div class="coordinator-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`

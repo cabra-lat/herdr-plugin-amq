@@ -47,11 +47,59 @@ test("coordinator metrics count stages, agent states, queue age, and stalled wor
   assert.ok(result.alerts.some((alert) => alert.id === "stalled_work"));
   assert.ok(result.alerts.some((alert) => alert.id === "stale_heartbeat"));
   assert.ok(result.alerts.some((alert) => alert.id === "retry_failure_trend"));
+  assert.ok(result.alerts.some((alert) => alert.id === "blocked_cards"));
   assert.ok(result.alerts.some((alert) => alert.id === "heavy_job_cap"));
   assert.ok(result.alerts.some((alert) => alert.id === "queue_age"));
   assert.ok(result.alerts.some((alert) => alert.id === "blocked_age"));
   assert.equal(result.resources.heavyJobCap, 1);
   assert.equal(result.resources.workload.activeCards, 2);
+});
+
+test("blocked cards alert separately and do not fake retry evidence", () => {
+  const result = buildCoordinatorMetrics({
+    handles: ["coordinator", "worker"],
+    agentStatuses: { coordinator: "idle", worker: "idle" },
+    board: {
+      columns: {
+        backlog: [],
+        in_progress: [],
+        blocked: [{
+          id: "blocked-1",
+          title: "Waiting on dependency",
+          owner: "worker",
+          next_actor: "coordinator",
+          depends_on: ["qa proof"],
+          block_reason: "Waiting for QA",
+          updated: "2026-09-24T16:59:00.000Z",
+        }],
+        done: [],
+      },
+    },
+    deliveredState: { delivered: { delivered_once: { attempts: 1, firstAttemptAt: "2026-09-24T16:00:00.000Z" } } },
+    now: NOW,
+  });
+
+  assert.equal(result.retries.count, 0);
+  assert.equal(result.alerts.some((alert) => alert.id === "retry_failure_trend"), false);
+  const blocked = result.alerts.find((alert) => alert.id === "blocked_cards");
+  assert.ok(blocked);
+  assert.equal(blocked.cards[0].nextActor, "coordinator");
+  assert.deepEqual(blocked.cards[0].dependency, ["qa proof"]);
+  assert.match(blocked.recommendedAction, /next actor\/dependency/);
+});
+
+test("real retry evidence still raises retry_failure_trend", () => {
+  const result = buildCoordinatorMetrics({
+    handles: ["coordinator"],
+    agentStatuses: { coordinator: "idle" },
+    board: { columns: { backlog: [], in_progress: [], blocked: [], done: [] } },
+    deliveredState: { delivered: { message: { attempts: 2, firstAttemptAt: "2026-09-24T16:50:00.000Z" } } },
+    now: NOW,
+  });
+
+  assert.equal(result.retries.count, 1);
+  assert.ok(result.alerts.some((alert) => alert.id === "retry_failure_trend"));
+  assert.match(result.alerts.find((alert) => alert.id === "retry_failure_trend").message, /1 doorbell retry/);
 });
 
 test("coordinator metrics recommend action when backlog has no working agent", () => {

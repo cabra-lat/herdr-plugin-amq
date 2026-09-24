@@ -65,6 +65,7 @@ export function buildCoordinatorMetrics({
   board = { columns: {} },
   deliveredState = {},
   resources = {},
+  jobQueue = null,
   now = Date.now(),
   thresholds = {},
 } = {}) {
@@ -114,7 +115,15 @@ export function buildCoordinatorMetrics({
       const ageMsValue = Number.isFinite(Number(task.blocked_ms))
         ? Number(task.blocked_ms)
         : ageMs(task.blocked_at || task.updated || task.created, now);
-      blockedWork.push({ id: task.id, title: task.title, owner: task.owner || null, ageMs: ageMsValue });
+      blockedWork.push({
+        id: task.id,
+        title: task.title,
+        owner: task.owner || null,
+        nextActor: task.next_actor || task.nextActor || task.owner || null,
+        dependency: task.depends_on || task.dependency || null,
+        reason: task.block_reason || task.reason || null,
+        ageMs: ageMsValue,
+      });
     }
   }
 
@@ -124,7 +133,8 @@ export function buildCoordinatorMetrics({
   ];
   const retryCount = deliveryEntries.reduce((sum, entry) => sum + Math.max(0, (Number(entry?.attempts) || 1) - 1), 0);
   const retriedItems = deliveryEntries.filter((entry) => (Number(entry?.attempts) || 1) > 1).length;
-  const retryDelayMaxMs = deliveryEntries.reduce((max, entry) => {
+  const retryEntries = deliveryEntries.filter((entry) => (Number(entry?.attempts) || 1) > 1);
+  const retryDelayMaxMs = retryEntries.reduce((max, entry) => {
     const first = timestamp(entry?.firstAttemptAt || entry?.firstDeliveredAt);
     return first === null ? max : Math.max(max, Math.max(0, now - first));
   }, 0);
@@ -184,6 +194,15 @@ export function buildCoordinatorMetrics({
       recommendedAction: "Assign or re-sequence the oldest ready card; page only after the critical threshold persists.",
     });
   }
+  if (blockedWork.length > 0) {
+    alerts.push({
+      id: "blocked_cards",
+      severity: blockedWork.some((task) => task.ageMs !== null && task.ageMs >= limits.blockedCriticalMs) ? "critical" : "warning",
+      message: `${blockedWork.length} blocked card(s) need coordinator attention.`,
+      recommendedAction: "Review each next actor/dependency, then delegate or explicitly re-scope the blocker.",
+      cards: blockedWork,
+    });
+  }
   if (blockedWork.some((task) => task.ageMs !== null && task.ageMs >= limits.blockedWarnMs)) {
     alerts.push({
       id: "blocked_age",
@@ -202,12 +221,12 @@ export function buildCoordinatorMetrics({
       agents: staleHeartbeats,
     });
   }
-  if (retryCount >= limits.retryWarningCount || retryDelayMaxMs > limits.retryDelayWarnMs || failureCount > 0) {
+  if (retryCount >= limits.retryWarningCount || retryDelayMaxMs > limits.retryDelayWarnMs) {
     alerts.push({
       id: "retry_failure_trend",
       severity: retryCount >= limits.retryCriticalCount || retryDelayMaxMs > limits.retryDelayWarnMs ? "critical" : "warning",
-      message: `Observed ${retryCount} doorbell retry/retries, ${retryDelayMaxMs}ms maximum delivery age, and ${failureCount} blocked/failure card(s).`,
-      recommendedAction: "Review the affected evidence and create a bounded retry or blocker card.",
+      message: `Observed ${retryCount} doorbell retry/retries and ${retryDelayMaxMs}ms maximum retried-delivery age.`,
+      recommendedAction: "Review the affected delivery evidence before creating a bounded retry.",
     });
   }
   alerts.push(...resourceAlerts);
@@ -226,6 +245,14 @@ export function buildCoordinatorMetrics({
       ...resource,
       heavyJobCap: limits.heavyJobCap,
       workload: { workingAgents: statusCounts.working, activeCards: activeCards.length },
+    },
+    jobs: jobQueue?.metrics ? jobQueue.metrics() : {
+      queueDepth: 0,
+      active: 0,
+      counts: { queued: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0 },
+      outcomes: { queued: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0 },
+      concurrency: { current: 0, max: 2, godotMax: 1, samples: [] },
+      retention: { historyLimit: 500, historyCount: 0, sampleCount: 0 },
     },
     alerts,
   };

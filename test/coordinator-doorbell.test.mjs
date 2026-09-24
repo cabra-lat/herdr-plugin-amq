@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { addBoardTask } from "../src/board.mjs";
-import { runDoorbellPass } from "../src/bridge.mjs";
+import { runDoorbellPass, sanitizeDeliveredState } from "../src/bridge.mjs";
 
 function makeFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "coordinator-doorbell-"));
@@ -51,7 +51,7 @@ test("coordinator metrics doorbell prompts an idle coordinator once per cooldown
 
     const first = runDoorbellPass(options);
     assert.equal(first.coordinatorDoorbell.prompted, true);
-    assert.equal(first.coordinatorDoorbell.alert, "retry_failure_trend");
+    assert.equal(first.coordinatorDoorbell.alert, "blocked_cards");
     assert.equal(prompts.length, 1);
     assert.equal(prompts[0].handle, "coordinator");
     assert.match(prompts[0].text, /delegate or re-scope cards/);
@@ -59,6 +59,8 @@ test("coordinator metrics doorbell prompts an idle coordinator once per cooldown
     const second = runDoorbellPass(options);
     assert.equal(second.coordinatorDoorbell.prompted, false);
     assert.equal(prompts.length, 1, "cooldown must suppress duplicate coordinator prompts");
+    const reloaded = sanitizeDeliveredState(JSON.parse(JSON.stringify(state)));
+    assert.equal(reloaded.coordinatorAlerts.blocked_cards.alert, "blocked_cards");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

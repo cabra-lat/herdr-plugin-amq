@@ -13,6 +13,7 @@ describe("server.mjs API integration tests", () => {
   let oldStateDir;
   let oldConfigDir;
   let oldSocketPath;
+  let oldJobToken;
 
   before(async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "amq-server-test-"));
@@ -22,6 +23,8 @@ describe("server.mjs API integration tests", () => {
     process.env.HERDR_PLUGIN_CONFIG_DIR = path.join(tempRoot, "config");
     oldSocketPath = process.env.HERDR_SOCKET_PATH;
     process.env.HERDR_SOCKET_PATH = path.join(tempRoot, "missing-herdr.sock");
+    oldJobToken = process.env.AGMAIL_JOB_TOKEN;
+    process.env.AGMAIL_JOB_TOKEN = "test-job-token";
     const agentsDir = path.join(tempRoot, "agents");
     fs.mkdirSync(agentsDir, { recursive: true });
 
@@ -71,6 +74,8 @@ Test body`
     else delete process.env.HERDR_PLUGIN_CONFIG_DIR;
     if (oldSocketPath !== undefined) process.env.HERDR_SOCKET_PATH = oldSocketPath;
     else delete process.env.HERDR_SOCKET_PATH;
+    if (oldJobToken !== undefined) process.env.AGMAIL_JOB_TOKEN = oldJobToken;
+    else delete process.env.AGMAIL_JOB_TOKEN;
     if (tempRoot && fs.existsSync(tempRoot)) {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -444,7 +449,36 @@ Test body`
     assert.ok(data.coordinator);
     assert.ok(data.coordinator.agents);
     assert.ok(data.coordinator.cards);
+    assert.ok(data.coordinator.jobs);
+    assert.equal(data.coordinator.jobs.queueDepth, 0);
     assert.ok(Array.isArray(data.coordinator.alerts));
+    const history = await (await fetch(`${baseUrl}/api/coordinator/history`)).json();
+    assert.ok(Array.isArray(history.samples));
+    assert.ok(history.samples.length >= 1);
+    assert.equal(typeof history.samples[0].agents, "object");
+  });
+
+  test("job queue API is durable, idempotent, observable, and cancellable", async () => {
+    const payload = { title: "API echo", command: ["echo", "queued"], idempotencyKey: "api-echo-1" };
+    const unauthorized = await fetch(`${baseUrl}/api/jobs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    assert.equal(unauthorized.status, 403);
+    const enqueue = await fetch(`${baseUrl}/api/jobs`, { method: "POST", headers: { "Content-Type": "application/json", "X-AGmail-Job-Token": "test-job-token" }, body: JSON.stringify(payload) });
+    assert.equal(enqueue.status, 201);
+    const first = (await enqueue.json()).job;
+    const duplicate = await (await fetch(`${baseUrl}/api/jobs`, { method: "POST", headers: { "Content-Type": "application/json", "X-AGmail-Job-Token": "test-job-token" }, body: JSON.stringify(payload) })).json();
+    assert.equal(duplicate.job.id, first.id);
+    const listed = await (await fetch(`${baseUrl}/api/jobs`)).json();
+    assert.equal(listed.metrics.queueDepth, 1);
+    const cancelled = await (await fetch(`${baseUrl}/api/jobs/${first.id}`, { method: "PATCH", headers: { "Content-Type": "application/json", "X-AGmail-Job-Token": "test-job-token" }, body: JSON.stringify({ action: "cancel" }) })).json();
+    assert.equal(cancelled.job.status, "cancelled");
+    const runEnqueue = await (await fetch(`${baseUrl}/api/jobs`, { method: "POST", headers: { "Content-Type": "application/json", "X-AGmail-Job-Token": "test-job-token" }, body: JSON.stringify({ command: [process.execPath, "-e", "process.stdout.write('ok')"], idempotencyKey: "api-run-1" }) })).json();
+    const run = await (await fetch(`${baseUrl}/api/jobs/run`, { method: "POST", headers: { "Content-Type": "application/json", "X-AGmail-Job-Token": "test-job-token" }, body: JSON.stringify({ concurrency: 1 }) })).json();
+    assert.equal(run.ok, true);
+    assert.equal(run.results[0].status, "succeeded");
+    assert.equal(run.results[0].id, runEnqueue.job.id);
+    const board = await (await fetch(`${baseUrl}/api/board`)).json();
+    assert.equal(board.coordinator.jobs.outcomes.cancelled, 1);
+    assert.equal(board.coordinator.jobs.outcomes.succeeded, 1);
   });
 
   test("POST, PATCH, and DELETE /api/board/tasks manages custom tasks", async () => {

@@ -194,10 +194,11 @@ function safeStateText(value, maxLength = 512) {
   return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
-function sanitizeDeliveredState(value) {
+export function sanitizeDeliveredState(value) {
   const delivered = {};
   const deliveredTasks = {};
-  if (!value || typeof value !== "object") return { delivered, deliveredTasks, recoveryRequired: true };
+  const coordinatorAlerts = {};
+  if (!value || typeof value !== "object") return { delivered, deliveredTasks, coordinatorAlerts, recoveryRequired: true };
 
   for (const [id, entry] of Object.entries(value.delivered || {})) {
     if (!isSafeMailIdentifier(id) || !entry || typeof entry !== "object") continue;
@@ -207,6 +208,18 @@ function sanitizeDeliveredState(value) {
       at: entry.at,
       to: entry.to,
       from: entry.from,
+      attempts: Number.isFinite(entry.attempts) ? Math.max(1, Math.trunc(entry.attempts)) : 1,
+      firstAttemptAt: typeof entry.firstAttemptAt === "string" ? entry.firstAttemptAt : entry.at,
+    };
+  }
+
+  for (const [id, entry] of Object.entries(value.coordinatorAlerts || {})) {
+    if (!isSafeMailIdentifier(id) || !entry || typeof entry !== "object") continue;
+    if (entry.to !== "coordinator" || typeof entry.at !== "string") continue;
+    coordinatorAlerts[id] = {
+      at: entry.at,
+      to: "coordinator",
+      alert: safeStateText(entry.alert || id, 128),
       attempts: Number.isFinite(entry.attempts) ? Math.max(1, Math.trunc(entry.attempts)) : 1,
       firstAttemptAt: typeof entry.firstAttemptAt === "string" ? entry.firstAttemptAt : entry.at,
     };
@@ -224,17 +237,17 @@ function sanitizeDeliveredState(value) {
     };
   }
 
-  return { delivered, deliveredTasks, recoveryRequired: false };
+  return { delivered, deliveredTasks, coordinatorAlerts, recoveryRequired: false };
 }
 
 function loadDeliveredState() {
   const stateFile = getStateFile();
   try {
     const content = readMaildirMessageFile(stateFile, 2 * 1024 * 1024);
-    if (content === null) return { delivered: {}, deliveredTasks: {}, recoveryRequired: true };
+    if (content === null) return { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {}, recoveryRequired: true };
     return sanitizeDeliveredState(JSON.parse(content));
   } catch {
-    return { delivered: {}, deliveredTasks: {}, recoveryRequired: true };
+    return { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {}, recoveryRequired: true };
   }
 }
 
@@ -472,6 +485,7 @@ export function runDoorbellPass({
   const state = injectedState || loadDeliveredState();
   state.delivered = state.delivered || {};
   state.deliveredTasks = state.deliveredTasks || {};
+  state.coordinatorAlerts = state.coordinatorAlerts || {};
 
   let doorbelledCount = 0;
   let doorbelledTasksCount = 0;
@@ -583,12 +597,12 @@ export function runDoorbellPass({
 
   let coordinatorDoorbellResult = { attempted: false, prompted: false, alert: null };
   const coordinatorAlert = (coordinatorMetrics.alerts || []).find((alert) =>
-    alert.severity === "critical" || alert.id === "backlog_idle" || alert.id === "retry_failure_trend"
+    alert.severity === "critical" || alert.id === "backlog_idle" || alert.id === "retry_failure_trend" || alert.id === "blocked_cards"
   );
   const coordinatorHandle = "coordinator";
   const coordinatorStatus = statusByHandle[coordinatorHandle] || (validHandles.includes(coordinatorHandle) ? getStatus(coordinatorHandle) : "missing");
-  const alertKey = coordinatorAlert ? `coordinator-alert:${coordinatorAlert.id}` : null;
-  const alertPending = alertKey ? isItemPendingDrain(state.delivered[alertKey], coordinatorDoorbell.cooldownMs, force) : false;
+  const alertKey = coordinatorAlert?.id || null;
+  const alertPending = alertKey ? isItemPendingDrain(state.coordinatorAlerts[alertKey], coordinatorDoorbell.cooldownMs, force) : false;
   if (coordinatorDoorbell.enabled && coordinatorAlert && (coordinatorStatus === "idle" || coordinatorStatus === "done") && !alertPending) {
     const promptText = [
       "Coordinator metrics require re-evaluation.",
@@ -601,12 +615,12 @@ export function runDoorbellPass({
     coordinatorDoorbellResult = { attempted: true, prompted, alert: coordinatorAlert.id };
     if (prompted) {
       recordCoordinatorAlert(`${coordinatorAlert.id}: ${coordinatorAlert.message}`);
-      state.delivered[alertKey] = {
-          at: new Date().toISOString(),
-          firstAttemptAt: state.delivered[alertKey]?.firstAttemptAt || new Date().toISOString(),
-          to: coordinatorHandle,
-          alert: coordinatorAlert.id,
-        attempts: (state.delivered[alertKey]?.attempts || 0) + 1,
+      state.coordinatorAlerts[alertKey] = {
+        at: new Date().toISOString(),
+        firstAttemptAt: state.coordinatorAlerts[alertKey]?.firstAttemptAt || new Date().toISOString(),
+        to: coordinatorHandle,
+        alert: coordinatorAlert.id,
+        attempts: (state.coordinatorAlerts[alertKey]?.attempts || 0) + 1,
       };
     }
   }

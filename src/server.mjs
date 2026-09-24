@@ -57,6 +57,8 @@ import {
   storeBlob,
 } from "./blobs.mjs";
 import { buildCoordinatorMetrics } from "./metrics.mjs";
+import { getJobQueue } from "./job-queue.mjs";
+import { loadMetricsHistory, recordMetricsSample } from "./metrics-history.mjs";
 
 
 
@@ -120,6 +122,25 @@ export function startWebServer({
   if (!amqRoot) {
     console.error("❌ Cannot start web server: No .agent-mail directory found.");
     process.exit(1);
+  }
+
+  // Durable executable queue is separate from the one-heavy-job Godot lock.
+  const jobQueue = getJobQueue({ amqRoot });
+  const metricsHistoryFile = path.join(amqRoot, "coordinator-metrics-history.json");
+  const jobToken = String(process.env.AGMAIL_JOB_TOKEN || "");
+
+  function authorizeJobMutation(req, res) {
+    if (!jobToken) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "job mutations disabled until AGMAIL_JOB_TOKEN is configured" }));
+      return false;
+    }
+    if (req.headers["x-agmail-job-token"] !== jobToken) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "job mutation authorization failed" }));
+      return false;
+    }
+    return true;
   }
 
   // Active SSE clients
@@ -584,6 +605,77 @@ export function startWebServer({
       return;
     }
 
+    // ─── Durable executable job queue ───────────────────────────────────────
+
+    if (pathname === "/api/coordinator/history" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, ...loadMetricsHistory(metricsHistoryFile) }));
+      return;
+    }
+
+    if (pathname === "/api/jobs" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(jobQueue.snapshot()));
+      return;
+    }
+
+    if (pathname === "/api/jobs" && req.method === "POST") {
+      if (!authorizeJobMutation(req, res)) return;
+      try {
+        const body = await parseJsonBody(req);
+        const job = jobQueue.enqueue(body);
+        broadcastSSE({ type: "job_update", action: "enqueued", jobId: job.id, at: new Date().toISOString() });
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, job }));
+      } catch (error) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: error.message }));
+      }
+      return;
+    }
+
+    if (pathname === "/api/jobs/run" && req.method === "POST") {
+      if (!authorizeJobMutation(req, res)) return;
+      try {
+        const body = await parseJsonBody(req);
+        const results = await jobQueue.drain({ concurrency: body.concurrency });
+        broadcastSSE({ type: "job_update", action: "drained", count: results.length, at: new Date().toISOString() });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, results, metrics: jobQueue.metrics() }));
+      } catch (error) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: error.message }));
+      }
+      return;
+    }
+
+    if (pathname.startsWith("/api/jobs/") && req.method === "GET") {
+      const jobId = decodeURIComponent(pathname.slice("/api/jobs/".length));
+      const job = jobQueue.get(jobId);
+      res.writeHead(job ? 200 : 404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(job ? { ok: true, job } : { ok: false, error: "job not found" }));
+      return;
+    }
+
+    if (pathname.startsWith("/api/jobs/") && req.method === "PATCH") {
+      if (!authorizeJobMutation(req, res)) return;
+      const jobId = decodeURIComponent(pathname.slice("/api/jobs/".length));
+      try {
+        const body = await parseJsonBody(req);
+        let job;
+        if (body.action === "cancel") job = jobQueue.cancel(jobId);
+        else if (body.action === "heartbeat") job = jobQueue.heartbeat(jobId, body.workerId);
+        else throw new Error("action must be cancel or heartbeat");
+        broadcastSSE({ type: "job_update", action: body.action, jobId, at: new Date().toISOString() });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, job }));
+      } catch (error) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: error.message }));
+      }
+      return;
+    }
+
     // ─── Kanban Board Routes ─────────────────────────────────────────────────
 
     if (pathname === "/api/board" && req.method === "GET") {
@@ -594,9 +686,11 @@ export function startWebServer({
         handles: getAgentHandles(amqRoot),
         agentStatuses: Object.fromEntries(statusMap),
         board,
+        jobQueue,
       });
+      const history = recordMetricsSample(metricsHistoryFile, coordinator);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, ...board, coordinator }));
+      res.end(JSON.stringify({ ok: true, ...board, coordinator, coordinatorHistory: history }));
       return;
     }
 
