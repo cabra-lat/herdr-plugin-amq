@@ -11,12 +11,15 @@ describe("server.mjs API integration tests", () => {
   let server;
   let baseUrl;
   let oldStateDir;
+  let oldConfigDir;
   let oldSocketPath;
 
   before(async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "amq-server-test-"));
     oldStateDir = process.env.HERDR_PLUGIN_STATE_DIR;
     process.env.HERDR_PLUGIN_STATE_DIR = path.join(tempRoot, "state");
+    oldConfigDir = process.env.HERDR_PLUGIN_CONFIG_DIR;
+    process.env.HERDR_PLUGIN_CONFIG_DIR = path.join(tempRoot, "config");
     oldSocketPath = process.env.HERDR_SOCKET_PATH;
     process.env.HERDR_SOCKET_PATH = path.join(tempRoot, "missing-herdr.sock");
     const agentsDir = path.join(tempRoot, "agents");
@@ -64,6 +67,8 @@ Test body`
     }
     if (oldStateDir !== undefined) process.env.HERDR_PLUGIN_STATE_DIR = oldStateDir;
     else delete process.env.HERDR_PLUGIN_STATE_DIR;
+    if (oldConfigDir !== undefined) process.env.HERDR_PLUGIN_CONFIG_DIR = oldConfigDir;
+    else delete process.env.HERDR_PLUGIN_CONFIG_DIR;
     if (oldSocketPath !== undefined) process.env.HERDR_SOCKET_PATH = oldSocketPath;
     else delete process.env.HERDR_SOCKET_PATH;
     if (tempRoot && fs.existsSync(tempRoot)) {
@@ -403,6 +408,25 @@ Test body`
         );
       }
     }
+  });
+
+  test("GET and POST /api/coordinator-doorbell expose and persist the toggle", async () => {
+    const getRes = await fetch(`${baseUrl}/api/coordinator-doorbell`);
+    assert.equal(getRes.status, 200);
+    const initial = await getRes.json();
+    assert.equal(initial.ok, true);
+    assert.equal(initial.config.enabled, true);
+    assert.ok(Array.isArray(initial.log));
+
+    const postRes = await fetch(`${baseUrl}/api/coordinator-doorbell`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(postRes.status, 200);
+    const updated = await postRes.json();
+    assert.equal(updated.ok, true);
+    assert.equal(updated.config.enabled, false);
   });
 
   test("GET /api/board returns board structure and stats", async () => {

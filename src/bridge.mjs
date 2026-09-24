@@ -5,6 +5,7 @@ import {
   getHerdrBin,
   getStateDir,
   getConfigDir,
+  getCoordinatorDoorbellConfig,
   findAmqRoot,
   getRepoRootFromAmq,
   getAgentHandles,
@@ -27,6 +28,20 @@ function getStateFile() {
 
 function getAlertLogFile() {
   return path.join(getStateDir(), "alerts.log");
+}
+
+export function getCoordinatorDoorbellLog(limit = 20) {
+  const file = getAlertLogFile();
+  if (!fs.existsSync(file)) return [];
+  try {
+    return fs.readFileSync(file, "utf8").split("\n").filter((line) => line.includes("COORDINATOR_ALERT:")).slice(-limit).reverse();
+  } catch {
+    return [];
+  }
+}
+
+function recordCoordinatorAlert(message) {
+  fs.appendFileSync(getAlertLogFile(), `${new Date().toISOString()} COORDINATOR_ALERT: ${message}\n`);
 }
 
 export function isDaemonRunning() {
@@ -435,6 +450,7 @@ export function runDoorbellPass({
   getStatus = getAgentStatus,
   healName = healAgentName,
   prompt = promptAgent,
+  coordinatorDoorbell = getCoordinatorDoorbellConfig(),
   cooldownMs = parseInt(process.env.HERDR_DOORBELL_COOLDOWN_MS || String(DEFAULT_DOORBELL_COOLDOWN_MS), 10),
 } = {}) {
   if (!amqRoot) {
@@ -558,16 +574,46 @@ export function runDoorbellPass({
     }
   }
 
-  if (allowPrompt && persistState && !dryRun && (doorbelledCount > 0 || doorbelledTasksCount > 0)) {
-    saveDeliveredState(state);
-  }
-
   const coordinatorMetrics = buildCoordinatorMetrics({
     handles: validHandles,
     agentStatuses: statusByHandle,
     board: loadBoard(repoRoot, amqRoot),
     deliveredState: state,
   });
+
+  let coordinatorDoorbellResult = { attempted: false, prompted: false, alert: null };
+  const coordinatorAlert = (coordinatorMetrics.alerts || []).find((alert) =>
+    alert.severity === "critical" || alert.id === "backlog_idle" || alert.id === "retry_failure_trend"
+  );
+  const coordinatorHandle = "coordinator";
+  const coordinatorStatus = statusByHandle[coordinatorHandle] || (validHandles.includes(coordinatorHandle) ? getStatus(coordinatorHandle) : "missing");
+  const alertKey = coordinatorAlert ? `coordinator-alert:${coordinatorAlert.id}` : null;
+  const alertPending = alertKey ? isItemPendingDrain(state.delivered[alertKey], coordinatorDoorbell.cooldownMs, force) : false;
+  if (coordinatorDoorbell.enabled && coordinatorAlert && (coordinatorStatus === "idle" || coordinatorStatus === "done") && !alertPending) {
+    const promptText = [
+      "Coordinator metrics require re-evaluation.",
+      `Alert: ${coordinatorAlert.id} — ${coordinatorAlert.message}`,
+      `Recommended action: ${coordinatorAlert.recommendedAction || "Inspect the coordinator metrics and keep work moving."}`,
+      "Review blocked/stalled work, delegate or re-scope cards, and continue the swarm. Do not auto-approve destructive actions.",
+    ].join("\n");
+    const ok = prompt(coordinatorHandle, promptText, dryRun || !allowPrompt);
+    const prompted = Boolean(ok && allowPrompt && !dryRun);
+    coordinatorDoorbellResult = { attempted: true, prompted, alert: coordinatorAlert.id };
+    if (prompted) {
+      recordCoordinatorAlert(`${coordinatorAlert.id}: ${coordinatorAlert.message}`);
+      state.delivered[alertKey] = {
+          at: new Date().toISOString(),
+          firstAttemptAt: state.delivered[alertKey]?.firstAttemptAt || new Date().toISOString(),
+          to: coordinatorHandle,
+          alert: coordinatorAlert.id,
+        attempts: (state.delivered[alertKey]?.attempts || 0) + 1,
+      };
+    }
+  }
+
+  if (allowPrompt && persistState && !dryRun && (doorbelledCount > 0 || doorbelledTasksCount > 0 || coordinatorDoorbellResult.prompted)) {
+    saveDeliveredState(state);
+  }
 
   return {
     ok: true,
@@ -577,6 +623,7 @@ export function runDoorbellPass({
     doorbelledTasks: doorbelledTasksCount,
     results,
     coordinator: coordinatorMetrics,
+    coordinatorDoorbell: coordinatorDoorbellResult,
   };
 }
 

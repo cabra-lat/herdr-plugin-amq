@@ -63,6 +63,36 @@ export function getConfigDir() {
   return dir;
 }
 
+const COORDINATOR_DOORBELL_FILE = "coordinator-doorbell.json";
+
+export function getCoordinatorDoorbellConfig() {
+  const file = path.join(getConfigDir(), COORDINATOR_DOORBELL_FILE);
+  const defaults = { enabled: true, cooldownMs: 300000 };
+  if (!fs.existsSync(file)) return defaults;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    return {
+      enabled: parsed.enabled !== false,
+      cooldownMs: Number.isFinite(Number(parsed.cooldownMs)) && Number(parsed.cooldownMs) >= 0 ? Number(parsed.cooldownMs) : defaults.cooldownMs,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+export function saveCoordinatorDoorbellConfig(patch = {}) {
+  const current = getCoordinatorDoorbellConfig();
+  const next = {
+    enabled: patch.enabled === undefined ? current.enabled : Boolean(patch.enabled),
+    cooldownMs: patch.cooldownMs === undefined ? current.cooldownMs : Math.max(0, Number(patch.cooldownMs) || 0),
+  };
+  const file = path.join(getConfigDir(), COORDINATOR_DOORBELL_FILE);
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+  return next;
+}
+
 export function getContext() {
   const raw = process.env.HERDR_PLUGIN_CONTEXT_JSON;
   if (!raw) return null;

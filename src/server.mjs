@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { findAmqRoot, getAgentHandles, getHerdrBin } from "./config.mjs";
+import { findAmqRoot, getAgentHandles, getHerdrBin, getCoordinatorDoorbellConfig, saveCoordinatorDoorbellConfig } from "./config.mjs";
 import { markMaildirMessageRead } from "./protocol.mjs";
 import {
   loadAllMessages,
@@ -34,6 +34,7 @@ import {
   startDaemonBackground,
   stopDaemon,
   listInbox,
+  getCoordinatorDoorbellLog,
 } from "./bridge.mjs";
 import {
   getHerdrAgents,
@@ -563,6 +564,23 @@ export function startWebServer({
       const result = removeWorktree(repoRoot, { targetPath, force });
       res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
+      return;
+    }
+
+    // ─── Coordinator doorbell controls ───────────────────────────────────────
+
+    if (pathname === "/api/coordinator-doorbell" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, config: getCoordinatorDoorbellConfig(), log: getCoordinatorDoorbellLog(20) }));
+      return;
+    }
+
+    if (pathname === "/api/coordinator-doorbell" && req.method === "POST") {
+      const body = await parseJsonBody(req);
+      const config = saveCoordinatorDoorbellConfig({ enabled: body.enabled });
+      broadcastSSE({ type: "coordinator_doorbell_update", at: new Date().toISOString() });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, config, log: getCoordinatorDoorbellLog(20) }));
       return;
     }
 

@@ -30,7 +30,11 @@ test("Panes and coordinator metrics are separate scrollable sideboard views", ()
   assert.match(css, /\.panes-view-section\s*\{[\s\S]*?overflow-y: auto/);
   assert.match(css, /\.metrics-view-scroll\s*\{[\s\S]*?overflow-y: auto/);
   assert.match(app, /renderCoordinatorMetrics\(\)/);
+  assert.match(html, /id="coordinator-doorbell-enabled"/);
+  assert.match(html, /id="coordinator-doorbell-log"/);
+  assert.match(app, /\/api\/coordinator-doorbell/);
   assert.match(css, /\.coordinator-metrics-panel/);
+  assert.match(css, /\.coordinator-doorbell-log/);
 });
 
 test("mailbox navigation returns to mail view and desktop menu collapses in-flow", () => {

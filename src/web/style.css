@@ -622,6 +622,42 @@ body.sidebar-collapsed .app-sidebar {
   gap: 6px;
   margin-top: 10px;
 }
+.coordinator-doorbell-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background: var(--bg, #fff);
+}
+.coordinator-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.coordinator-toggle input { accent-color: var(--google-blue); }
+.coordinator-doorbell-log-wrap { margin-top: 12px; }
+.coordinator-doorbell-log-wrap h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+.coordinator-doorbell-log {
+  max-height: 180px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 8px;
+  background: #0d1117;
+  color: #c9d1d9;
+  font: 11px/1.45 var(--font-mono);
+}
 .coordinator-alert {
   display: grid;
   grid-template-columns: max-content 1fr;

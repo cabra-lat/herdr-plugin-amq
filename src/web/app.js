@@ -188,6 +188,9 @@
   const coordinatorMetricsGrid = document.getElementById("coordinator-metrics-grid");
   const coordinatorAlerts = document.getElementById("coordinator-alerts");
   const coordinatorMetricsUpdated = document.getElementById("coordinator-metrics-updated");
+  const coordinatorDoorbellEnabled = document.getElementById("coordinator-doorbell-enabled");
+  const coordinatorDoorbellStatus = document.getElementById("coordinator-doorbell-status");
+  const coordinatorDoorbellLog = document.getElementById("coordinator-doorbell-log");
   const boardTotalCountEl = document.getElementById("board-total-count");
   const boardSearchInput = document.getElementById("board-search-input");
   const refreshBoardBtn = document.getElementById("refresh-board-btn");
@@ -2662,6 +2665,7 @@
     metricsViewSection?.classList.toggle("hidden", viewName !== "metrics");
     if (viewName === "board" || viewName === "metrics") {
       fetchBoard();
+      if (viewName === "metrics") fetchCoordinatorDoorbellSettings();
     } else if (viewName === "panes") {
       fetchBoard();
       fetchPanes();
@@ -2673,6 +2677,20 @@
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
     return `${minutes}m ${seconds % 60}s`;
+  }
+
+  async function fetchCoordinatorDoorbellSettings() {
+    if (!coordinatorDoorbellEnabled) return;
+    try {
+      const res = await fetch("/api/coordinator-doorbell");
+      const data = await res.json();
+      if (!data.ok) return;
+      coordinatorDoorbellEnabled.checked = Boolean(data.config?.enabled);
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = data.config?.enabled ? "Enabled · deduplicated with cooldown" : "Disabled";
+      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : "No coordinator doorbells recorded.";
+    } catch (err) {
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = `Unavailable: ${err.message}`;
+    }
   }
 
   function renderCoordinatorMetrics() {
@@ -2706,6 +2724,22 @@
       : `<div class="coordinator-alert coordinator-alert-clear"><strong>Clear</strong><span>No current threshold alerts.</span></div>`;
     if (coordinatorMetricsUpdated) coordinatorMetricsUpdated.textContent = `Updated ${new Date(metrics.generatedAt || Date.now()).toLocaleTimeString()}`;
   }
+
+  coordinatorDoorbellEnabled?.addEventListener("change", async () => {
+    try {
+      const res = await fetch("/api/coordinator-doorbell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: coordinatorDoorbellEnabled.checked }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Unable to save setting");
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = data.config.enabled ? "Enabled · deduplicated with cooldown" : "Disabled";
+      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : "No coordinator doorbells recorded.";
+    } catch (err) {
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = `Save failed: ${err.message}`;
+    }
+  });
 
   // Terminal-style autofit: measure the longest line and shrink the
   // monospace type so it fits without wrapping (real terminals never wrap;
