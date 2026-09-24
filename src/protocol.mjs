@@ -480,8 +480,9 @@ export function markMaildirMessageRead(amqRoot, handle, msgId) {
     if (!agentDir) return { ok: false, error: "Mailbox not found" };
     const newPath = path.join(agentDir, "inbox", "new", `${msgId}.md`);
     const curPath = path.join(agentDir, "inbox", "cur", `${msgId}.md`);
+    const logicalCurPath = path.join(amqRoot, "agents", handle, "inbox", "cur", `${msgId}.md`);
     if (!fs.existsSync(newPath)) {
-      if (fs.existsSync(curPath)) return { ok: true, alreadyRead: true, id: msgId, filePath: curPath };
+      if (fs.existsSync(curPath)) return { ok: true, alreadyRead: true, id: msgId, filePath: logicalCurPath };
       return { ok: false, error: "Message not found" };
     }
 
@@ -495,7 +496,7 @@ export function markMaildirMessageRead(amqRoot, handle, msgId) {
 
     const filePath = moveMaildirMessage(amqRoot, handle, "new", "cur", `${msgId}.md`);
     if (!filePath) return { ok: false, error: "Message could not be marked read" };
-    return { ok: true, alreadyRead: false, id: msgId, filePath };
+    return { ok: true, alreadyRead: false, id: msgId, filePath: logicalCurPath };
   } catch (error) {
     return { ok: false, error: error.message };
   }
