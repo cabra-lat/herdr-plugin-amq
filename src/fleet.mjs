@@ -195,12 +195,12 @@ function pathsMatch(left, right) {
   }
 }
 
-function matchingFleetPanes(agent, liveAgents, currentPaneId = null) {
-  return liveAgents.filter((live) => (
-    live.name === agent.handle && (
-      pathsMatch(live.cwd, agent.worktree) || live.pane_id === currentPaneId
-    )
-  ));
+function matchingFleetPanes(agent, liveAgents) {
+  // Herdr's canonical name is the identity. Cwd is only a worktree hint: a
+  // manually opened root pane (for example the human's current agsuite-dev
+  // session) is still a real pane for that handle and must be replaceable from
+  // an external fleet command.
+  return liveAgents.filter((live) => live.name === agent.handle);
 }
 
 function runHerdr(args, execHerdr) {
