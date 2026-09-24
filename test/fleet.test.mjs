@@ -168,6 +168,8 @@ You own ballistics.
       tabCall[tabCall.indexOf("--env") + 1],
       `PATH=${path.join(tmpDir, "launcher", "coordinator")}${path.delimiter}/usr/bin`,
     );
+    assert.equal(tabCall[tabCall.indexOf("HERDR_AGENT_HANDLE=coordinator") - 1], "--env");
+    assert.equal(tabCall[tabCall.indexOf("AMQ_AGENT_HANDLE=coordinator") - 1], "--env");
   });
 
   await t.test("fleet up keeps matching agents exactly once", async () => {

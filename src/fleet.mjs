@@ -427,6 +427,13 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
           handle,
           "--env",
           `PATH=${launchPath}`,
+          // Make the identity available inside the launched process as well as
+          // in Herdr's pane record. Without this, Pi/OpenCode agents cannot
+          // tell which AMQ mailbox they own and may drain the wrong inbox.
+          "--env",
+          `HERDR_AGENT_HANDLE=${handle}`,
+          "--env",
+          `AMQ_AGENT_HANDLE=${handle}`,
           "--no-focus",
         ];
         if (workspaceId) tabArgs.push("--workspace", workspaceId);

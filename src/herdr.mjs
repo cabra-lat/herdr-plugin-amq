@@ -14,6 +14,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { getOpenCodeSessionModels, resolveRuntimeModel } from "./runtime-models.mjs";
+import { findAmqRoot, getAgentHandles } from "./config.mjs";
 
 // ─── Socket Path Resolution ──────────────────────────────────────────────────
 
@@ -110,12 +111,51 @@ export async function getHerdrStatusMap() {
   const agents = await getHerdrAgents();
   const observedAt = new Date().toISOString();
   const sessionModels = getOpenCodeSessionModels(agents);
+  // Pi records do not consistently carry Herdr's `name` field. Resolve their
+  // handle from the canonical title (for example, `π - qa`) and only accept
+  // handles registered in this workspace; a generic or human title must not
+  // silently become an AMQ agent.
+  const knownHandles = new Set(getAgentHandles(findAmqRoot()).map((handle) => normalizeHandle(handle)));
   const map = new Map();
   for (const agent of agents) {
-    const activity = mapHerdrAgentActivity(agent, observedAt, resolveRuntimeModel(agent, sessionModels));
+    const activity = mapHerdrAgentActivity(agent, observedAt, resolveRuntimeModel(agent, sessionModels), knownHandles);
     if (activity) map.set(activity.herdrHandle, activity);
   }
   return map;
+}
+
+function normalizeHandle(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{0,127}$/.test(text) ? text : "";
+}
+
+function titleHandle(agent, knownHandles = null) {
+  const title = herdrText(agent?.terminal_title_stripped) || herdrText(agent?.terminal_title);
+  const match = title.match(/(?:^|\s)[-–—]\s*([A-Za-z0-9][A-Za-z0-9_-]{0,127})$/);
+  const candidate = normalizeHandle(match?.[1]);
+  if (!candidate) return "";
+  if (knownHandles && !knownHandles.has(candidate)) return "";
+  return candidate;
+}
+
+function resolveHerdrHandle(agent, knownHandles = null) {
+  const named = normalizeHandle(herdrText(agent?.name));
+  if (named) return named;
+
+  const fromTitle = titleHandle(agent, knownHandles);
+  if (fromTitle) return fromTitle;
+
+  // A manually started agent may have lost its title/name, but its worktree
+  // still identifies it unambiguously. This intentionally never guesses from
+  // the repository root: the human's root pane is not an AMQ agent.
+  const cwd = herdrText(agent?.cwd);
+  if (cwd && knownHandles) {
+    const normalizedCwd = path.resolve(cwd);
+    for (const handle of knownHandles) {
+      if (normalizedCwd.endsWith(`${path.sep}.worktrees${path.sep}${handle}`)) return handle;
+    }
+  }
+  return "";
 }
 
 export function normalizeHerdrStatus(value) {
@@ -150,8 +190,8 @@ function herdrTokens(value) {
   return values.map(herdrText).filter(Boolean);
 }
 
-export function mapHerdrAgentActivity(agent, observedAt = new Date().toISOString(), runtime = null) {
-  const handle = herdrText(agent?.name);
+export function mapHerdrAgentActivity(agent, observedAt = new Date().toISOString(), runtime = null, knownHandles = null) {
+  const handle = resolveHerdrHandle(agent, knownHandles);
   if (!handle) return null;
   const status = normalizeHerdrStatus(agent?.agent_status);
   const terminalTitle = herdrText(agent?.terminal_title_stripped) || herdrText(agent?.terminal_title);

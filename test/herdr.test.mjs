@@ -114,6 +114,31 @@ test("mapHerdrAgentActivity retains status, labels, tokens, and runtime context"
   });
 });
 
+test("mapHerdrAgentActivity resolves registered Pi panes from their title", () => {
+  const knownHandles = new Set(["agsuite-dev", "qa"]);
+  const activity = mapHerdrAgentActivity({
+    agent: "pi",
+    agent_status: "idle",
+    pane_id: "pane-qa",
+    terminal_title_stripped: "π - qa",
+  }, "2026-09-24T08:00:00.000Z", null, knownHandles);
+
+  assert.equal(activity?.herdrHandle, "qa");
+  assert.equal(activity?.herdrStatus, "idle");
+  assert.equal(mapHerdrAgentActivity({ terminal_title_stripped: "π - fps-basegame" }, undefined, null, knownHandles), null);
+});
+
+test("mapHerdrAgentActivity resolves an unnamed Pi pane from its registered worktree", () => {
+  const knownHandles = new Set(["agsuite-dev"]);
+  const activity = mapHerdrAgentActivity({
+    agent: "pi",
+    agent_status: "working",
+    cwd: "/tmp/fleet/.worktrees/agsuite-dev",
+  }, "2026-09-24T08:00:00.000Z", null, knownHandles);
+
+  assert.equal(activity?.herdrHandle, "agsuite-dev");
+});
+
 test("mapHerdrAgentActivity rejects unnamed records", () => {
   assert.equal(mapHerdrAgentActivity({ agent_status: "working" }), null);
 });
