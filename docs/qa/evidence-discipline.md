@@ -36,43 +36,41 @@ identity resolves with `AM_ROOT` absent entirely, and the original negative cont
 an agent reported by Herdr but absent from the queue root must never become an agent row and
 never hijack a registered handle.
 
+## First pass over the unverified list: five invariants, two of which were unproven
+
+The list below is a sample, not a census. Each row is a constructed break in a scratch copy
+outside the shared worktree, announced and deleted, run against the suite that claims the
+invariant.
+
+| invariant claimed | break | result |
+| --- | --- | --- |
+| `task heartbeat` does not move `updated` | heartbeat also writes `updated` | 3 files red (task-cli 1, task-lifecycle 2) |
+| an expired worker lease is reclaimed | expired leases are never reclaimed | job-queue **2 fail** |
+| a changed alert condition prompts again | every fingerprinted alert suppressed forever | coordinator-doorbell **3 fail** |
+| API routes declare JSON, unknown routes 404 | every JSON response served as `text/plain` | **GREEN — 29 pass, 0 fail** |
+| notes are append-only | notes overwritten instead of appended | **GREEN — 18 pass, 0 fail** |
+
+The last two stayed green, and they are the interesting result. Both are properties this project
+has been asserting for hours: the 404/content-type pair is written into
+`docs/operating-model.md` as the fix for a deploy check that shipped a false green, and
+append-only notes were ratified as a design decision. Neither had a single test asserting it, so
+a build that served every API response as `text/plain`, or one that silently destroyed note
+history, would have passed the entire suite. A rule in a document is not a control; a rule with
+no test is a rule that has been tried and not implemented.
+
+Both are now covered and both were re-broken to confirm the new tests are load-bearing:
+
+| new coverage | re-break | result |
+| --- | --- | --- |
+| `test/server.test.mjs` asserts `application/json` on four API routes and 404 on an unknown one | content type reverted to `text/plain` | **30 pass, 1 fail** |
+| `test/task-cli.test.mjs` asserts three notes survive, in order, with author and timestamp | notes overwritten | **12 pass, 1 fail** |
+
+The append-only test reads the notes array out of the card file itself rather than from
+`task show`, so it does not depend on the rendering it is meant to constrain.
+
 ## What is not yet covered
 
-A test that has never been broken is recorded here as *unverified*, not as evidence. Tests added
-in this repository before this discipline existed have not each been re-run against a
-constructed break; that is the honest state of the rest of the suite, and it is the reason the
-rule exists.
-
-## Message-id resolution repair: the live check failed, then passed where it can
-
-Live test on 2026-09-25: a reply addressed to a real message id written in the all-dots
-spelling (`2026-09-25T22.14.46.977Z_pid730179_a8c5ea20`) was sent with the standalone
-`amq reply` binary. It **failed**: exit `3`, `message not found`, nothing written. The failure
-is loud and left no misdelivered message, so the hazard in "the write succeeded and the tool
-implies otherwise" is not open in that path — but the normalisation this repository ships is not
-in that binary.
-
-This repository's own resolver, verified directly against the real queue root with
-`findMessageById`:
-
-| id spelling | resolves | message | sender | reply target |
-| --- | --- | --- | --- | --- |
-| canonical Maildir | yes | original | coordinator | coordinator |
-| all dots | yes | original | coordinator | coordinator |
-| colon-separated | yes | original | coordinator | coordinator |
-| unknown id | **no** | — | — | — |
-
-The test added for this asserts all three spellings reach the same message, the same sender and
-the same reply target, plus a bogus-id control. Two constructed breaks:
-
-| break | result |
-| --- | --- |
-| none (control) | 7 pass, 0 fail |
-| `messageIdsMatch` reduced to exact-id equality (no normalisation) | 5 pass, **2 fail** |
-| reply always addressed to the default recipient, original sender ignored | 6 pass, **1 fail** |
-
-The second break is the mirror this document warns about: resolution is perfect and the reply
-still goes to the wrong party. The first version of that test did not catch it, because its
-fixture sender *was* the default recipient, so the wrong answer and the right answer were
-identical. The fixture now uses a sender that is not the default, which is the only reason the
-mirror goes red.
+Everything else in the suite. Five invariants were sampled here and two of them turned out to be
+unproven, which is the best available estimate of what an unsampled test is worth: not zero, but
+not the number a green suggests. The list that remains is the honest state of the rest of the
+suite, and it is the thing that can be worked down.

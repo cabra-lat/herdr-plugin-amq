@@ -84,6 +84,28 @@ Test body`
     if (fs.existsSync(leaked)) fs.rmSync(leaked, { recursive: true, force: true });
   });
 
+  test("API routes declare JSON, and an unknown route is a 404 rather than a 200", async () => {
+    // The deploy check that shipped a false green for hours was a bare status code.
+    // The 404 is what makes a 200 mean something, so both are asserted here: a
+    // route answering with the wrong content type is a broken API that still
+    // answers 200, and a status-code-only check cannot tell the difference.
+    for (const route of ["/api/status", "/api/agents", "/api/board", "/api/panes"]) {
+      const res = await fetch(`${baseUrl}${route}`);
+      assert.equal(res.status, 200, `${route} did not answer 200`);
+      assert.match(
+        res.headers.get("content-type") || "",
+        /application\/json/,
+        `${route} must declare application/json, got ${res.headers.get("content-type")}`,
+      );
+      const body = await res.json();
+      assert.notEqual(body, null, `${route} body did not parse as JSON`);
+    }
+
+    const missing = await fetch(`${baseUrl}/api/definitely-not-a-route`);
+    assert.equal(missing.status, 404, "an unknown route must be 404, not 200");
+    assert.doesNotMatch(missing.headers.get("content-type") || "", /application\/json/);
+  });
+
   test("GET /api/status returns server metadata and agent count", async () => {
     const res = await fetch(`${baseUrl}/api/status`);
     assert.equal(res.status, 200);

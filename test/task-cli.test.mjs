@@ -80,6 +80,56 @@ test("task CLI fails loudly for unknown subcommands, flags, and missing argument
   }
 });
 
+test("notes are append-only: a second comment never displaces the first", () => {
+  const { root, amqRoot, bus } = makeFixture();
+  try {
+    const created = run(root, ["task", "assign", "--to", "alice", "--title", "Append-only card"]);
+    assert.equal(created.status, 0, created.stderr);
+    const id = fs.readdirSync(path.join(bus, "backlog")).filter((name) => name.endsWith(".md"))[0].replace(/\.md$/, "");
+
+    for (const text of ["First durable note", "Second durable note", "Third durable note"]) {
+      const res = run(root, ["task", "comment", id, "--me", "alice", "--text", text]);
+      assert.equal(res.status, 0, res.stderr);
+    }
+
+    // The whole history must still be there. A build that overwrote the note list
+    // instead of appending would keep the count at 1 and lose everything the board
+    // was asked to record, which is why this is asserted on the rendered read path
+    // and not on the count alone.
+    const show = run(root, ["task", "show", id, "--me", "bob"]);
+    assert.equal(show.status, 0, show.stderr);
+    assert.match(show.stdout, /Notes:\s+3/);
+    for (const text of ["First durable note", "Second durable note", "Third durable note"]) {
+      assert.ok(show.stdout.includes(text), `note lost: ${text}\n${show.stdout}`);
+    }
+    // Order is the order they were written in.
+    const first = show.stdout.indexOf("First durable note");
+    const second = show.stdout.indexOf("Second durable note");
+    const third = show.stdout.indexOf("Third durable note");
+    assert.ok(first < second && second < third, "notes are not in the order they were written");
+
+    // Independently observable on the card itself, not on the CLI's rendering of it.
+    const stage = ["backlog", "doing", "in_progress", "blocked", "done"]
+      .map((dir) => path.join(amqRoot, "bus", dir, `${id}.md`))
+      .find((file) => fs.existsSync(file));
+    assert.ok(stage, "card file not found");
+    const raw = fs.readFileSync(stage, "utf8").match(/^notes:\s*(.*)$/m)?.[1] || "[]";
+    const stored = JSON.parse(raw);
+    assert.equal(stored.length, 3, `expected three notes stored on the card, got ${stored.length}`);
+    assert.deepEqual(stored.map((note) => note.text), [
+      "First durable note",
+      "Second durable note",
+      "Third durable note",
+    ]);
+    for (const note of stored) {
+      assert.equal(note.author, "alice", "each note must record its author");
+      assert.ok(note.at, "each note must record when it was written");
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("task comment persists notes without changing activity and show exposes them to another handle", () => {
   const { root, amqRoot, bus } = makeFixture();
   try {
