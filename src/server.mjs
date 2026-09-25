@@ -183,7 +183,7 @@ export function startWebServer({
 
   async function refreshHerdrCache() {
     try {
-      herdrStatusCache = await getHerdrStatusMap();
+      herdrStatusCache = await getHerdrStatusMap({ amqRoot });
     } catch {}
   }
 
@@ -711,7 +711,7 @@ export function startWebServer({
     if (pathname === "/api/board" && req.method === "GET") {
       const repoRoot = path.resolve(path.dirname(amqRoot));
       const board = loadBoard(repoRoot, amqRoot);
-      const statusMap = await getHerdrStatusMap();
+      const statusMap = await getHerdrStatusMap({ amqRoot });
       const coordinator = buildCoordinatorMetrics({
         handles: getAgentHandles(amqRoot),
         agentStatuses: Object.fromEntries(statusMap),

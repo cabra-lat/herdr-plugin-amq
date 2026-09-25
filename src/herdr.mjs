@@ -107,7 +107,7 @@ export async function getHerdrAgents() {
  * by matching `name` field from Herdr agent records to AMQ handles.
  * Handles without a `name` in Herdr are skipped.
  */
-export async function getHerdrStatusMap() {
+export async function getHerdrStatusMap({ amqRoot = findAmqRoot() } = {}) {
   const agents = await getHerdrAgents();
   const observedAt = new Date().toISOString();
   const sessionModels = getOpenCodeSessionModels(agents);
@@ -115,7 +115,13 @@ export async function getHerdrStatusMap() {
   // handle from the canonical title (for example, `π - qa`) and only accept
   // handles registered in this workspace; a generic or human title must not
   // silently become an AMQ agent.
-  const knownHandles = new Set(getAgentHandles(findAmqRoot()).map((handle) => normalizeHandle(handle)));
+  //
+  // The root comes from the caller's injected `amqRoot` first, and only then from
+  // the environment. Re-deriving it here made identity resolution depend on
+  // process-wide state, so a caller that passed its own root silently got handles
+  // from a different workspace unless it also set AM_ROOT.
+  const root = amqRoot || findAmqRoot();
+  const knownHandles = new Set(getAgentHandles(root).map((handle) => normalizeHandle(handle)));
   const map = new Map();
   for (const agent of agents) {
     const activity = mapHerdrAgentActivity(agent, observedAt, resolveRuntimeModel(agent, sessionModels), knownHandles);

@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createDashboardFixture } from "./dashboard-fixture.mjs";
 
 /**
  * Identity resolution in `getHerdrStatusMap()` reads the registered handles from
- * `getAgentHandles(findAmqRoot())`, NOT from the server's `amqRoot` argument. An
+ * the root the caller injects, falling back to AM_ROOT only when none is given. An
  * agent with no Herdr `name` can only be resolved from its canonical pane title, and
  * only when that handle is registered in the queue root that `findAmqRoot()` finds.
  *
@@ -47,23 +50,43 @@ test("fixture resolves registered agents by name and by title, and drops unregis
   }
 });
 
-test("AM_ROOT is load-bearing for title-resolved identity, not a cosmetic setting", async () => {
-  const fixture = await createDashboardFixture({ registerAmqRootEnv: false });
+test("the injected root wins over AM_ROOT, and AM_ROOT is not required", async () => {
+  // A decoy root: a real, existing, EMPTY .agent-mail that registers no handles.
+  // If identity resolution read the env, the title-only agent would drop out.
+  const decoy = fs.mkdtempSync(path.join(os.tmpdir(), "amq-decoy-"));
+  const decoyRoot = path.join(decoy, ".agent-mail");
+  fs.mkdirSync(path.join(decoyRoot, "agents"), { recursive: true });
+
+  const fixture = await createDashboardFixture({ amqRootEnvPath: decoyRoot });
   try {
     const agents = await fetch(`${fixture.baseUrl}/api/agents`).then((response) => response.json());
     const byHandle = new Map(agents.map((agent) => [agent.handle, agent]));
 
-    // A record with a Herdr `name` still resolves: identity is not guessed from the
-    // queue root, so this control does not overstate what AM_ROOT does.
-    assert.equal(byHandle.get("range")?.herdrStatus, "working", "named agents must not depend on AM_ROOT");
-
-    // The title-only record cannot be resolved, because there is nothing to check
-    // its handle against. If this ever passes, the control is not testing the seam.
+    // Positive: the title-only record resolves from the INJECTED root even though
+    // AM_ROOT points at an empty one. Fails if the code regressed to the env.
     assert.equal(
       byHandle.get("spotter")?.herdrStatus,
-      undefined,
-      "expected a title-only agent to be dropped when its handle is not registered",
+      "idle",
+      `injected root must win over AM_ROOT: ${JSON.stringify(byHandle.get("spotter"))}`,
     );
+    // A named record is unaffected either way, so this does not overclaim.
+    assert.equal(byHandle.get("range")?.herdrStatus, "working");
+    // Registration is still enforced against the injected root, not skipped.
+    assert.equal(byHandle.has(fixture.unregisteredHandle), false, "unregistered handle leaked");
+  } finally {
+    await fixture.close();
+    fs.rmSync(decoy, { recursive: true, force: true });
+  }
+});
+
+test("title-resolved identity resolves with AM_ROOT absent entirely", async () => {
+  const fixture = await createDashboardFixture();
+  try {
+    const agents = await fetch(`${fixture.baseUrl}/api/agents`).then((response) => response.json());
+    const byHandle = new Map(agents.map((agent) => [agent.handle, agent]));
+    assert.equal(byHandle.get("spotter")?.herdrStatus, "idle", "title-only agent must resolve without AM_ROOT");
+    assert.equal(byHandle.get("range")?.herdrStatus, "working");
+    assert.equal(byHandle.has(fixture.unregisteredHandle), false, "unregistered handle leaked");
   } finally {
     await fixture.close();
   }

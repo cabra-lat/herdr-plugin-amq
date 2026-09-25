@@ -6,6 +6,32 @@ import { execFileSync } from "node:child_process";
 import { chromium } from "playwright-core";
 import { createDashboardFixture } from "./dashboard-fixture.mjs";
 
+/**
+ * Panes re-renders on the bridge poll, so sampling a computed style at one
+ * instant can read an empty value while the view is mid-swap. Assert the state
+ * the UI is supposed to reach, and wait for it. Takes a selector so the
+ * assertion runs against the element actually named by the caller.
+ */
+async function waitForComputedStyle(page, selector, property, expected, timeout = 15000) {
+  try {
+    await page.waitForFunction(
+      ({ selector, property, expected }) => {
+        const el = document.querySelector(selector);
+        return el ? getComputedStyle(el)[property] === expected : false;
+      },
+      { selector, property, expected },
+      { timeout },
+    );
+  } catch (error) {
+    const observed = await page
+      .locator(selector)
+      .first()
+      .evaluate((el) => getComputedStyle(el)[property])
+      .catch(() => "<element unavailable>");
+    throw new Error(`${selector}: expected ${property}=${JSON.stringify(expected)}, observed ${JSON.stringify(observed)} (${error.message.split("\n")[0]})`);
+  }
+}
+
 function findChromium() {
   if (process.env.CHROMIUM_BIN) return process.env.CHROMIUM_BIN;
   for (const candidate of ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]) {
@@ -153,7 +179,8 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     assert.match(await rangeCard.locator(".presence-status-pill").textContent(), /Working|Idle/);
     assert.ok(((await rangeCard.locator(".pane-card-output").textContent()) || "").length > 0);
     // Terminal-style: no wrapping, type autofits the longest line.
-    assert.equal(await rangeCard.locator(".pane-card-output").evaluate((el) => getComputedStyle(el).whiteSpace), "pre");
+    // Poll rather than sample: the card is re-rendered by the bridge poll.
+    await waitForComputedStyle(desktop, '.pane-card[data-pane-handle="range"] .pane-card-output', "whiteSpace", "pre");
     const panesArtifact = path.join(artifactRoot, "desktop", "panes-view.png");
     await screenshot(desktop, panesArtifact);
     artifacts.push(panesArtifact);

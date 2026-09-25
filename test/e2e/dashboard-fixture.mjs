@@ -175,7 +175,7 @@ Confirm the owner warning is visible when a peer has blocked work.
   fs.writeFileSync(path.join(blockedDir, "task-ui-blocked-fixture.md"), blockedContent, "utf8");
 }
 
-export async function createDashboardFixture({ registerAmqRootEnv = true } = {}) {
+export async function createDashboardFixture({ registerAmqRootEnv = false, amqRootEnvPath = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "amq-browser-fixture-"));
   const amqRoot = path.join(root, ".agent-mail");
   const stateDir = path.join(root, "state");
@@ -288,11 +288,13 @@ export async function createDashboardFixture({ registerAmqRootEnv = true } = {})
   process.env.HERDR_SOCKET_PATH = socketPath;
   process.env.HERDR_BIN_PATH = path.join(root, "missing-herdr");
   process.env.HERDR_PLUGIN_STATE_DIR = stateDir;
-  // Identity resolution reads the registered handles from findAmqRoot(), not from
-  // the server's amqRoot argument. Agents whose Herdr record has no `name` can only
-  // be resolved from the canonical pane title, and only when that handle is
-  // registered here.
-  if (registerAmqRootEnv) process.env.AM_ROOT = amqRoot;
+  // Identity resolution takes the registered handles from the root the server was
+  // given, and only falls back to AM_ROOT. The fixture therefore does NOT set
+  // AM_ROOT by default: doing so would hide a regression back to reading process
+  // state. Tests that care about the env can pass a decoy path explicitly.
+  if (amqRootEnvPath) process.env.AM_ROOT = amqRootEnvPath;
+  else if (registerAmqRootEnv) process.env.AM_ROOT = amqRoot;
+  else delete process.env.AM_ROOT;
   // Never spawn a real `opencode` binary from a test: the runtime-model lookup is a
   // synchronous child process, and one that hangs would freeze the event loop
   // instead of failing an assertion.
