@@ -133,3 +133,53 @@ A future Slurm migration is justified only when the fleet becomes multi-node, mu
 5. **Rollback:** disable the dashboard/bridge delivery or local runner without deleting AMQ cards or evidence. Revert plugin commits through the infrastructure repository's normal history. Do not roll back the game repository to address an infrastructure failure.
 
 A rollout is successful only when identity, task state, pane state, and evidence agree across the AMQ CLI, bridge, and dashboard. Any disagreement is an infrastructure defect and should be recorded as a blocked card with a reproducible observation. Human playtest feedback is attached to the relevant card and drives the next test or implementation decision; it is not a hidden approval stage.
+
+## Evidence discipline: what counts as a green
+
+A check that reports success is not evidence. A check is evidence only once it has been
+**seen to go red against a constructed break**.
+
+This is not a style preference. Every defect that reached a report through this repository
+shared one shape: a success signal whose only observable was itself. A command that returned,
+a diff that looked clean, a check that passed, a file count that matched, a verb missing from a
+list. A signal like that cannot distinguish "the thing worked" from "the thing that observes it
+is broken", and in practice these signals fail in the unsafe direction — they report success
+while the work is absent. "The check could fail" is not a sufficient criterion, because it is
+satisfied by intent: anyone can believe their own control could fail. Only the observed
+failure counts.
+
+Three clauses, each added because a check that obeyed the previous one still produced a
+false green:
+
+1. **Constructed breaks must be seen red, and must be announced and scoped.** A break is
+   scoped work: a scratch copy of the repository, never a shared worktree other lanes are
+   reading, and it is announced before it is run. A control that is only sound because nobody
+   else looked at the tree while it was broken is not a control, it is a controlled fire.
+2. **The control must assert the same object as the claim.** A check that can fail, on the
+   right property, against a different element or a different field than the one the claim is
+   about, is a mirror that takes an argument. Keep the assertion next to the thing it is
+   evidence for, and make the failure message name the observed value.
+3. **A green that cannot be broken is a hypothesis.** When a check passes and no sabotage has
+   been tried, the honest report is "not yet verified", not "green". Re-run with a constructed
+   break before reporting a result.
+
+### Worked examples from this repository
+
+- **Deploy verification.** `curl -o /dev/null -w '%{http_code}' /api/board` returns 200 whether
+  or not the route exists in the handler. The check is paired with a known-missing path
+  (`/api/definitely-not-a-route` must return 404) and with a body that is parsed, not just a
+  status code. Without the 404 the pair cannot distinguish a working API from a deleted one.
+- **Identity resolution.** The E2E fixture once registered `AM_ROOT` so that
+  `getHerdrStatusMap()` would find the fixture's handles. That made the suite green without
+  fixing the code: the function re-derived the queue root from process-wide environment state
+  while the server already held an explicit `amqRoot` argument. The control written at the time
+  ("`AM_ROOT` is load-bearing") was a mirror that pinned the shim, and it went red when the
+  real fix landed. The root is now injected, and the control is a decoy: `AM_ROOT` points at a
+  real, existing, empty `.agent-mail` that registers no handles, so the assertion has to choose
+  between "identity resolved" and "identity resolved because it was arranged".
+- **A control that passed while the bug was present.** A regression test asserted on the card
+  file rather than on the CLI's own output, and was credited with covering a defect where a
+  second write's result was ignored. Sabotaging the fix left it green: the test caught a write
+  that never happened, not a write that failed. The fix was to remove the two-write path rather
+  than to test for its failure, and the evidence is three constructed breaks with recorded
+  results in `docs/qa/evidence-discipline.md`.
