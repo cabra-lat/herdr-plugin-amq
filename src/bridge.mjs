@@ -500,7 +500,7 @@ function formatAge(value) {
 
 function buildCoordinatorAlertPrompt(alert) {
   const lines = [
-    "Coordinator re-evaluation (advisory; no auto-approval).",
+    "Coordinator review required: inspect the alert and take ownership of the next decision.",
     `Alert: ${alert.id} — ${alert.message}`,
     alert.recommendedAction ? `Recommended action: ${alert.recommendedAction}` : "Recommended action: inspect the current board and keep work moving.",
   ];
@@ -518,7 +518,7 @@ function buildCoordinatorAlertPrompt(alert) {
     }
   }
   lines.push("Classify each card as delegate, re-scope/unblock, wait-with-owner, or close/superseded; return the next actor.");
-  lines.push("Do not auto-approve destructive or ambiguous work.");
+  lines.push("Approve routine work directly; destructive or ambiguous actions still require explicit human confirmation.");
   return boundDoorbellPrompt(lines.join("\n"));
 }
 
@@ -723,7 +723,7 @@ export function runManualCoordinatorDoorbell({
   const text = [
     "Manual coordinator doorbell requested from the AGmail dashboard.",
     "Review current swarm metrics, blocked work, and queue state, then delegate or re-scope as needed.",
-    "This is advisory only; do not auto-approve destructive actions.",
+    "Coordinator owns routine triage and approvals; destructive or ambiguous actions still require explicit human confirmation.",
   ].join("\n");
   const ok = prompt("coordinator", text, dryRun || !allowPrompt);
   const prompted = Boolean(ok && allowPrompt && !dryRun);

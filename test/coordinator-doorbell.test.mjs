@@ -92,7 +92,9 @@ test("coordinator metrics doorbell prompts an idle coordinator once per cooldown
     assert.equal(first.coordinatorDoorbell.alert, "blocked_cards");
     assert.equal(prompts.length, 1);
     assert.equal(prompts[0].handle, "coordinator");
-    assert.match(prompts[0].text, /delegate.*re-scope/);
+    assert.match(prompts[0].text, /Coordinator review required/);
+    assert.match(prompts[0].text, /Approve routine work directly/);
+    assert.doesNotMatch(prompts[0].text, /advisory; no auto-approval/i);
     assert.match(prompts[0].text, /Triage snapshot:/);
     assert.match(prompts[0].text, /next-actor=/);
 
@@ -284,6 +286,8 @@ test("manual coordinator doorbell prompts immediately and is logged", () => {
     assert.equal(prompts.length, 1);
     assert.equal(prompts[0].handle, "coordinator");
     assert.match(prompts[0].text, /Manual coordinator doorbell/);
+    assert.match(prompts[0].text, /Coordinator owns routine triage and approvals/);
+    assert.doesNotMatch(prompts[0].text, /advisory only; do not auto-approve/i);
   } finally {
     if (oldStateDir === undefined) delete process.env.HERDR_PLUGIN_STATE_DIR;
     else process.env.HERDR_PLUGIN_STATE_DIR = oldStateDir;
