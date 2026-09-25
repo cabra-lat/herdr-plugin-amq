@@ -153,3 +153,103 @@ test("heartbeat, reassign and block metadata verbs work and fail loudly", () => 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("help is reachable and every subcommand help flag prints the verb list", () => {
+  const { root } = makeFixture();
+  try {
+    for (const args of [["task", "--help"], ["task", "-h"], ["task", "help"], ["task", "list", "--help"], ["task", "heartbeat", "--help"]]) {
+      const result = run(root, args);
+      assert.equal(result.status, 0, `${args.join(" ")} exited ${result.status}: ${result.stderr}`);
+      assert.match(result.stdout, /Usage: herdr-amq task <subcommand>/, `${args.join(" ")} did not print usage`);
+      assert.match(result.stdout, /comment <id>/, `${args.join(" ")} did not list the verbs`);
+    }
+    // The unknown-subcommand diagnostic must not point at a command that fails.
+    const unknown = run(root, ["task", "frobnicate"]);
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /herdr-amq task --help/);
+    const followed = run(root, unknown.stderr.match(/herdr-amq (task --help)/)[1].split(" "));
+    assert.equal(followed.status, 0, "the instruction printed in the error must actually work");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("task create opens a card without forcing an owner", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const created = run(root, ["task", "create", "--me", "coordinator", "--title", "Scoped by the coordinator", "--desc", "Acceptance and non-goals belong here.", "--depends-on", "task_x,task_y", "--notify", "false"]);
+    assert.equal(created.status, 0, created.stderr);
+    const id = created.stdout.match(/ID: (task_[0-9a-z_]+)/)?.[1];
+    assert.ok(id, created.stdout);
+    const card = fs.readFileSync(path.join(amqRoot, "bus", "backlog", `${id}.md`), "utf8");
+    assert.match(card, /owner: "coordinator"/);
+    assert.match(card, /depends_on: \["task_x","task_y"\]/);
+
+    const owned = run(root, ["task", "create", "--me", "coordinator", "--owner", "qa", "--title", "Delegated", "--notify", "false"]);
+    assert.equal(owned.status, 0, owned.stderr);
+    const ownedId = owned.stdout.match(/ID: (task_[0-9a-z_]+)/)?.[1];
+    assert.match(fs.readFileSync(path.join(amqRoot, "bus", "backlog", `${ownedId}.md`), "utf8"), /owner: "qa"/);
+
+    const noTitle = run(root, ["task", "create", "--me", "coordinator"]);
+    assert.notEqual(noTitle.status, 0);
+    assert.match(noTitle.stderr, /title is required/i);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("comment and block expand @file and refuse an unreadable path", () => {
+  const { root, amqRoot } = makeFixture();
+  const noteFile = path.join(root, "note.txt");
+  try {
+    fs.writeFileSync(noteFile, "A note written from a file, not the literal path.\n", "utf8");
+    const assigned = run(root, ["task", "assign", "--to", "alice", "--title", "File body card", "--notify", "false"]);
+    assert.equal(assigned.status, 0, assigned.stderr);
+    const id = assigned.stdout.match(/ID: (task_[0-9a-z_]+)/)?.[1];
+
+    const commented = run(root, ["task", "comment", id, "--me", "alice", "--text", `@${noteFile}`]);
+    assert.equal(commented.status, 0, commented.stderr);
+    const shown = run(root, ["task", "show", id]);
+    assert.match(shown.stdout, /A note written from a file, not the literal path/);
+    assert.doesNotMatch(shown.stdout, /note\.txt/, "the literal @path must never be stored as the note text");
+
+    // A path that does not exist is a loud failure, not a stored literal.
+    const missing = run(root, ["task", "comment", id, "--me", "alice", "--text", "@/tmp/definitely-not-here.txt"]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /could not be read/);
+    assert.doesNotMatch(fs.readFileSync(path.join(amqRoot, "bus", "backlog", `${id}.md`), "utf8"), /definitely-not-here/);
+
+    const reasonFile = path.join(root, "reason.txt");
+    fs.writeFileSync(reasonFile, "Waiting on spotter for the six-pose numeric capture before this can close.".repeat(2), "utf8");
+    const blocked = run(root, ["task", "block", id, "--me", "alice", "--reason", `@${reasonFile}`, "--notify", "false"]);
+    assert.equal(blocked.status, 0, blocked.stderr);
+    // The read path must display what the write path stored: a written-but-invisible
+    // field is indistinguishable from a dropped write.
+    const blockedShow = run(root, ["task", "show", id]);
+    assert.match(blockedShow.stdout, /Block reason: Waiting on spotter for the six-pose numeric capture/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("task show renders every field the CLI can write", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const assigned = run(root, ["task", "assign", "--to", "alice", "--title", "Readable card", "--desc", "Body", "--notify", "false"]);
+    const id = assigned.stdout.match(/ID: (task_[0-9a-z_]+)/)?.[1];
+    run(root, ["task", "claim", id, "--me", "alice", "--notify", "false"]);
+    run(root, ["task", "heartbeat", id, "--me", "alice"]);
+    const blocked = run(root, ["task", "block", id, "--me", "alice", "--reason", "Waiting on a named actor for a specific artifact that does not exist yet.", "--next-actor", "spotter", "--notify", "false"]);
+    assert.equal(blocked.status, 0, blocked.stderr);
+
+    const shown = run(root, ["task", "show", id]);
+    for (const label of ["Owner:", "Status:", "Next actor:", "Depends on:", "Claimed:", "Blocked at:", "Heartbeat:", "Block reason:"]) {
+      assert.match(shown.stdout, new RegExp(label.replace(/[:]/g, ":")), `task show is missing ${label}\n${shown.stdout}`);
+    }
+    assert.match(shown.stdout, /Next actor:\s+spotter/);
+    assert.match(shown.stdout, /Heartbeat:.*by alice/);
+    assert.match(fs.readFileSync(path.join(amqRoot, "bus", "blocked", `${id}.md`), "utf8"), /last_heartbeat_by: "alice"/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

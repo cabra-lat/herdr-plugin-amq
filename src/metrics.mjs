@@ -176,6 +176,9 @@ export function buildCoordinatorMetrics({
         ageMs: livenessMs === null ? null : Math.max(0, now - livenessMs),
         lastActivityAt: livenessMs === null ? null : new Date(livenessMs).toISOString(),
         heartbeatAt: timestamp(task?.last_heartbeat_at) === null ? null : new Date(timestamp(task.last_heartbeat_at)).toISOString(),
+        heartbeatAgeMs: ageMs(task?.last_heartbeat_at, now),
+        heartbeatBy: task?.last_heartbeat_by || null,
+        heartbeatByNonOwner: Boolean(task?.last_heartbeat_by && task.owner && task.last_heartbeat_by !== task.owner),
         ...noteSummary(task, now),
       };
     })

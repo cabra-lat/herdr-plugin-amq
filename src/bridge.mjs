@@ -516,6 +516,9 @@ function buildCoordinatorAlertPrompt(alert) {
         `reason=${card.reason || "unspecified"}`,
         // Note recency is progress evidence, never liveness: notes do not move `updated`.
         (card.noteCount ? `notes=${card.noteCount} last-note=${formatAge(card.noteAgeMs)} ago` : "notes=0"),
+        // A heartbeat from anyone but the owner is a real signal, but a different
+        // one, and it must not read as "the owner is still on it".
+        (card.heartbeatAt ? `heartbeat=${formatAge(card.heartbeatAgeMs)} ago by=${card.heartbeatBy || "unknown"}${card.heartbeatByNonOwner ? " (not the owner)" : ""}` : "heartbeat=none"),
       ].join(" "));
     }
   }

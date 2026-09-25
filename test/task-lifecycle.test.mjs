@@ -201,3 +201,50 @@ test("reassign changes owner and blocked next actor is explicit or absent", () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a heartbeat by a non-owner is recorded as such", async () => {
+  const { root, amqRoot } = fixture();
+  try {
+    const created = addBoardTask(root, amqRoot, { title: "Ownership of liveness", owner: "worker", description: "Who said it is alive." }, {
+      notify: false,
+      now: new Date("2026-09-24T10:00:00.000Z"),
+    });
+    updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress", owner: "worker" }, {
+      notify: false,
+      now: new Date("2026-09-24T10:01:00.000Z"),
+    });
+
+    const byOther = heartbeatBoardTask(root, amqRoot, created.task.id, {
+      actor: "coordinator",
+      now: new Date("2026-09-24T10:10:00.000Z"),
+    });
+    assert.equal(byOther.last_heartbeat_by, "coordinator");
+    assert.equal(byOther.task.owner, "worker");
+
+    const { buildCoordinatorMetrics } = await import("../src/metrics.mjs");
+    const result = buildCoordinatorMetrics({
+      handles: ["coordinator", "worker"],
+      agentStatuses: { coordinator: "idle", worker: "idle" },
+      board: { columns: { backlog: [], in_progress: [byOther.task], blocked: [], done: [] } },
+      now: new Date("2026-09-24T10:12:00.000Z"),
+      thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+    });
+    // Fresh liveness, so it is not stalled, but the author is still visible.
+    assert.equal(result.stalledWork.length, 0);
+
+    const stale = { ...byOther.task, last_heartbeat_at: "2026-09-24T10:00:30.000Z" };
+    const stalled = buildCoordinatorMetrics({
+      handles: ["coordinator", "worker"],
+      agentStatuses: { coordinator: "idle", worker: "idle" },
+      board: { columns: { backlog: [], in_progress: [stale], blocked: [], done: [] } },
+      now: new Date("2026-09-24T10:12:00.000Z"),
+      thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+    });
+    const card = stalled.alerts.find((alert) => alert.id === "stalled_work").cards[0];
+    assert.equal(card.heartbeatBy, "coordinator");
+    assert.equal(card.heartbeatByNonOwner, true);
+    assert.equal(card.heartbeatAgeMs, 11.5 * 60 * 1000);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

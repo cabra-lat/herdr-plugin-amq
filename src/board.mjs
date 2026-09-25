@@ -118,6 +118,7 @@ export function serializeTaskFile(task) {
     `blocked_at: ${JSON.stringify(task.blocked_at || null)}`,
     `done_at: ${JSON.stringify(task.done_at || null)}`,
     `last_heartbeat_at: ${JSON.stringify(task.last_heartbeat_at || null)}`,
+    `last_heartbeat_by: ${JSON.stringify(task.last_heartbeat_by || null)}`,
     `claims: ${Number.isFinite(Number(task.claims)) ? Number(task.claims) : 0}`,
     `blocked_ms: ${Number.isFinite(Number(task.blocked_ms)) ? Number(task.blocked_ms) : 0}`,
     `block_reason: ${JSON.stringify(task.block_reason || null)}`,
@@ -199,6 +200,7 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
       blocked_at: meta.blocked_at || null,
       done_at: meta.done_at || null,
       last_heartbeat_at: meta.last_heartbeat_at || null,
+      last_heartbeat_by: meta.last_heartbeat_by || null,
       claims: Number.isFinite(Number(meta.claims)) ? Number(meta.claims) : 0,
       blocked_ms: Number.isFinite(Number(meta.blocked_ms)) ? Number(meta.blocked_ms) : 0,
       block_reason: meta.block_reason || null,
@@ -669,6 +671,7 @@ export function addBoardTask(
     blocked_at: null,
     done_at: null,
     last_heartbeat_at: null,
+    last_heartbeat_by: null,
     claims: 0,
     blocked_ms: 0,
     block_reason: null,
@@ -855,7 +858,11 @@ export function heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor, now } = {
   if (existingTask.status === "done") return { ok: false, error: "Task is done; a heartbeat cannot revive it" };
 
   const timestamp = now instanceof Date ? now.toISOString() : new Date().toISOString();
-  const updatedTask = { ...existingTask, last_heartbeat_at: timestamp };
+  // The author is recorded so a heartbeat from anyone other than the owner is
+  // visible as such. The verb is deliberately not restricted: a coordinator
+  // legitimately needs to signal "I am actively working this", but that signal must
+  // not be indistinguishable from the owner's.
+  const updatedTask = { ...existingTask, last_heartbeat_at: timestamp, last_heartbeat_by: String(actor || existingTask.owner || "unknown") };
 
   try {
     fs.writeFileSync(existingPath, serializeTaskFile(updatedTask), "utf8");
@@ -863,7 +870,7 @@ export function heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor, now } = {
     return { ok: false, error: `failed to write heartbeat: ${error.message}` };
   }
 
-  return { ok: true, taskId, actor: actor || null, last_heartbeat_at: timestamp, task: { ...updatedTask, filePath: existingPath } };
+  return { ok: true, taskId, actor: actor || null, last_heartbeat_at: timestamp, last_heartbeat_by: updatedTask.last_heartbeat_by, task: { ...updatedTask, filePath: existingPath } };
 }
 
 /**

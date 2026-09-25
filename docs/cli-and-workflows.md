@@ -16,6 +16,8 @@ herdr-amq drain --me coordinator --include-body
 herdr-amq task list
 herdr-amq task drain --me <handle>
 herdr-amq task next --me <handle>
+herdr-amq task create --title "<title>" --me <handle> [--owner <h>] [--desc <text|@file>]
+herdr-amq task assign --to <handle> --title <title>
 herdr-amq task claim <task-id> --me <handle>
 herdr-amq task heartbeat <task-id> --me <handle>
 herdr-amq task reassign <task-id> --to <handle> [--next-actor <handle>]
@@ -31,11 +33,15 @@ herdr-amq --skill --install .opencode/skills/herdr-amq/SKILL.md
 
 Mail messages use Maildir delivery and RFC 5322 threading headers. Attachments are stored through the CAS blobstore or pinned to a Git object when migrating historical files.
 
-Unknown task subcommands and options exit non-zero with a specific diagnostic on stderr. A task comment is persisted on the card and shown by `task show`, but does not change the card's `updated` timestamp, claim, or heartbeat fields.
+Unknown task subcommands and options exit non-zero with a specific diagnostic on stderr. `herdr-amq task --help` (also `-h` and `help`) and `herdr-amq task <subcommand> --help` all print the verb list and exit 0, so the instruction in the unknown-subcommand diagnostic is always followable. A task comment is persisted on the card and shown by `task show`, but does not change the card's `updated` timestamp, claim, or heartbeat fields.
+
+`--text`, `--reason` and `--desc` accept `@path` and read the file, matching `amq send --body` and `amq reply --body`; a path that cannot be read is a non-zero error rather than a stored literal.
+
+`task show` renders every field the CLI can write, including `block_reason`, `proof`, `next_actor`, `depends_on` and the heartbeat author. A field that is written but never displayed is indistinguishable from a dropped write, so the read path and the write path are kept in step deliberately.
 
 ## Liveness, triage and metadata
 
-- `task heartbeat <id> --me <handle>` records `last_heartbeat_at` and nothing else. It does not change the stage, `updated`, the claim count, or the notes, so it cannot be used to fake progress; it exists so the stall detector measures liveness instead of claim bookkeeping. The stall detector reads the newest of `last_heartbeat_at` and `updated`.
+- `task heartbeat <id> --me <handle>` records `last_heartbeat_at` and `last_heartbeat_by` and nothing else. It does not change the stage, `updated`, the claim count, or the notes, so it cannot be used to fake progress; it exists so the stall detector measures liveness instead of claim bookkeeping. The stall detector reads the newest of `last_heartbeat_at` and `updated`. The verb is not restricted to the owner, because a coordinator legitimately needs to signal "I am actively working this", but the author is recorded and a heartbeat from anyone but the owner is surfaced as such in the alert payload.
 - `task comment` is evidence of progress and is deliberately **not** liveness: a note never moves `updated`, so commenting cannot keep a stalled card alive. Alerts surface `noteCount`/`lastNoteAt` so a reader can judge, not so a detector can be satisfied.
 - A blocked card that carries a `reason` is considered triaged and is excluded from `blocked_cards`/`blocked_age`; only cards with no reason alert, and the message reports the untriaged count and how many triaged cards were excluded. Record the triage in one call so the fields and the prose cannot disagree:
   `herdr-amq task block <id> --reason "Waiting on spotter for the numeric capture" --next-actor spotter --depends-on task_xyz`

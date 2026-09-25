@@ -182,6 +182,7 @@ function parseTaskArgs(args = []) {
 const TASK_FLAGS = {
   list: new Set(["owner", "status", "json", "me", "from", "help"]),
   ls: new Set(["owner", "status", "json", "me", "from", "help"]),
+  create: new Set(["title", "to", "owner", "desc", "description", "status", "priority", "next-actor", "depends-on", "json", "notify", "me", "from", "help"]),
   assign: new Set(["to", "owner", "title", "desc", "description", "status", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
   claim: new Set(["id", "notify", "me", "from", "help"]),
   done: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
@@ -207,6 +208,7 @@ function taskUsage() {
     "  list [--owner <h>] [--status <s>] [--json]   List all tasks",
     "  drain [--me <h>] [--claim] [--json]          Drain backlog tasks with full descriptions",
     "  next [--me <h>]                              Auto-claim and start next backlog task",
+    "  create --title <t> [--owner <h>] [--desc <d>] Open a card (owner defaults to --me)",
     "  assign --to <h> --title <t> [--desc <d>]     Assign a new task to an agent",
     "  claim <id> [--me <h>]                        Claim an existing task",
     "  heartbeat <id> [--me <h>]                    Record liveness without changing the card",
@@ -242,6 +244,19 @@ function nextActorFlag(value) {
   return text;
 }
 
+// `--text @file` and `--reason @file` read the file, matching `amq send --body` and
+// `amq reply --body`. A path that does not exist is an error rather than a literal
+// "@/path" stored on the card and reported as success.
+function expandAtFile(value, label) {
+  if (typeof value !== "string" || !value.startsWith("@")) return { value };
+  const filePath = value.slice(1);
+  try {
+    return { value: fs.readFileSync(filePath, "utf8") };
+  } catch (error) {
+    return { error: `${label} file could not be read: ${filePath} (${error.code || error.message})` };
+  }
+}
+
 /**
  * CLI command handler for AGboard task management:
  *   herdr-amq task list [--owner <handle>] [--status <stage>] [--json]
@@ -261,7 +276,17 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
   const repoRoot = path.resolve(path.dirname(amqRoot));
   const { flags, positional } = parseTaskArgs(rawArgs);
   const me = flags.me || flags.from || process.env.AMQ_ME || "coordinator";
-  const allowedFlags = TASK_FLAGS[subcommand];
+
+  // Help must be reachable, otherwise the unknown-subcommand diagnostic points at a
+  // command that does not work. `task --help`, `task -h` and `task help` all print
+  // the same list and exit 0.
+  const requested = String(subcommand ?? "").trim();
+  if (!requested || requested === "help" || requested === "-h" || requested === "--help" || (requested.startsWith("-") && !TASK_FLAGS[requested])) {
+    console.log(taskUsage());
+    return true;
+  }
+
+  const allowedFlags = TASK_FLAGS[requested];
 
   if (!allowedFlags) {
     return failTask(`Unknown task subcommand "${subcommand}". Run "herdr-amq task --help" for the supported commands.`);
@@ -274,7 +299,6 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
     console.log(taskUsage());
     return true;
   }
-
   switch (subcommand) {
     case "list":
     case "ls": {
@@ -317,6 +341,51 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         console.log(`  ${statusBadge.padEnd(22)} ${idStr} ${ownerStr} ${t.title}`);
       }
       console.log("────────────────────────────────────────────────────────────────────────────\n");
+      break;
+    }
+
+    case "create": {
+      // `create` is the coordinator-facing verb: it opens a card without forcing an
+      // owner, so the person with the most context can scope the work. `assign`
+      // remains the owner-requiring form.
+      const to = flags.to || flags.owner || me;
+      const title = flags.title || positional.join(" ");
+      const descArg = flags.desc || flags.description || "";
+      const desc = expandAtFile(descArg, "--desc");
+      if (desc.error) return failTask(desc.error);
+      if (!title || !title.trim()) {
+        console.error("❌ Task title is required: herdr-amq task create --title <title>");
+        process.exit(1);
+      }
+      let res;
+      try {
+        res = addBoardTask(repoRoot, amqRoot, {
+          title,
+          owner: to,
+          status: flags.status || "backlog",
+          description: desc.value || "",
+          from: me,
+          priority: flags.priority || undefined,
+          depends_on: listFlag(flags["depends-on"]),
+          next_actor: nextActorFlag(flags["next-actor"]),
+          notify: flags.notify !== "false",
+        });
+      } catch (error) {
+        return failTask(`Failed to write task: ${error.message}`);
+      }
+      if (!res.ok) {
+        console.error(`❌ Failed to create task: ${res.error}`);
+        process.exit(1);
+      }
+      if (flags.json) {
+        console.log(JSON.stringify(res.task, null, 2));
+        break;
+      }
+      console.log(`\n✅ \x1b[32mTask created\x1b[0m (ID: ${res.task.id})`);
+      console.log(`Owner: ${res.task.owner}`);
+      if (res.task.next_actor) console.log(`Next actor: ${res.task.next_actor}`);
+      if (res.task.depends_on?.length) console.log(`Depends on: ${res.task.depends_on.join(", ")}`);
+      console.log(`Title: ${res.task.title}\n`);
       break;
     }
 
@@ -433,7 +502,15 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         process.exit(1);
       }
 
-      const reason = flags.reason || flags.desc || positional.slice(1).join(" ") || "Blocked";
+      const reasonArg = flags.reason || flags.desc || positional.slice(1).join(" ");
+      const expandedReason = expandAtFile(reasonArg, "--reason");
+      if (expandedReason.error) return failTask(expandedReason.error);
+      const reason = (expandedReason.value ?? "").trim() || "Blocked";
+      if (reason.length < 40) {
+        // A silently invisible short reason is how blockers became un-actionable; a
+        // warning is enough, the field is still written.
+        console.warn(`⚠️  Reason is only ${reason.length} characters; a blocker that cannot name its actor and its way out is not triageable.`);
+      }
       let res;
       try {
         res = updateBoardTask(
@@ -521,7 +598,10 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
     case "comment":
     case "note": {
       const taskId = positional[0] || flags.id;
-      const text = flags.text || flags.note || positional.slice(1).join(" ");
+      const textArg = flags.text || flags.note || positional.slice(1).join(" ");
+      const expanded = expandAtFile(textArg, "--text");
+      if (expanded.error) return failTask(expanded.error);
+      const text = expanded.value;
       if (!taskId) {
         console.error("❌ Task ID is required: herdr-amq task comment <taskId> --text <text>");
         process.exit(1);
@@ -569,9 +649,26 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       console.log(`Owner:       ${found.owner}`);
       console.log(`Status:      ${found.status}`);
       console.log(`Source:      ${found.source || "custom"}`);
+      if (found.priority) console.log(`Priority:    ${found.priority}`);
       if (found.created) console.log(`Created:     ${found.created}`);
       if (found.updated) console.log(`Updated:     ${found.updated}`);
+      if (found.claimed_at) console.log(`Claimed:     ${found.claimed_at}`);
+      if (found.blocked_at) console.log(`Blocked at:  ${found.blocked_at}`);
+      if (found.done_at) console.log(`Done at:     ${found.done_at}`);
+      if (found.last_heartbeat_at) console.log(`Heartbeat:   ${found.last_heartbeat_at}${found.last_heartbeat_by ? ` by ${found.last_heartbeat_by}` : ""}`);
+      if (found.claims) console.log(`Claims:      ${found.claims}`);
+      // Every field the CLI can write is rendered here. A field that is written but
+      // not displayed is indistinguishable from a dropped write, which is how a
+      // correct block reason came to be reported as lost.
+      console.log(`Next actor:  ${found.next_actor || "(unset)"}`);
+      console.log(`Depends on:  ${Array.isArray(found.depends_on) && found.depends_on.length ? found.depends_on.join(", ") : "(none)"}`);
       if (found.description) console.log(`Description: ${found.description}`);
+      if (found.block_reason) {
+        console.log(`Block reason: ${found.block_reason}`);
+      } else if (found.status === "blocked") {
+        console.log("Block reason: (none — UNTRIAGED; this card will raise blocked_cards)");
+      }
+      if (found.proof) console.log(`Proof:       ${found.proof}`);
       if (Array.isArray(found.notes) && found.notes.length > 0) {
         console.log(`Notes:      ${found.notes.length}`);
         for (const note of found.notes) {
