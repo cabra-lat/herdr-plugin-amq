@@ -17,6 +17,7 @@ herdr-amq task list
 herdr-amq task drain --me <handle>
 herdr-amq task next --me <handle>
 herdr-amq task claim <task-id> --me <handle>
+herdr-amq task comment <task-id> --me <handle> --text "Progress note; does not count as activity"
 herdr-amq task done <task-id> --proof "Verification evidence"
 herdr-amq task block <task-id> --reason "Waiting on an external dependency"
 
@@ -26,6 +27,8 @@ herdr-amq --skill --install .opencode/skills/herdr-amq/SKILL.md
 ```
 
 Mail messages use Maildir delivery and RFC 5322 threading headers. Attachments are stored through the CAS blobstore or pinned to a Git object when migrating historical files.
+
+Unknown task subcommands and options exit non-zero with a specific diagnostic on stderr. A task comment is persisted on the card and shown by `task show`, but does not change the card's `updated` timestamp, claim, or heartbeat fields.
 
 ## Task ownership and execution policy
 

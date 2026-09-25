@@ -122,6 +122,7 @@ export function serializeTaskFile(task) {
     `blocked_ms: ${Number.isFinite(Number(task.blocked_ms)) ? Number(task.blocked_ms) : 0}`,
     `block_reason: ${JSON.stringify(task.block_reason || null)}`,
     `proof: ${JSON.stringify(task.proof || null)}`,
+    `notes: ${JSON.stringify(Array.isArray(task.notes) ? task.notes : [])}`,
     `depends_on: ${JSON.stringify(dependsOn)}`,
     `next_actor: ${JSON.stringify(task.next_actor || null)}`,
     `thread: ${JSON.stringify(task.thread || `agboard/${safeId}`)}`,
@@ -202,6 +203,7 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
       blocked_ms: Number.isFinite(Number(meta.blocked_ms)) ? Number(meta.blocked_ms) : 0,
       block_reason: meta.block_reason || null,
       proof: meta.proof || null,
+      notes: Array.isArray(meta.notes) ? meta.notes : [],
       depends_on: dependsOn,
       next_actor: meta.next_actor || null,
       thread: meta.thread || `agboard/${id}`,
@@ -671,6 +673,7 @@ export function addBoardTask(
     blocked_ms: 0,
     block_reason: null,
     proof: null,
+    notes: [],
     depends_on: Array.isArray(depends_on) ? depends_on : [],
     next_actor: next_actor || cleanOwner,
     thread: `agboard/${id}`,
@@ -771,6 +774,7 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     blocked_ms: blockedMs,
     block_reason: updates.reason ?? opts.reason ?? existingTask.block_reason ?? null,
     proof: updates.proof ?? opts.proof ?? existingTask.proof ?? null,
+    notes: Array.isArray(updates.notes) ? updates.notes : (Array.isArray(existingTask.notes) ? existingTask.notes : []),
     depends_on: Array.isArray(updates.depends_on) ? updates.depends_on : (Array.isArray(existingTask.depends_on) ? existingTask.depends_on : []),
     next_actor: updates.next_actor ?? opts.next_actor ?? (targetStatus === "done" ? null : (targetStatus === "blocked" ? "coordinator" : owner)),
     source: "bus",
@@ -806,6 +810,46 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   }
 
   return { ok: true, taskId, updates, task: updatedTask };
+}
+
+/**
+ * Append a durable note to a task without changing its activity timestamp.
+ * Notes are intentionally not notifications and do not update `updated` or heartbeat fields.
+ */
+export function appendBoardTaskNote(repoRoot, amqRoot, taskId, { text, author = "unknown", now } = {}) {
+  if (!taskId) return { ok: false, error: "taskId is required" };
+  if (!text || !String(text).trim()) return { ok: false, error: "note text is required" };
+
+  const busDir = getBusDirectory(repoRoot, amqRoot);
+  const stageDirs = ["backlog", "doing", "in_progress", "blocked", "done"];
+  let existingPath = null;
+  let existingTask = null;
+  let stage = "backlog";
+
+  for (const candidateStage of stageDirs) {
+    const candidate = path.join(busDir, candidateStage, `${taskId}.md`);
+    if (fs.existsSync(candidate)) {
+      existingPath = candidate;
+      stage = candidateStage === "doing" ? "in_progress" : candidateStage;
+      existingTask = parseTaskFile(candidate, stage);
+      break;
+    }
+  }
+
+  if (!existingTask) return { ok: false, error: "Task not found" };
+
+  const timestamp = now instanceof Date ? now.toISOString() : new Date().toISOString();
+  const note = { at: timestamp, author: String(author || "unknown"), text: String(text).trim() };
+  const notes = [...(Array.isArray(existingTask.notes) ? existingTask.notes : []), note];
+  const updatedTask = { ...existingTask, notes };
+
+  try {
+    fs.writeFileSync(existingPath, serializeTaskFile(updatedTask), "utf8");
+  } catch (error) {
+    return { ok: false, error: `failed to write note: ${error.message}` };
+  }
+
+  return { ok: true, taskId, note, notes, task: { ...updatedTask, filePath: existingPath } };
 }
 
 /**

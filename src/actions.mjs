@@ -20,6 +20,7 @@ import {
   loadBoard,
   addBoardTask,
   updateBoardTask,
+  appendBoardTaskNote,
   deleteBoardTask,
   drainTasks,
 } from "./board.mjs";
@@ -176,6 +177,49 @@ function parseTaskArgs(args = []) {
   return { flags, positional };
 }
 
+const TASK_FLAGS = {
+  list: new Set(["owner", "status", "json", "me", "from", "help"]),
+  ls: new Set(["owner", "status", "json", "me", "from", "help"]),
+  assign: new Set(["to", "owner", "title", "desc", "description", "status", "notify", "me", "from", "help"]),
+  claim: new Set(["id", "notify", "me", "from", "help"]),
+  done: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
+  complete: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
+  block: new Set(["id", "reason", "desc", "notify", "me", "from", "help"]),
+  show: new Set(["id", "me", "from", "help"]),
+  drain: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
+  next: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
+  comment: new Set(["id", "text", "note", "me", "from", "help"]),
+  note: new Set(["id", "text", "note", "me", "from", "help"]),
+};
+
+function taskUsage() {
+  return [
+    "",
+    "📋 \x1b[1mAGboard Task Coordination CLI\x1b[0m",
+    "────────────────────────────────────────────────────────────────────────────",
+    "Usage: herdr-amq task <subcommand> [options]",
+    "",
+    "Commands:",
+    "  list [--owner <h>] [--status <s>] [--json]   List all tasks",
+    "  drain [--me <h>] [--claim] [--json]          Drain backlog tasks with full descriptions",
+    "  next [--me <h>]                              Auto-claim and start next backlog task",
+    "  assign --to <h> --title <t> [--desc <d>]     Assign a new task to an agent",
+    "  claim <id> [--me <h>]                        Claim an existing task",
+    "  comment <id> --text <text> [--me <h>]         Add a durable note without changing activity",
+    "  done <id> [--me <h>] [--proof <evidence>]    Complete a task with proof",
+    "  block <id> [--me <h>] [--reason <reason>]    Mark task blocked with reason",
+    "  show <id>                                    View task details and notes",
+    "────────────────────────────────────────────────────────────────────────────",
+    "",
+  ].join("\n");
+}
+
+function failTask(message) {
+  console.error(`❌ ${message}`);
+  process.exitCode = 1;
+  return false;
+}
+
 /**
  * CLI command handler for AGboard task management:
  *   herdr-amq task list [--owner <handle>] [--status <stage>] [--json]
@@ -195,6 +239,19 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
   const repoRoot = path.resolve(path.dirname(amqRoot));
   const { flags, positional } = parseTaskArgs(rawArgs);
   const me = flags.me || flags.from || process.env.AMQ_ME || "coordinator";
+  const allowedFlags = TASK_FLAGS[subcommand];
+
+  if (!allowedFlags) {
+    return failTask(`Unknown task subcommand "${subcommand}". Run "herdr-amq task --help" for the supported commands.`);
+  }
+  const unknownFlags = Object.keys(flags).filter((flag) => !allowedFlags.has(flag));
+  if (unknownFlags.length > 0) {
+    return failTask(`Unknown option --${unknownFlags[0]} for "herdr-amq task ${subcommand}".`);
+  }
+  if (flags.help) {
+    console.log(taskUsage());
+    return true;
+  }
 
   switch (subcommand) {
     case "list":
@@ -256,14 +313,19 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         process.exit(1);
       }
 
-      const res = addBoardTask(repoRoot, amqRoot, {
-        title,
-        owner: to,
-        status,
-        description: desc,
-        from: me,
-        notify: flags.notify !== "false",
-      });
+      let res;
+      try {
+        res = addBoardTask(repoRoot, amqRoot, {
+          title,
+          owner: to,
+          status,
+          description: desc,
+          from: me,
+          notify: flags.notify !== "false",
+        });
+      } catch (error) {
+        return failTask(`Failed to write task: ${error.message}`);
+      }
 
       if (res.ok) {
         console.log(`\n✅ \x1b[32mTask created and assigned to ${to}\x1b[0m (ID: ${res.task.id})`);
@@ -283,13 +345,18 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         process.exit(1);
       }
 
-      const res = updateBoardTask(
-        repoRoot,
-        amqRoot,
-        taskId,
-        { status: "in_progress", owner: me },
-        { from: me, notify: flags.notify !== "false" }
-      );
+      let res;
+      try {
+        res = updateBoardTask(
+          repoRoot,
+          amqRoot,
+          taskId,
+          { status: "in_progress", owner: me },
+          { from: me, notify: flags.notify !== "false" }
+        );
+      } catch (error) {
+        return failTask(`Failed to write task claim: ${error.message}`);
+      }
 
       if (res.ok) {
         console.log(`\n🚀 \x1b[33mTask ${taskId} claimed by ${me}\x1b[0m (Status -> in_progress)`);
@@ -310,13 +377,18 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       }
 
       const proof = flags.proof || flags.evidence || positional.slice(1).join(" ") || "";
-      const res = updateBoardTask(
-        repoRoot,
-        amqRoot,
-        taskId,
-        { status: "done" },
-        { from: me, proof, notify: flags.notify !== "false" }
-      );
+      let res;
+      try {
+        res = updateBoardTask(
+          repoRoot,
+          amqRoot,
+          taskId,
+          { status: "done" },
+          { from: me, proof, notify: flags.notify !== "false" }
+        );
+      } catch (error) {
+        return failTask(`Failed to write task completion: ${error.message}`);
+      }
 
       if (res.ok) {
         console.log(`\n🎉 \x1b[32mTask ${taskId} marked as DONE\x1b[0m`);
@@ -337,13 +409,18 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       }
 
       const reason = flags.reason || flags.desc || positional.slice(1).join(" ") || "Blocked";
-      const res = updateBoardTask(
-        repoRoot,
-        amqRoot,
-        taskId,
-        { status: "blocked" },
-        { from: me, reason, notify: flags.notify !== "false" }
-      );
+      let res;
+      try {
+        res = updateBoardTask(
+          repoRoot,
+          amqRoot,
+          taskId,
+          { status: "blocked" },
+          { from: me, reason, notify: flags.notify !== "false" }
+        );
+      } catch (error) {
+        return failTask(`Failed to write task block: ${error.message}`);
+      }
 
       if (res.ok) {
         console.log(`\n⚠️ \x1b[31mTask ${taskId} marked as BLOCKED\x1b[0m`);
@@ -353,6 +430,29 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         console.error(`❌ Failed to block task: ${res.error}`);
         process.exit(1);
       }
+      break;
+    }
+
+    case "comment":
+    case "note": {
+      const taskId = positional[0] || flags.id;
+      const text = flags.text || flags.note || positional.slice(1).join(" ");
+      if (!taskId) {
+        console.error("❌ Task ID is required: herdr-amq task comment <taskId> --text <text>");
+        process.exit(1);
+      }
+      if (!text || !String(text).trim()) {
+        console.error("❌ Note text is required: herdr-amq task comment <taskId> --text <text>");
+        process.exit(1);
+      }
+
+      const res = appendBoardTaskNote(repoRoot, amqRoot, taskId, { text, author: me });
+      if (!res.ok) {
+        console.error(`❌ Failed to add note: ${res.error}`);
+        process.exit(1);
+      }
+      console.log(`\n📝 Note added to task ${taskId} (activity timestamp unchanged).`);
+      console.log("──────────────────────────────────────────────");
       break;
     }
 
@@ -387,17 +487,30 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       if (found.created) console.log(`Created:     ${found.created}`);
       if (found.updated) console.log(`Updated:     ${found.updated}`);
       if (found.description) console.log(`Description: ${found.description}`);
+      if (Array.isArray(found.notes) && found.notes.length > 0) {
+        console.log(`Notes:      ${found.notes.length}`);
+        for (const note of found.notes) {
+          console.log(`  - [${note.at}] ${note.author}: ${note.text}`);
+        }
+      } else {
+        console.log("Notes:      (none)");
+      }
       console.log("──────────────────────────────────────────────\n");
       break;
     }
 
     case "drain": {
       const claim = Boolean(flags.claim || flags.autoClaim);
-      const res = drainTasks(repoRoot, amqRoot, {
-        me,
-        claim,
-        notify: flags.notify !== "false",
-      });
+      let res;
+      try {
+        res = drainTasks(repoRoot, amqRoot, {
+          me,
+          claim,
+          notify: flags.notify !== "false",
+        });
+      } catch (error) {
+        return failTask(`Failed to write task drain: ${error.message}`);
+      }
 
       if (flags.json) {
         console.log(JSON.stringify(res, null, 2));
@@ -453,20 +566,7 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
     }
 
     default:
-      console.log(`\n📋 \x1b[1mAGboard Task Coordination CLI\x1b[0m`);
-      console.log("────────────────────────────────────────────────────────────────────────────");
-      console.log("Usage: herdr-amq task <subcommand> [options]");
-      console.log("\nCommands:");
-      console.log("  list [--owner <h>] [--status <s>] [--json]   List all tasks");
-      console.log("  drain [--me <h>] [--claim] [--json]           Drain backlog tasks with full descriptions");
-      console.log("  next [--me <h>]                               Auto-claim and start next backlog task");
-      console.log("  assign --to <h> --title <t> [--desc <d>]      Assign a new task to an agent");
-      console.log("  claim <id> [--me <h>]                         Claim an existing task");
-      console.log("  done <id> [--me <h>] [--proof <evidence>]     Complete a task with proof");
-      console.log("  block <id> [--me <h>] [--reason <reason>]     Mark task blocked with reason");
-      console.log("  show <id>                                     View task details");
-      console.log("────────────────────────────────────────────────────────────────────────────\n");
-      break;
+      return failTask(`Unknown task subcommand "${subcommand}".`);
   }
 }
 
