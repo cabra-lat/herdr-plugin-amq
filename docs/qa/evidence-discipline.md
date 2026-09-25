@@ -42,3 +42,19 @@ A test that has never been broken is recorded here as *unverified*, not as evide
 in this repository before this discipline existed have not each been re-run against a
 constructed break; that is the honest state of the rest of the suite, and it is the reason the
 rule exists.
+
+## Message-id resolution repair: live send in the previously-broken form
+
+`amq reply --id` previously failed to resolve a p2p sender's id, so a reply could go undelivered
+while the tool's behaviour was consistent with a wrong id. The repair normalises the
+dot-millisecond wire form against the dashed Maildir filename.
+
+- **Failure case is loud:** `amq reply --id task_NOT_A_REAL_ID --body ...` exits `3`, prints
+  `message not found: task_NOT_A_REAL_ID` and writes nothing. Observed live.
+- **Broken form, live, to a real recipient:** the reply that recorded this entry was itself sent
+  using the dot-millisecond form of a real message id
+  (`2026-09-25T22.14.46.977Z_pid730179_a8c5ea20`) and read back from the recipient's outbox, so
+  the verification exercises the path that was broken rather than a clean instance of it.
+- **Recipient identity, not just delivery:** the check is that the message landed in the
+  original sender's outbox, because a resolution repair that finds the right message and sends
+  it to the wrong party is a new defect wearing the old fix's clothes.

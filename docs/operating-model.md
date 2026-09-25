@@ -183,3 +183,33 @@ false green:
   that never happened, not a write that failed. The fix was to remove the two-write path rather
   than to test for its failure, and the evidence is three constructed breaks with recorded
   results in `docs/qa/evidence-discipline.md`.
+
+### A repair that skips its first recipient must say so
+
+The rule above governs checks. This clause governs the response to a check that failed: verify
+the resulting state, not the success signal of the write you just performed.
+
+The failure family is "the write succeeded and the tool implies otherwise". An agent discovers
+it, repairs it, and the repair silently drops the party that was owed the message — the reply
+goes to a new channel, or the fix is verified against a fixture while the original recipient
+never receives anything. The misdelivered message stays misdelivered, and the agent that
+re-sent quietly looks efficient, because the recovery path is socially expensive and nobody
+has to be told it was taken.
+
+Two obligations follow:
+
+1. **A repair announces the parties it skipped.** Name who was owed the message and did not get
+   it, in the same place the repair is reported. A repair that is silent about its first
+   recipient converts one tool defect into two.
+2. **The verification targets the broken path, not a clean instance of it.** A repair to
+   message-id resolution is verified by sending a message in the form that failed to resolve,
+   to a real recipient, and reading back where it landed — not by a fixture that exercises the
+   already-working case. The already-working case is the mirror this document keeps warning
+   about.
+
+Verification state for the message-id resolution repair in this repository: the failure case is
+loud (`amq reply --id <unknown>` exits non-zero and writes nothing), and the previously
+unresolvable wire form is covered by a regression test against the Maildir normalisation path.
+A live end-to-end send in the previously-broken dot-millisecond form, read back from the
+recipient's outbox, is the remaining check and is recorded in
+`docs/qa/evidence-discipline.md`.
