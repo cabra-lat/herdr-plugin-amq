@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { execCmd, getHerdrBin, getAgentHandles, getRepoRootFromAmq } from "./config.mjs";
 import { scanAgentBriefs, getAgentBrief, saveAgentBrief } from "./briefs.mjs";
 import { ingestAttachment } from "./blobs.mjs";
-import { sendMaildirMessage, replyMaildirMessage, drainMaildir, ensureAgentMailbox, findMessageForRecipient, isSafeMailIdentifier, readMaildirMessageFile, writeBoundedFileAtomic } from "./protocol.mjs";
+import { sendMaildirMessage, replyMaildirMessage, drainMaildir, ensureAgentMailbox, findMessageForRecipient, isSafeMailIdentifier, readMaildirMessageFile, writeBoundedFileAtomic, computeCanonicalThread } from "./protocol.mjs";
 import { renderLocalTemplate } from "./templates.mjs";
 
 const PALETTE = [
