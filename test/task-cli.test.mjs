@@ -31,6 +31,30 @@ function run(root, args) {
   });
 }
 
+/**
+ * Read the card itself, not the CLI's report of it. The frontmatter is the
+ * independent observable: a write that silently did nothing still prints success.
+ */
+function readCard(amqRoot, id) {
+  for (const stage of ["backlog", "doing", "in_progress", "blocked", "done"]) {
+    const file = path.join(amqRoot, "bus", stage, `${id}.md`);
+    if (!fs.existsSync(file)) continue;
+    const front = fs.readFileSync(file, "utf8").split(/^---$/m)[1] || "";
+    const card = {};
+    for (const line of front.split("\n")) {
+      const match = line.match(/^([a-z_]+):\s*(.*)$/);
+      if (match) card[match[1]] = match[2].replace(/^["']|["']$/g, "");
+    }
+    if (/^\[.*\]$/.test(card.depends_on || "")) {
+      card.depends_on = card.depends_on.slice(1, -1).split(",").map((item) => item.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    } else if (!card.depends_on) {
+      card.depends_on = [];
+    }
+    return card;
+  }
+  throw new Error(`card ${id} not found in the bus`);
+}
+
 test("task CLI fails loudly for unknown subcommands, flags, and missing arguments", () => {
   const { root, amqRoot } = makeFixture();
   try {
@@ -278,6 +302,62 @@ test("create and assign are one operation under two names", () => {
     const noOwner = run(root, ["task", "assign", "--me", "coordinator", "--title", "No owner"]);
     assert.notEqual(noOwner.status, 0);
     assert.match(noOwner.stderr, /Target owner is required/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reassign updates owner, next actor and dependencies on a live card, and the card is the observable", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const created = run(root, ["task", "create", "--me", "coordinator", "--title", "Live card", "--notify", "false"]);
+    const id = created.stdout.match(/ID: (task_[0-9a-z_]+)/)?.[1];
+    run(root, ["task", "claim", id, "--me", "qa", "--notify", "false"]);
+
+    const before = readCard(amqRoot, id);
+    const res = run(root, [
+      "task", "reassign", id, "--me", "coordinator",
+      "--to", "testkit",
+      "--next-actor", "npc-body",
+      "--depends-on", "task_dep_a,task_dep_b",
+      "--notify", "false",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /reassigned to testkit/);
+
+    // Assert on the CARD, not on the CLI's own success line. If the metadata write
+    // were skipped the CLI would still exit 0 and still print success, and only
+    // this assertion would notice.
+    const after = readCard(amqRoot, id);
+    assert.equal(after.owner, "testkit");
+    assert.equal(after.next_actor, "npc-body");
+    assert.deepEqual(after.depends_on, ["task_dep_a", "task_dep_b"]);
+
+    // A dependency edit is not a claim: status, claim count and the liveness clock
+    // must not move, or the stall detector can be reset by editing metadata.
+    assert.equal(after.status, before.status, "status must not change");
+    assert.equal(after.claims, before.claims, "claims must not increment");
+    assert.equal(after.last_heartbeat_at, before.last_heartbeat_at, "heartbeat must not move");
+
+    // Clearing is explicit, not a side effect of an empty flag value.
+    const cleared = run(root, ["task", "reassign", id, "--me", "coordinator", "--to", "testkit", "--clear-depends-on", "--notify", "false"]);
+    assert.equal(cleared.status, 0, cleared.stderr);
+    assert.deepEqual(readCard(amqRoot, id).depends_on, []);
+
+    // The rendered read path shows the change, not just the raw card.
+    const shown = run(root, ["task", "show", id, "--me", "coordinator"]);
+    assert.equal(shown.status, 0, shown.stderr);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reassign on a missing card fails loudly and prints no success line", () => {
+  const { root } = makeFixture();
+  try {
+    const res = run(root, ["task", "reassign", "task_does_not_exist", "--me", "coordinator", "--to", "qa", "--next-actor", "spotter", "--notify", "false"]);
+    assert.notEqual(res.status, 0, "a partial write must not exit 0");
+    assert.doesNotMatch(res.stdout, /reassigned to/, "no success line for a failed write");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -190,7 +190,7 @@ const TASK_FLAGS = {
   complete: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
   block: new Set(["id", "reason", "desc", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
   heartbeat: new Set(["id", "me", "from", "help"]),
-  reassign: new Set(["id", "to", "owner", "next-actor", "notify", "me", "from", "help"]),
+  reassign: new Set(["id", "to", "owner", "next-actor", "depends-on", "clear-depends-on", "notify", "me", "from", "help"]),
   show: new Set(["id", "me", "from", "help"]),
   drain: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
   next: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
@@ -213,7 +213,8 @@ function taskUsage() {
     "  assign --to <h> --title <t> [--desc <d>]     Assign a new task to an agent",
     "  claim <id> [--me <h>]                        Claim an existing task",
     "  heartbeat <id> [--me <h>]                    Record liveness without changing the card",
-    "  reassign <id> --to <h> [--me <h>]            Change a card's owner",
+    "  reassign <id> --to <h> [--next-actor <h|none>] [--depends-on <id,...>|--clear-depends-on]",
+    "                                            Change a card's owner, next actor or dependencies",
     "  comment <id> --text <text> [--me <h>]         Add a durable note without changing activity",
     "  done <id> [--me <h>] [--proof <evidence>]    Complete a task with proof",
     "  block <id> [--reason <r>] [--next-actor <h>] [--depends-on <id,...>]",
@@ -540,13 +541,20 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         console.error("❌ Target owner is required: herdr-amq task reassign <taskId> --to <handle>");
         process.exit(1);
       }
+
+      // Owner, next actor and dependencies go in ONE checked write. They used to be
+      // two writes with the second one's result ignored, so a failed metadata write
+      // still printed "Task X reassigned to Y": a success line for a partial
+      // result, leaving a card with an owner nobody asked for. One write makes that
+      // failure mode impossible instead of merely detected.
+      const updates = { owner: to };
+      if (flags["next-actor"] !== undefined) updates.next_actor = nextActorFlag(flags["next-actor"]);
+      if (flags["clear-depends-on"]) updates.depends_on = [];
+      else if (flags["depends-on"] !== undefined) updates.depends_on = listFlag(flags["depends-on"]) || [];
+
       let res;
       try {
-        res = reassignBoardTask(repoRoot, amqRoot, taskId, {
-          owner: to,
-          from: me,
-          notify: flags.notify !== "false",
-        });
+        res = updateBoardTask(repoRoot, amqRoot, taskId, updates, { from: me, notify: flags.notify !== "false" });
       } catch (error) {
         return failTask(`Failed to write task reassignment: ${error.message}`);
       }
@@ -554,10 +562,10 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         console.error(`❌ Failed to reassign task: ${res.error}`);
         process.exit(1);
       }
-      if (flags["next-actor"] !== undefined) {
-        updateBoardTask(repoRoot, amqRoot, taskId, { next_actor: nextActorFlag(flags["next-actor"]) }, { from: me, notify: false });
-      }
+
       console.log(`\n🔀 Task ${taskId} reassigned to ${to}.`);
+      if (res.task.next_actor) console.log(`Next actor: ${res.task.next_actor}`);
+      if (res.task.depends_on?.length) console.log(`Depends on: ${res.task.depends_on.join(", ")}`);
       console.log("──────────────────────────────────────────────");
       break;
     }

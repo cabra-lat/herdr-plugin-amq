@@ -20,7 +20,7 @@ herdr-amq task create --title "<title>" --me <handle> [--owner <h>] [--desc <tex
 herdr-amq task assign --to <handle> --title <title>
 herdr-amq task claim <task-id> --me <handle>
 herdr-amq task heartbeat <task-id> --me <handle>
-herdr-amq task reassign <task-id> --to <handle> [--next-actor <handle>]
+herdr-amq task reassign <task-id> --to <handle> [--next-actor <handle|none>] [--depends-on <id,...>|--clear-depends-on]
 herdr-amq task comment <task-id> --me <handle> --text "Progress note; does not count as activity"
 herdr-amq task done <task-id> --proof "Verification evidence"
 herdr-amq task block <task-id> --reason "Waiting on an external dependency" \
@@ -37,6 +37,8 @@ Unknown task subcommands and options exit non-zero with a specific diagnostic on
 
 `--text`, `--reason` and `--desc` accept `@path` and read the file, matching `amq send --body` and `amq reply --body`; a path that cannot be read is a non-zero error rather than a stored literal.
 
+`task reassign` writes the owner, the next actor and the dependency list in ONE checked write, so a card can never end up with an owner that was applied and a next actor that silently was not. A metadata edit is not activity: it does not change the stage, does not increment `claims`, and does not move the liveness clock, so dependencies cannot be used to reset the stall detector.
+
 `task show` renders every field the CLI can write, including `block_reason`, `proof`, `next_actor`, `depends_on` and the heartbeat author. A field that is written but never displayed is indistinguishable from a dropped write, so the read path and the write path are kept in step deliberately.
 
 ## Liveness, triage and metadata
@@ -46,7 +48,7 @@ Unknown task subcommands and options exit non-zero with a specific diagnostic on
 - A blocked card that carries a `reason` is considered triaged and is excluded from `blocked_cards`/`blocked_age`; only cards with no reason alert, and the message reports the untriaged count and how many triaged cards were excluded. Record the triage in one call so the fields and the prose cannot disagree:
   `herdr-amq task block <id> --reason "Waiting on spotter for the numeric capture" --next-actor spotter --depends-on task_xyz`
 - `next_actor` is never inferred from a reason string. Blocking a card without `--next-actor` leaves the field as it was, and a card that has never had one reports none: an absent next actor is better than a confidently wrong one. Pass `--next-actor none` to clear a stale value.
-- `task reassign <id> --to <handle>` changes the owner without churning the card id or its claim history.
+- `task reassign <id> --to <handle> [--next-actor <h>] [--depends-on <id,...>]` changes the owner, next actor or dependencies without churning the card id or its claim history.
 
 ## Task ownership and execution policy
 
