@@ -193,3 +193,47 @@ test("Native Maildir reply with RFC 5322 References chaining", () => {
     fs.rmSync(tmpAmq, { recursive: true, force: true });
   }
 });
+
+test("every id spelling resolves to the same message AND the same counterpart, with a bogus-id control", () => {
+  // The form that failed live: dots for EVERY time separator, not just the
+  // milliseconds. Resolution is only half the contract — a normaliser that finds
+  // the right message and hands the reply to a default recipient is a new defect
+  // wearing the fix's clothes.
+  //
+  // The original sender is deliberately NOT the default reply target: if the
+  // fixture's sender happens to be the fallback, a build that always replies to
+  // the default passes, which is a fixed answer reading as a passing answer.
+  const tmpAmq = fs.mkdtempSync(path.join(os.tmpdir(), "amq-id-spelling-test-"));
+  try {
+    const sent = sendMaildirMessage(tmpAmq, {
+      from: "qa",
+      to: ["spotter"],
+      subject: "Spelling variants",
+      body: "Original.",
+    });
+    const allDots = sent.id.replace(/T(\d{2})-(\d{2})-(\d{2})/, "T$1.$2.$3");
+    const colons = sent.id.replace(/T(\d{2})-(\d{2})-(\d{2})/, "T$1:$2:$3");
+    assert.notEqual(allDots, sent.id, "the all-dots spelling must differ from the canonical id");
+    assert.notEqual(colons, sent.id, "the colon spelling must differ from the canonical id");
+
+    for (const [label, id] of [["canonical", sent.id], ["all-dots", allDots], ["colon-separated", colons]]) {
+      const found = findMessageById(tmpAmq, id);
+      assert.ok(found, `${label} id did not resolve`);
+      // Same object, not merely a hit: same message, same sender.
+      assert.equal(found.header.id, sent.id, `${label} resolved to a different message`);
+      assert.equal(found.header.from, "qa", `${label} resolved to a different sender`);
+
+      // Same object on the write side: the reply must go back to THIS message's
+      // sender, which is not the tool's default reply target.
+      const reply = replyMaildirMessage(tmpAmq, { from: "spotter", replyToId: id, body: `via ${label}` });
+      assert.equal(reply.ok, true, `${label} reply failed`);
+      assert.deepEqual(reply.to, ["qa"], `${label} reply went to the wrong recipient`);
+    }
+
+    // Negative control: an unknown id resolves to nothing rather than to something.
+    assert.equal(findMessageById(tmpAmq, "2020-01-01T00-00-00-000Z_pid1_deadbeef"), null);
+    assert.equal(findMessageById(tmpAmq, "not-an-id-at-all"), null);
+  } finally {
+    fs.rmSync(tmpAmq, { recursive: true, force: true });
+  }
+});

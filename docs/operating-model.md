@@ -207,9 +207,13 @@ Two obligations follow:
    already-working case. The already-working case is the mirror this document keeps warning
    about.
 
-Verification state for the message-id resolution repair in this repository: the failure case is
-loud (`amq reply --id <unknown>` exits non-zero and writes nothing), and the previously
-unresolvable wire form is covered by a regression test against the Maildir normalisation path.
-A live end-to-end send in the previously-broken dot-millisecond form, read back from the
-recipient's outbox, is the remaining check and is recorded in
-`docs/qa/evidence-discipline.md`.
+Verification state for the message-id resolution repair, stated precisely because the first
+version of this paragraph was wrong. `messageIdsMatch` in `src/protocol.mjs` normalises `[:.]`
+to `-`, so this repository's resolver accepts the canonical Maildir id, the colon-separated
+spelling and the all-dots spelling, and resolves all three to the same message. `amq reply`, the
+standalone compiled binary at `~/.local/bin/amq`, is a **different build**: live today it exited
+`3` with `message not found` for an all-dots id. It is loud rather than silent, and it is not
+repairable from this repository, so it is recorded as a gap with an owner to be found rather than
+described as covered. The earlier claim that the wire form was "covered by a regression test" was
+true of the filename form and was being read as a claim about `amq reply`, which it never
+evidenced.
