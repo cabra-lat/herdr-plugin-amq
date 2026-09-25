@@ -24,7 +24,7 @@
     "test:coverage": "mkdir -p coverage && HERDR_DISABLE_PROMPT=1 node --test --experimental-test-coverage --test-reporter=spec --test-reporter=lcov --test-reporter-destination=stdout --test-reporter-destination=coverage/lcov.info test/*.test.mjs",
     "test:e2e": "HERDR_DISABLE_PROMPT=1 node --test test/e2e/*.test.mjs",
     "test:visual": "npm run test:e2e",
-    "check": "node --check bin/herdr-amq.mjs src/*.mjs src/web/app.js test/*.test.mjs test/e2e/*.mjs",
+    "check": "node --check bin/herdr-amq.mjs src/*.mjs src/web/*.js test/*.test.mjs test/e2e/*.mjs",
     "test:security": "node --test test/security.test.mjs",
     "coverage:summary": "node tools/coverage-summary.mjs",
     "status": "node bin/herdr-amq.mjs status",

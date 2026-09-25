@@ -102,7 +102,7 @@ function seedMessage(agentDir) {
       id: "2026-09-24T08-05-00-000Z_fixture-message-3",
       from: "range",
       created: "2026-09-24T08:05:00.000Z",
-      body: `Latest gate evidence is ready.\n\nArena refresh: PASS\nIntegrated Gunsmith preview: PASS\nSpawn adapter: PASS\nHeadless screenshot: PASS\nMobile journey: PASS\n\nThe final gate is now the only remaining action.`,
+      body: `Latest gate evidence is ready.\n\nArena refresh: PASS\nIntegrated Gunsmith preview: PASS\nSpawn adapter: PASS\nHeadless screenshot: PASS\nMobile journey: PASS\n\nSee https://example.com/docs for the verification notes.\nUnicode boundary: préhttps://not-a-link.example and https://unicode.example/café.\nMultiple URLs: https://one.example/a and https://two.example/b.\nTrailing punctuation: https://trailing.example/path.\nMarkdown label: [documentation](https://markdown.example/path).\nInline code: \`https://inline.example/code\`.\n\n\`\`\`\nhttps://fenced.example/code\n\`\`\`\n\nThe final gate is now the only remaining action.`,
     },
   ];
   for (const message of messages) {

@@ -1,5 +1,9 @@
 // AGmail Client Application
 (function () {
+  const i18n = window.agmailI18n;
+  const t = i18n?.t || ((key) => key);
+  const setLocale = i18n?.setLocale || (() => false);
+  const applyTranslations = i18n?.applyTranslations || (() => {});
   const state = {
     activeAccount: "all",
     activePersona: "user",
@@ -30,6 +34,8 @@
     boardSearchQuery: "",
     selectedTaskId: null,
     activeAgentHandle: null,
+    mailError: null,
+    locale: i18n?.locale || "en",
   };
 
   function getActiveSender(selected = "") {
@@ -71,6 +77,7 @@
   const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
   const readingLayoutInputs = [...document.querySelectorAll('input[name="reading-layout"]')];
   const themeInputs = [...document.querySelectorAll('input[name="theme"]')];
+  const languageSelect = document.getElementById("language-select");
 
   // Account Menu Elements
   const userProfileBtn = document.getElementById("user-profile-btn");
@@ -291,6 +298,7 @@
     themeInputs.forEach((input) => {
       input.checked = input.value === state.themePreference;
     });
+    if (languageSelect) languageSelect.value = state.locale;
   }
 
   function openSettings() {
@@ -317,9 +325,32 @@
     event.preventDefault();
     const readingLayout = readingLayoutInputs.find((input) => input.checked)?.value || "split";
     const theme = themeInputs.find((input) => input.checked)?.value || "system";
+    if (languageSelect && setLocale(languageSelect.value)) state.locale = languageSelect.value;
     applyReadingLayout(readingLayout);
     applyThemePreference(theme);
     closeSettings();
+  });
+  languageSelect?.addEventListener("change", () => {
+    if (setLocale(languageSelect.value)) state.locale = languageSelect.value;
+  });
+  window.addEventListener("agmail-locale-changed", (event) => {
+    state.locale = event.detail?.locale || i18n?.locale || state.locale;
+    applyTranslations();
+    // Static labels are updated by applyTranslations; refresh already-rendered
+    // data surfaces too, without fetching or changing the user's selection.
+    renderAccountDropdown(state.agents);
+    renderPresenceList(state.agents);
+    renderList();
+    // These projections may be hidden but already loaded; refresh them too so
+    // switching locale never leaves stale English markup in a cached view.
+    renderBoard();
+    renderCoordinatorMetrics();
+    if (state.currentView === "panes" || state.lastPanes) renderPaneCards();
+    // Doorbell status/cooldown/log are cached metrics data too; refresh them
+    // even when Metrics is hidden so a locale switch cannot leave stale text.
+    fetchCoordinatorDoorbellSettings();
+    if (state.activeAgentHandle && agentActivityDialog?.open) renderAgentActivity();
+    fetchStatus();
   });
   settingsBackdrop.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -355,10 +386,10 @@
 
       if (data.daemonRunning) {
         bridgeStatusPill.className = "status-pill status-running";
-        bridgeStatusText.textContent = `Bridge: Running (${data.pid})`;
+        bridgeStatusText.textContent = `${t("bridge.running")} (${data.pid})`;
       } else {
         bridgeStatusPill.className = "status-pill status-stopped";
-        bridgeStatusText.textContent = "Bridge: Stopped (click to start)";
+        bridgeStatusText.textContent = t("bridge.stopped");
       }
 
       inboxUnreadCountEl.textContent = data.totalUnread || 0;
@@ -369,7 +400,7 @@
         storageFillEl.style.width = `${Math.max(3, pct)}%`;
       }
     } catch {
-      bridgeStatusText.textContent = "Bridge: Offline";
+      bridgeStatusText.textContent = t("bridge.offline");
     }
   }
 
@@ -426,6 +457,7 @@
       const res = await fetch(`${endpoint}?${params}`);
       const data = await res.json();
       if (data && typeof data === "object" && "items" in data) {
+        state.mailError = null;
         state.items = data.items || [];
         state.total = data.total || 0;
         state.page = data.page || 1;
@@ -438,7 +470,8 @@
       }
       renderList();
     } catch (e) {
-      mailListEl.innerHTML = `<div class="empty-state">Error loading transmissions: ${e.message}</div>`;
+      state.mailError = e.message || "unknown error";
+      renderList();
     }
   }
 
@@ -451,8 +484,8 @@
         <span class="account-item-left">
           <span class="item-avatar" style="background:var(--primary-blue);color:#fff;">👑</span>
           <span class="account-item-copy">
-            <strong class="account-item-name">God Mode</strong>
-            <span class="account-item-role">All accounts · sending as user</span>
+            <strong class="account-item-name">${escapeHtml(t("account.godMode"))}</strong>
+            <span class="account-item-role">${escapeHtml(t("account.allAccounts"))}</span>
             <span class="account-item-address">amq://all-agents</span>
           </span>
         </span>
@@ -466,10 +499,10 @@
       const role = profile.role || "Swarm Agent";
       const emoji = profile.emoji || agent.handle.slice(0, 1).toUpperCase();
       const color = safeCssColor(profile.color, "#1a73e8");
-      const unreadBadge = agent.unreadCount > 0 ? `<span class="badge">${agent.unreadCount} new</span>` : "";
+      const unreadBadge = agent.unreadCount > 0 ? `<span class="badge">${agent.unreadCount} ${escapeHtml(t("account.new"))}</span>` : "";
 
       html += `
-        <button class="account-item-btn ${active ? "active" : ""}" data-handle="${escapeHtml(agent.handle)}" aria-current="${active ? "true" : "false"}" aria-label="Switch to ${escapeHtml(name)}">
+        <button class="account-item-btn ${active ? "active" : ""}" data-handle="${escapeHtml(agent.handle)}" aria-current="${active ? "true" : "false"}" aria-label="${escapeHtml(`${t("account.switchTo")} ${name}`)}">
           <span class="account-item-left">
             <span class="item-avatar" style="background:${escapeHtml(color)};color:#fff;">${escapeHtml(emoji)}</span>
             <span class="account-item-copy">
@@ -562,12 +595,12 @@
     const observedMs = agent?.herdrObservedAt ? Date.parse(agent.herdrObservedAt) : NaN;
     const stale = live && Number.isFinite(observedMs) && Date.now() - observedMs > 120000;
     const views = {
-      working: { label: "Working", description: "Active turn", tone: "working" },
-      idle: { label: "Idle", description: "Turn ended · ready for input", tone: "idle" },
-      done: { label: "Done", description: "Turn completed · ready for input", tone: "done" },
-      blocked: { label: "Blocked", description: "Waiting for intervention", tone: "blocked" },
-      error: { label: "Needs attention", description: "State error", tone: "blocked" },
-      offline: { label: "Offline", description: "No live Herdr state", tone: "offline" },
+      working: { label: t("status.working"), description: t("status.activeTurn"), tone: "working" },
+      idle: { label: t("status.idle"), description: t("status.turnEnded"), tone: "idle" },
+      done: { label: t("status.done"), description: t("status.turnCompleted"), tone: "done" },
+      blocked: { label: t("status.blocked"), description: t("status.waitingIntervention"), tone: "blocked" },
+      error: { label: t("status.needsAttention"), description: t("status.stateError"), tone: "blocked" },
+      offline: { label: t("status.offline"), description: t("status.noLiveState"), tone: "offline" },
     };
     return { status, stale, ...(views[status] || views.offline) };
   }
@@ -674,7 +707,7 @@
     const activity = agent.herdrActivity || {};
     const title = String(activity.title || activity.terminalTitle || agent.herdrTitle || "").trim();
     const observedAt = activity.observedAt || agent.herdrObservedAt;
-    const taskStatus = task ? task.status.replaceAll("_", " ") : "No active task assigned";
+    const taskStatus = task ? task.status.replaceAll("_", " ") : t("panes.noTask");
     const taskTone = { in_progress: "working", blocked: "blocked", done: "done", backlog: "idle" }[task?.status] || "offline";
 
     agentActivityAvatar.textContent = profile.emoji || handle.slice(0, 1).toUpperCase();
@@ -686,7 +719,7 @@
     agentActivityStatus.title = statusView.description;
     agentActivityStatus.className = `agent-activity-status ${statusView.tone}`;
     agentActivityHeadline.textContent = agentActivityText(agent, task);
-    agentActivityTask.textContent = task?.title || "No board task is currently assigned to this agent.";
+    agentActivityTask.textContent = task?.title || t("activity.noTask");
     agentActivityTaskStatus.textContent = taskStatus;
     agentActivityTaskStatus.className = `agent-task-status ${taskTone}`;
     const liveModel = agent.runtimeModel || activity.model || "";
@@ -954,6 +987,10 @@
   // ─── Mail List & Thread Rendering ──────────────────────────────────────────
 
   function renderList() {
+    if (state.mailError) {
+      mailListEl.innerHTML = `<div class="empty-state">${escapeHtml(`${t("mail.error")}: ${state.mailError}`)}</div>`;
+      return;
+    }
     let filtered = [...state.items];
 
     // Filter by category
@@ -977,7 +1014,7 @@
       state.page = 1;
     }
 
-    const countLabel = state.viewMode === "threads" ? "threads" : "messages";
+    const countLabel = state.viewMode === "threads" ? t("mail.threads") : t("mail.messages");
     const start = state.total === 0 ? 0 : (state.page - 1) * state.pageSize + 1;
     const end = Math.min(state.page * state.pageSize, state.total);
     pageInfoEl.textContent = state.total > 0 ? `${start}-${end} of ${state.total.toLocaleString()} ${countLabel}` : `0 ${countLabel}`;
@@ -986,10 +1023,10 @@
     if (nextPageBtn) nextPageBtn.disabled = state.page >= state.totalPages;
 
     const currentPersona = getActiveSender();
-    filterInfoEl.textContent = `Account: ${state.activeAccount} • Persona: ${currentPersona} • Mode: ${state.viewMode}`;
+    filterInfoEl.textContent = `${t("mail.account")}: ${state.activeAccount} • ${t("mail.persona")}: ${currentPersona} • ${t("mail.mode")}: ${state.viewMode}`;
 
     if (!filtered.length) {
-      mailListEl.innerHTML = `<div class="empty-state">No transmissions found matching criteria.</div>`;
+      mailListEl.innerHTML = `<div class="empty-state">${escapeHtml(t("mail.empty"))}</div>`;
       return;
     }
 
@@ -1485,8 +1522,27 @@
     html = html.replace(/^([0-9]+\.|\([0-9]+\))[ \t]+(.*$)/gm, '<div class="md-list-item"><span class="md-list-num">$1</span> <span>$2</span></div>');
     html = html.replace(/^[-*+][ \t]+(.*$)/gm, '<div class="md-bullet-item">• $1</div>');
 
-    // 10. Links in prose: [text](url)
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="md-link">$1</a>');
+    // 10. Links in prose: [text](url). Protect existing anchors while
+    // linkifying bare URLs so a URL used as link text is never nested.
+    const markdownLinks = [];
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
+      const token = `\x00AMQ_MD_LINK_${markdownLinks.length}\x00`;
+      markdownLinks.push(`<a href="${url}" target="_blank" rel="noopener" class="md-link">${label}</a>`);
+      return token;
+    });
+    html = html.replace(/(?<![\p{L}\p{N}_"'=])((?:https?:\/\/)[^\s<]+)/giu, (match, rawUrl) => {
+      let url = rawUrl;
+      let suffix = "";
+      while (/[.,!?;:)}\]]$/.test(url)) {
+        suffix = url.slice(-1) + suffix;
+        url = url.slice(0, -1);
+      }
+      if (!url) return match;
+      return `<a href="${url}" target="_blank" rel="noopener" class="md-link">${url}</a>${suffix}`;
+    });
+    for (let linkIndex = 0; linkIndex < markdownLinks.length; linkIndex++) {
+      html = html.replace(`\x00AMQ_MD_LINK_${linkIndex}\x00`, () => markdownLinks[linkIndex]);
+    }
 
     // 11. Paragraph breaks in prose
     html = html.replace(/\n{2,}/g, '<div class="md-para-break"></div>');
@@ -2689,9 +2745,9 @@
       if (!data.ok) return;
       coordinatorDoorbellEnabled.checked = Boolean(data.config?.enabled);
       const cooldown = formatMetricDuration(data.config?.cooldownMs);
-      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = data.config?.enabled ? "Enabled · deduplicated with cooldown" : "Disabled";
-      if (coordinatorDoorbellCooldown) coordinatorDoorbellCooldown.textContent = `Cooldown: ${cooldown}`;
-      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : "No coordinator doorbells recorded.";
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = data.config?.enabled ? t("metrics.doorbellEnabled") : t("metrics.doorbellDisabled");
+      if (coordinatorDoorbellCooldown) coordinatorDoorbellCooldown.textContent = `${t("metrics.cooldown")}: ${cooldown}`;
+      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : t("metrics.noDoorbells");
     } catch (err) {
       if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = `Unavailable: ${err.message}`;
     }
@@ -2701,28 +2757,28 @@
     if (!coordinatorMetricsGrid || !coordinatorAlerts) return;
     const metrics = state.board?.coordinator;
     if (!metrics) {
-      coordinatorMetricsGrid.innerHTML = `<div class="kanban-empty">Coordinator metrics are unavailable.</div>`;
+      coordinatorMetricsGrid.innerHTML = `<div class="kanban-empty">${escapeHtml(t("common.unavailable"))}</div>`;
       coordinatorAlerts.innerHTML = "";
       return;
     }
     const byStatus = metrics.agents?.byStatus || {};
     const stages = metrics.cards?.byStage || {};
     const cards = [
-      ["Working agents", byStatus.working ?? 0],
-      ["Blocked agents", byStatus.blocked ?? 0],
-      ["Stopped agents", byStatus.stopped ?? 0],
-      ["Idle agents", byStatus.idle ?? 0],
-      ["Backlog cards", stages.backlog ?? 0],
-      ["Doing cards", stages.doing ?? 0],
-      ["Review cards", stages.review ?? 0],
-      ["Blocked cards", stages.blocked ?? 0],
-      ["Oldest queue", formatMetricDuration(metrics.queue?.oldestAgeMs)],
-      ["Retries", metrics.retries?.count ?? 0],
-      ["Executable jobs queued", metrics.jobs?.queueDepth ?? 0],
-      ["Executable jobs active", metrics.jobs?.active ?? 0],
-      ["Job outcomes", `S${metrics.jobs?.outcomes?.succeeded ?? 0} / F${metrics.jobs?.outcomes?.failed ?? 0} / C${metrics.jobs?.outcomes?.cancelled ?? 0}`],
-      ["Job concurrency", `${metrics.jobs?.concurrency?.current ?? 0} / ${metrics.jobs?.concurrency?.max ?? 0}`],
-      ["Metrics history samples", state.board?.coordinatorHistory?.samples?.length ?? 0],
+      [t("metrics.workingAgents"), byStatus.working ?? 0],
+      [t("metrics.blockedAgents"), byStatus.blocked ?? 0],
+      [t("metrics.stoppedAgents"), byStatus.stopped ?? 0],
+      [t("metrics.idleAgents"), byStatus.idle ?? 0],
+      [t("metrics.backlogCards"), stages.backlog ?? 0],
+      [t("metrics.doingCards"), stages.doing ?? 0],
+      [t("metrics.reviewCards"), stages.review ?? 0],
+      [t("metrics.blockedCards"), stages.blocked ?? 0],
+      [t("metrics.oldestQueue"), formatMetricDuration(metrics.queue?.oldestAgeMs)],
+      [t("metrics.retries"), metrics.retries?.count ?? 0],
+      [t("metrics.jobsQueued"), metrics.jobs?.queueDepth ?? 0],
+      [t("metrics.jobsActive"), metrics.jobs?.active ?? 0],
+      [t("metrics.jobOutcomes"), `S${metrics.jobs?.outcomes?.succeeded ?? 0} / F${metrics.jobs?.outcomes?.failed ?? 0} / C${metrics.jobs?.outcomes?.cancelled ?? 0}`],
+      [t("metrics.jobConcurrency"), `${metrics.jobs?.concurrency?.current ?? 0} / ${metrics.jobs?.concurrency?.max ?? 0}`],
+      [t("metrics.history"), state.board?.coordinatorHistory?.samples?.length ?? 0],
     ];
     coordinatorMetricsGrid.innerHTML = cards.map(([label, value]) =>
       `<div class="coordinator-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`
@@ -2731,7 +2787,7 @@
     coordinatorAlerts.innerHTML = alerts.length
       ? alerts.map((alert) => `<div class="coordinator-alert severity-${escapeHtml(alert.severity || "warning")}"><strong>${escapeHtml(alert.id)}</strong><span>${escapeHtml(alert.message)}</span><small>Next: ${escapeHtml(alert.recommendedAction || "Inspect coordinator dashboard.")}</small></div>`).join("")
       : `<div class="coordinator-alert coordinator-alert-clear"><strong>Clear</strong><span>No current threshold alerts.</span></div>`;
-    if (coordinatorMetricsUpdated) coordinatorMetricsUpdated.textContent = `Updated ${new Date(metrics.generatedAt || Date.now()).toLocaleTimeString()}`;
+    if (coordinatorMetricsUpdated) coordinatorMetricsUpdated.textContent = `${t("common.updated")} ${new Date(metrics.generatedAt || Date.now()).toLocaleTimeString(state.locale)}`;
   }
 
   coordinatorDoorbellManual?.addEventListener("click", async () => {
@@ -2740,8 +2796,8 @@
       const res = await fetch("/api/coordinator-doorbell/ping", { method: "POST", headers: { "X-AGmail-Doorbell": "1" } });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "Manual doorbell failed");
-      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = "Manual doorbell sent · advisory";
-      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : "No coordinator doorbells recorded.";
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = t("metrics.manualSent");
+      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : t("metrics.noDoorbells");
     } catch (err) {
       if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = `Manual doorbell failed: ${err.message}`;
     } finally {
@@ -2759,9 +2815,9 @@
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Unable to save setting");
       const cooldown = formatMetricDuration(data.config?.cooldownMs);
-      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = data.config.enabled ? "Enabled · deduplicated with cooldown" : "Disabled";
-      if (coordinatorDoorbellCooldown) coordinatorDoorbellCooldown.textContent = `Cooldown: ${cooldown}`;
-      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : "No coordinator doorbells recorded.";
+      if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = data.config.enabled ? t("metrics.doorbellEnabled") : t("metrics.doorbellDisabled");
+      if (coordinatorDoorbellCooldown) coordinatorDoorbellCooldown.textContent = `${t("metrics.cooldown")}: ${cooldown}`;
+      if (coordinatorDoorbellLog) coordinatorDoorbellLog.textContent = data.log?.length ? data.log.join("\n") : t("metrics.noDoorbells");
     } catch (err) {
       if (coordinatorDoorbellStatus) coordinatorDoorbellStatus.textContent = `Save failed: ${err.message}`;
     }
@@ -2801,7 +2857,7 @@
     const lines = state.panesLines || 40;
     const firstPaint = !panesGridEl.querySelector(".pane-card");
     if (firstPaint) {
-      panesGridEl.innerHTML = `<div class="kanban-empty">Reading live pane tails…</div>`;
+      panesGridEl.innerHTML = `<div class="kanban-empty">${escapeHtml(t("panes.loading"))}</div>`;
     }
     if (refreshPanesBtn) refreshPanesBtn.disabled = true;
     try {
@@ -2812,11 +2868,11 @@
       if (myGen !== panesFetchGen || state.currentView !== "panes") return;
       state.lastPanes = Array.isArray(panes) ? panes : [];
       renderPaneCards();
-      if (panesUpdatedAtEl) panesUpdatedAtEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      if (panesUpdatedAtEl) panesUpdatedAtEl.textContent = `${t("common.updated")} ${new Date().toLocaleTimeString(state.locale)}`;
       fetchPaneReports();
     } catch {
       if (myGen !== panesFetchGen) return;
-      panesGridEl.innerHTML = `<div class="kanban-empty">Unable to read pane tails.</div>`;
+      panesGridEl.innerHTML = `<div class="kanban-empty">${escapeHtml(t("panes.unavailable"))}</div>`;
     } finally {
       if (refreshPanesBtn) refreshPanesBtn.disabled = false;
     }
@@ -2846,16 +2902,16 @@
     renderPanesFocusBanner();
     const list = Array.isArray(state.lastPanes) ? state.lastPanes : [];
     if (!list.length) {
-      panesGridEl.innerHTML = `<div class="kanban-empty">No registered lanes.</div>`;
+      panesGridEl.innerHTML = `<div class="kanban-empty">${escapeHtml(t("panes.empty"))}</div>`;
       return;
     }    panesGridEl.innerHTML = list
       .map((p) => {
         const agent = state.agents.find((a) => a.handle === p.handle);
         const statusView = agentStatusView(agent || { handle: p.handle, status: "offline" });
         const task = getAgentTask(p.handle);
-        const activity = agent ? agentActivityText(agent, task) : "No live activity signal";
+        const activity = agent ? agentActivityText(agent, task) : t("panes.noActivity");
         const message = latestHangoutMessage({ handle: p.handle });
-        const messageText = message ? message.snippet || message.body || "No report text" : "No AMQ report yet";
+        const messageText = message ? message.snippet || message.body || t("panes.noReport") : t("panes.noReport");
         return `
         <article class="pane-card" data-pane-handle="${escapeHtml(p.handle)}">
           <div class="pane-card-header">
@@ -2863,13 +2919,13 @@
             <span class="presence-status-pill ${statusView.tone}"${statusView.stale ? ' data-stale="true"' : ""}>${statusView.label}</span>
             <span class="pane-card-time">${escapeHtml(hangoutTimestamp(p.at))}</span>
           </div>
-          <div class="pane-card-sub"><span class="hangout-card-label">Activity</span><strong>${escapeHtml(activity)}</strong></div>
-          <div class="pane-card-sub"><span class="hangout-card-label">Task</span><span>${escapeHtml(task ? task.title : "No active task assigned")}</span></div>
-          <div class="pane-card-sub"><span class="hangout-card-label">Latest report</span><span class="hangout-message">${escapeHtml(messageText)}</span></div>
-              <pre class="pane-card-output">${p.ok ? escapeHtml(p.output || "(empty)") : "Pane unavailable (Herdr not connected)."}</pre>
+          <div class="pane-card-sub"><span class="hangout-card-label">${escapeHtml(t("panes.activity"))}</span><strong>${escapeHtml(activity)}</strong></div>
+          <div class="pane-card-sub"><span class="hangout-card-label">${escapeHtml(t("panes.task"))}</span><span>${escapeHtml(task ? task.title : t("panes.noTask"))}</span></div>
+          <div class="pane-card-sub"><span class="hangout-card-label">${escapeHtml(t("panes.latestReport"))}</span><span class="hangout-message">${escapeHtml(messageText)}</span></div>
+              <pre class="pane-card-output">${p.ok ? escapeHtml(p.output || "(empty)") : escapeHtml(t("panes.unavailableCard"))}</pre>
           <div class="pane-card-actions">
-            <button type="button" class="btn btn-secondary" data-pane-action="activity" data-pane-handle="${escapeHtml(p.handle)}">Activity</button>
-            <button type="button" class="btn btn-primary" data-pane-action="message" data-pane-handle="${escapeHtml(p.handle)}">Message</button>
+            <button type="button" class="btn btn-secondary" data-pane-action="activity" data-pane-handle="${escapeHtml(p.handle)}">${escapeHtml(t("panes.activityAction"))}</button>
+            <button type="button" class="btn btn-primary" data-pane-action="message" data-pane-handle="${escapeHtml(p.handle)}">${escapeHtml(t("panes.messageAction"))}</button>
           </div>
         </article>`;
       })
@@ -2910,7 +2966,7 @@
       for (const o of filterOwners) {
         const isActive = state.boardFilterAgent === o;
         const agentObj = state.agents.find((a) => a.handle === o);
-        const name = o === "all" ? "All Agents" : (agentObj?.profile?.name || o);
+        const name = o === "all" ? t("board.allAgents") : (agentObj?.profile?.name || o);
         const emoji = o === "all" ? "👥" : (agentObj?.profile?.emoji || "🤖");
         chipsHtml += `
           <button class="board-filter-chip ${isActive ? "active" : ""}" data-agent="${escapeHtml(o)}">
@@ -2952,10 +3008,10 @@
     };
 
     const emptyMessages = {
-      backlog: "No tasks in backlog",
-      in_progress: "No tasks in flight",
-      blocked: "No blocked items",
-      done: "No completed tasks",
+      backlog: t("board.backlogEmpty"),
+      in_progress: t("board.progressEmpty"),
+      blocked: t("board.blockedEmpty"),
+      done: t("board.doneEmpty"),
     };
 
     for (const [colName, containerEl] of Object.entries(colContainers)) {
@@ -3901,6 +3957,7 @@
   }
 
   // Boot
+  applyTranslations();
   applyThemePreference(state.themePreference, false);
   applyReadingLayout(state.readingLayout, false);
   fetchStatus();

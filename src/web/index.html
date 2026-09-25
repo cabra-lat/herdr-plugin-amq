@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AGsuite: Autonomous Swarm Workspace</title>
+  <title data-i18n="app.title">AGsuite: Autonomous Swarm Workspace</title>
   <script>
     (() => {
       const read = (key) => {
@@ -42,7 +42,7 @@
     <div class="header-center" id="header-search-container">
       <div class="search-bar" id="search-bar">
         <svg class="search-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-        <input type="text" id="search-input" placeholder="Search transmissions (e.g. has:image, from:spotter, to:me, bug)..." autocomplete="off">
+        <input type="text" id="search-input" data-i18n-placeholder="search.placeholder" placeholder="Search transmissions (e.g. has:image, from:spotter, to:me, bug)..." autocomplete="off">
         <button class="clear-search-btn hidden" id="clear-search" title="Clear search">✕</button>
       </div>
       <!-- Google Search Autocomplete Suggestions Dropdown -->
@@ -59,7 +59,7 @@
       <button class="icon-btn" id="refresh-btn" title="Refresh mailbox">
         <svg viewBox="0 0 24 24"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
       </button>
-      <button class="icon-btn" id="open-settings-btn" title="Settings" aria-label="Open settings" aria-haspopup="dialog">
+      <button class="icon-btn" id="open-settings-btn" title="Settings" data-i18n-aria-label="action.settings" aria-label="Open settings" aria-haspopup="dialog">
         <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.08-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.3 7.3 0 0 0-1.69-.98L14.5 2.42A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1a.49.49 0 0 0-.61.22l-2 3.46a.49.49 0 0 0 .12.64l2.11 1.65c-.05.32-.09.66-.09.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.12.22.38.31.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.04.24.25.42.49.42h4c.24 0 .45-.18.49-.42l.38-2.65c.61-.25 1.17-.58 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"/></svg>
       </button>
 
@@ -105,7 +105,7 @@
       <div class="compose-btn-wrap">
         <button class="compose-btn" id="open-compose-btn">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-          <span>Compose</span>
+          <span data-i18n="nav.compose">Compose</span>
         </button>
       </div>
 
@@ -113,20 +113,20 @@
       <div class="sidebar-views-nav">
         <button class="nav-item view-tab-btn active" id="nav-view-mail" data-view="mail">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
-          <span class="nav-label">AGmail</span>
+          <span class="nav-label" data-i18n="nav.mail">AGmail</span>
         </button>
         <button class="nav-item view-tab-btn" id="nav-view-board" data-view="board">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H6v-5h3v5zm5 0h-3V7h3v10zm5 0h-3v-8h3v8z"/></svg>
-          <span class="nav-label">AGboard</span>
+          <span class="nav-label" data-i18n="nav.board">AGboard</span>
           <span class="badge" id="board-total-count" style="background:var(--google-blue);color:#fff;">0</span>
         </button>
         <button class="nav-item view-tab-btn" id="nav-view-panes" data-view="panes">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-9 14H7v-2h4v2zm7-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
-          <span class="nav-label">Panes</span>
+          <span class="nav-label" data-i18n="nav.panes">Panes</span>
         </button>
         <button class="nav-item view-tab-btn" id="nav-view-metrics" data-view="metrics">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M5 9.2h3V19H5V9.2zm5.5-5h3V19h-3V4.2zm5.5 8H19v6.8h-3V12.2z"/></svg>
-          <span class="nav-label">Metrics</span>
+          <span class="nav-label" data-i18n="nav.metrics">Metrics</span>
         </button>
       </div>
 
@@ -135,20 +135,20 @@
 
         <button class="nav-item active" data-folder="inbox">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H4.99c-1.11 0-1.98.89-1.98 2L3 19c0 1.1.88 2 1.99 2H19c1.1 0 2-.9 2-2V5c0-1.11-.9-2-2-2zm0 12h-4c0 1.66-1.35 3-3 3s-3-1.34-3-3H4.99V5H19v10z"/></svg>
-          <span class="nav-label">Inbox</span>
+          <span class="nav-label" data-i18n="nav.inbox">Inbox</span>
           <span class="badge" id="inbox-unread-count">0</span>
         </button>
         <button class="nav-item" data-folder="starred">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
-          <span class="nav-label">Starred</span>
+          <span class="nav-label" data-i18n="nav.starred">Starred</span>
         </button>
         <button class="nav-item" data-folder="sent">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          <span class="nav-label">Sent</span>
+          <span class="nav-label" data-i18n="nav.sent">Sent</span>
         </button>
         <button class="nav-item" data-folder="all">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
-          <span class="nav-label">All Mail</span>
+          <span class="nav-label" data-i18n="nav.allMail">All Mail</span>
         </button>
       </nav>
 
@@ -236,7 +236,7 @@
           <!-- List Container -->
           <div class="mail-list-container" id="mail-list-view">
             <div class="mail-list" id="mail-list">
-              <div class="loading-state">Loading transmissions from .agent-mail...</div>
+              <div class="loading-state" data-i18n="mail.loading">Loading transmissions from .agent-mail...</div>
             </div>
           </div>
 
@@ -428,12 +428,12 @@
           <section class="coordinator-metrics-panel" id="coordinator-metrics-panel" aria-live="polite">
             <div class="coordinator-metrics-header">
               <div>
-                <h3>Coordinator metrics</h3>
+                <h3 data-i18n="metrics.coordinator">Coordinator metrics</h3>
                 <p>Alerts recommend a next action; they never auto-approve destructive work.</p>
               </div>
             </div>
             <div class="coordinator-metrics-grid" id="coordinator-metrics-grid">
-              <div class="kanban-empty">Open Metrics to load coordinator metrics.</div>
+              <div class="kanban-empty" data-i18n="metrics.empty">Open Metrics to load coordinator metrics.</div>
             </div>
             <div class="coordinator-alerts" id="coordinator-alerts"></div>
             <div class="coordinator-doorbell-controls">
@@ -443,10 +443,10 @@
               </label>
               <span class="board-subtitle" id="coordinator-doorbell-status">Loading…</span>
               <span class="board-subtitle cooldown-indicator" id="coordinator-doorbell-cooldown">Cooldown: —</span>
-              <button class="btn btn-secondary" id="coordinator-doorbell-manual" type="button">Doorbell now</button>
+              <button class="btn btn-secondary" id="coordinator-doorbell-manual" type="button" data-i18n="metrics.doorbellNow">Doorbell now</button>
             </div>
             <div class="coordinator-doorbell-log-wrap">
-              <h4>Coordinator doorbell log</h4>
+              <h4 data-i18n="metrics.doorbell">Coordinator doorbell log</h4>
               <pre class="coordinator-doorbell-log" id="coordinator-doorbell-log">No coordinator doorbells recorded.</pre>
             </div>
           </section>
@@ -611,34 +611,45 @@
   <div class="modal-backdrop hidden" id="settings-backdrop">
     <section class="agent-modal-card settings-modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title" aria-describedby="settings-modal-description">
       <div class="agent-modal-header">
-        <h3 id="settings-modal-title">Settings</h3>
+        <h3 id="settings-modal-title" data-i18n="settings.title">Settings</h3>
         <button class="icon-btn-small" id="close-settings-btn" aria-label="Close settings">✕</button>
       </div>
       <form id="settings-form">
-        <p class="settings-intro" id="settings-modal-description">Choose how AGmail displays messages and which appearance it uses. Preferences are saved in this browser.</p>
+        <p class="settings-intro" id="settings-modal-description" data-i18n="settings.languageHint">Choose how AGmail displays messages and which appearance it uses. Preferences are saved in this browser.</p>
         <fieldset class="settings-group">
-          <legend>Message reading</legend>
+          <legend data-i18n="settings.reading">Message reading</legend>
           <div class="settings-choice-grid settings-reading-grid">
             <label class="settings-choice">
               <input type="radio" name="reading-layout" value="split" checked>
               <span class="settings-choice-preview settings-preview-split" aria-hidden="true"><i></i><i></i></span>
               <span class="settings-choice-copy">
-                <strong>Split pane</strong>
-                <small>Keep the message list beside the selected conversation.</small>
+                <strong data-i18n="settings.split">Split pane</strong>
+                <small data-i18n="settings.splitHint">Keep the message list beside the selected conversation.</small>
               </span>
             </label>
             <label class="settings-choice">
               <input type="radio" name="reading-layout" value="full">
               <span class="settings-choice-preview settings-preview-full" aria-hidden="true"><i></i><i></i></span>
               <span class="settings-choice-copy">
-                <strong>Full page</strong>
-                <small>Open one message at a time with a Back to list control.</small>
+                <strong data-i18n="settings.full">Full page</strong>
+                <small data-i18n="settings.fullHint">Open one message at a time with a Back to list control.</small>
               </span>
             </label>
           </div>
         </fieldset>
         <fieldset class="settings-group">
-          <legend>Theme</legend>
+          <legend data-i18n="settings.language">Language</legend>
+          <label class="settings-field" for="language-select">
+            <span data-i18n="settings.language">Language</span>
+            <select id="language-select" name="language">
+              <option value="en">English</option>
+              <option value="pt-BR">Português (Brasil)</option>
+            </select>
+          </label>
+          <small class="field-hint" data-i18n="settings.languageHint">Choose the dashboard language. This preference is saved in this browser.</small>
+        </fieldset>
+        <fieldset class="settings-group">
+          <legend data-i18n="settings.theme">Theme</legend>
           <div class="settings-choice-grid settings-theme-grid">
             <label class="settings-choice settings-theme-choice">
               <input type="radio" name="theme" value="system" checked>
@@ -658,8 +669,8 @@
           </div>
         </fieldset>
         <div class="agent-modal-actions">
-          <button type="button" class="btn btn-secondary" id="cancel-settings-btn">Cancel</button>
-          <button type="submit" class="btn btn-primary" id="save-settings-btn">Save preferences</button>
+          <button type="button" class="btn btn-secondary" id="cancel-settings-btn" data-i18n="action.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="save-settings-btn" data-i18n="action.save">Save preferences</button>
         </div>
       </form>
     </section>
@@ -669,7 +680,7 @@
     <div class="agent-activity-shell">
       <header class="agent-activity-header">
         <div>
-          <span class="agent-activity-kicker">Agent activity</span>
+          <span class="agent-activity-kicker" data-i18n="activity.current">Agent activity</span>
           <h2 id="agent-activity-name">Agent</h2>
           <span id="agent-activity-handle">agent@amq</span>
         </div>
@@ -684,12 +695,12 @@
           </div>
         </section>
         <section class="agent-activity-card agent-activity-current">
-          <span class="agent-activity-label">Current activity</span>
+          <span class="agent-activity-label" data-i18n="activity.current">Current activity</span>
           <strong id="agent-activity-headline" aria-live="polite">No live activity signal</strong>
         </section>
         <section class="agent-activity-card">
           <div class="agent-activity-card-heading">
-            <span class="agent-activity-label">Assigned task</span>
+            <span class="agent-activity-label" data-i18n="activity.assignedTask">Assigned task</span>
             <span class="agent-task-status offline" id="agent-activity-task-status">No active task assigned</span>
           </div>
           <strong id="agent-activity-task">No board task is currently assigned to this agent.</strong>
@@ -702,7 +713,7 @@
         </dl>
         <section class="agent-activity-card agent-activity-pane-card">
           <div class="agent-activity-card-heading">
-            <span class="agent-activity-label">Live pane</span>
+            <span class="agent-activity-label" data-i18n="activity.livePane">Live pane</span>
             <button class="btn btn-secondary" id="refresh-agent-pane-btn" type="button">Refresh</button>
           </div>
           <pre class="pane-card-output agent-pane-output" id="agent-activity-pane-output">Opening live pane…</pre>
@@ -922,7 +933,8 @@
     </div>
   </aside>
 
-  <script src="app.js?v=4"></script>
+  <script src="i18n.js?v=1"></script>
+  <script src="app.js?v=5"></script>
 
 </body>
 </html>

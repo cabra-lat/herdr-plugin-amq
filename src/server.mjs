@@ -1024,6 +1024,8 @@ export function startWebServer({
       filePath = path.join(WEB_ROOT, "style.css");
     } else if (pathname === "/app.js") {
       filePath = path.join(WEB_ROOT, "app.js");
+    } else if (pathname === "/i18n.js") {
+      filePath = path.join(WEB_ROOT, "i18n.js");
     } else {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("Not Found");

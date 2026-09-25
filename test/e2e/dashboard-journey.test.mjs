@@ -161,6 +161,72 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     await desktop.click("#close-compose-btn");
     await desktop.click("#nav-view-mail");
 
+    // Load every dynamic surface in English before changing locale. The
+    // switch below must refresh these cached projections, not just the active
+    // mailbox view.
+    await desktop.click("#nav-view-board");
+    await desktop.locator("#board-view-section:not(.hidden)").waitFor({ state: "visible", timeout: 15000 });
+    await desktop.locator("#board-agent-filter-bar").getByText("All Agents").waitFor({ state: "visible", timeout: 15000 });
+    await desktop.click("#nav-view-metrics");
+    await desktop.locator("#coordinator-metrics-grid .coordinator-metric").first().waitFor({ state: "visible", timeout: 15000 });
+    assert.match(await desktop.locator("#coordinator-metrics-grid").textContent(), /Working agents/);
+    await desktop.click("#nav-view-panes");
+    await desktop.locator(".pane-card").first().waitFor({ state: "visible", timeout: 15000 });
+    assert.match(await desktop.locator(".pane-card").first().textContent(), /Activity/);
+    await desktop.locator('.pane-card[data-pane-handle="range"] [data-pane-action="activity"]').click();
+    await desktop.waitForSelector("#agent-activity-dialog[open]");
+    assert.match(await desktop.locator("#agent-activity-dialog").textContent(), /Assigned task/);
+    await desktop.click("#close-agent-activity-btn");
+    await desktop.click("#nav-view-mail");
+
+    // Switch through the real Settings control after all surfaces are loaded.
+    await desktop.click("#open-settings-btn");
+    await desktop.selectOption("#language-select", "pt-BR");
+    await desktop.waitForFunction(() => document.documentElement.lang === "pt-BR");
+    await desktop.click("#close-settings-btn");
+    assert.match(await desktop.locator("#bridge-status-text").textContent(), /Ponte: (em execução|parada)/);
+    // Metrics is still hidden/cached here; doorbell data must already be pt-BR.
+    assert.match(await desktop.locator("#coordinator-doorbell-status").textContent(), /Ativada|Desativada/);
+    assert.ok((await desktop.locator("#coordinator-doorbell-log").textContent()).length > 0);
+    assert.equal(await desktop.locator("#header-account-label").textContent(), "Range Owner");
+    assert.equal(await desktop.locator("#mail-list").textContent().then((text) => text.includes("Refresh arena v4")), true);
+
+    // A failed mail request must stay translated after a locale switch rather
+    // than being replaced by stale English markup.
+    await desktop.route("**/api/threads*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "not-json" }));
+    await desktop.click("#refresh-btn");
+    await desktop.locator("#mail-list").getByText("Erro ao carregar transmissões").waitFor({ state: "visible", timeout: 15000 });
+    await desktop.unroute("**/api/threads*");
+    await desktop.click("#refresh-btn");
+    await desktop.locator("#mail-list").getByText("Refresh arena v4").waitFor({ state: "visible", timeout: 15000 });
+    await desktop.click("#user-profile-btn");
+    assert.match(await desktop.locator("#account-dropdown-list").textContent(), /Todas as contas/);
+    await desktop.click("#user-profile-btn");
+
+    // Visit the cached surfaces after the switch and verify their rerendered text.
+    await desktop.click("#nav-view-board");
+    await desktop.locator("#board-agent-filter-bar").getByText("Todos os agentes").waitFor({ state: "visible", timeout: 15000 });
+    assert.equal(await desktop.locator("#header-account-label").textContent(), "Range Owner");
+    await desktop.click("#nav-view-metrics");
+    await desktop.locator("#coordinator-metrics-grid .coordinator-metric").first().waitFor({ state: "visible", timeout: 15000 });
+    assert.match(await desktop.locator("#coordinator-metrics-grid").textContent(), /Agentes trabalhando/);
+    assert.match(await desktop.locator("#coordinator-doorbell-status").textContent(), /Ativada|Desativada/);
+    assert.ok((await desktop.locator("#coordinator-doorbell-log").textContent()).length > 0);
+    await desktop.click("#nav-view-panes");
+    await desktop.locator(".pane-card").first().waitFor({ state: "visible", timeout: 15000 });
+    assert.match(await desktop.locator(".pane-card").first().textContent(), /Atividade/);
+    await desktop.locator('.pane-card[data-pane-handle="range"] [data-pane-action="activity"]').click();
+    await desktop.waitForSelector("#agent-activity-dialog[open]");
+    assert.match(await desktop.locator("#agent-activity-dialog").textContent(), /Tarefa atribuída/);
+    assert.equal(await desktop.locator("#agent-activity-name").textContent(), "Range Owner");
+    await desktop.click("#close-agent-activity-btn");
+    await desktop.click("#nav-view-mail");
+    await desktop.locator("#page-info").getByText("conversas").waitFor({ state: "visible", timeout: 15000 });
+    await desktop.click("#open-settings-btn");
+    await desktop.selectOption("#language-select", "en");
+    await desktop.waitForFunction(() => document.documentElement.lang === "en");
+    await desktop.click("#close-settings-btn");
+
     // Sidebar click focuses the Panes view on that single lane, fullscreen.
     await desktop.click('.presence-item[data-agent-handle="range"]');
     await desktop.waitForSelector("#panes-view-section:not(.hidden)");
@@ -230,6 +296,23 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     await desktop.click(".mail-row");
     await desktop.waitForSelector("#mail-detail-view:not(.hidden)");
     await desktop.waitForTimeout(150);
+    const proseLink = desktop.locator('#mail-detail-view a.md-link[href="https://example.com/docs"]');
+    await proseLink.waitFor({ state: "visible", timeout: 5000 });
+    assert.equal(await proseLink.textContent(), "https://example.com/docs");
+    for (const href of [
+      "https://example.com/docs",
+      "https://unicode.example/café",
+      "https://one.example/a",
+      "https://two.example/b",
+      "https://trailing.example/path",
+      "https://markdown.example/path",
+    ]) {
+      assert.equal(await desktop.locator(`#mail-detail-view a.md-link[href="${href}"]`).count(), 1, `Expected clickable URL ${href}`);
+    }
+    assert.equal(await desktop.locator('#mail-detail-view a.md-link[href="https://inline.example/code"]').count(), 0);
+    assert.equal(await desktop.locator('#mail-detail-view a.md-link[href="https://fenced.example/code"]').count(), 0);
+    assert.equal(await desktop.locator("#mail-detail-view").textContent().then((text) => text.includes("préhttps://not-a-link.example")), true);
+    assert.match(await desktop.locator("#mail-detail-view a.md-link[href='https://trailing.example/path']").evaluate((el) => el.nextSibling?.textContent || ""), /^\./);
     const messagePosition = await desktop.$eval("#mail-detail-view", (detail) => {
       const header = detail.querySelector(".detail-header");
       const latest = detail.querySelector(".thread-card.expanded");

@@ -5,6 +5,26 @@ import { readFileSync } from "node:fs";
 const app = readFileSync(new URL("../src/web/app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../src/web/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/web/style.css", import.meta.url), "utf8");
+const i18n = readFileSync(new URL("../src/web/i18n.js", import.meta.url), "utf8");
+
+test("dashboard provides persisted English and Brazilian Portuguese translations", () => {
+  assert.match(html, /id="language-select"/);
+  assert.match(html, /<option value="pt-BR">Português \(Brasil\)<\/option>/);
+  assert.match(html, /i18n\.js\?v=1/);
+  assert.match(app, /const t = i18n\?\.t/);
+  assert.match(app, /setLocale\(languageSelect\.value\)/);
+  assert.match(app, /agmail-locale-changed/);
+  assert.match(app, /renderCoordinatorMetrics\(\)/);
+  assert.match(app, /renderPaneCards\(\)/);
+  assert.match(app, /renderList\(\)/);
+  assert.match(app, /fetchStatus\(\)/);
+  assert.match(app, /AMQ_MD_LINK_/);
+  assert.ok(app.includes("(?<![\\p{L}\\p{N}_\"'=])((?:https?:\\/\\/)[^\\s<]+)"));
+  assert.match(i18n, /"pt-BR"/);
+  assert.match(i18n, /agmail_locale/);
+  assert.match(i18n, /translations\[DEFAULT_LOCALE\]/);
+  assert.match(i18n, /document\.documentElement\.lang = locale/);
+});
 
 test("persona/account viewing cannot mark a message as read", () => {
   const start = app.indexOf("async function markMessageRead");
@@ -36,7 +56,7 @@ test("Panes and coordinator metrics are separate scrollable sideboard views", ()
   assert.match(html, /id="coordinator-doorbell-manual"/);
   assert.match(app, /coordinatorDoorbellManual\?\.addEventListener\("click"/);
   assert.match(app, /\/api\/coordinator-doorbell\/ping/);
-  assert.match(app, /coordinatorDoorbellCooldown\.textContent = `Cooldown: \$\{cooldown\}`/);
+  assert.match(app, /coordinatorDoorbellCooldown\.textContent = `\$\{t\("metrics\.cooldown"\)\}: \$\{cooldown\}`/);
   assert.match(app, /\/api\/coordinator-doorbell/);
   assert.match(css, /\.coordinator-metrics-panel/);
   assert.match(css, /\.coordinator-doorbell-log/);
