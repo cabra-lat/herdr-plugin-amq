@@ -21,6 +21,7 @@ import {
   ensureAgentWorktree,
   ensureAllWorktrees,
 } from "../src/worktrees.mjs";
+import { computeCanonicalThread } from "../src/protocol.mjs";
 
 describe("store.mjs tests with mock AMQ root", () => {
   let tempRoot;
@@ -317,5 +318,9 @@ Acknowledged beta, processing task.`;
       body: "The dashboard must not crash while sending this message.",
     });
     assert.equal(result.ok, true, result.error || "sendAmqMessage failed");
+    const delivered = loadAllMessages(tempRoot, { account: "agent-alpha", folder: "inbox" })
+      .find((message) => message.subject === "Canonical thread regression");
+    assert.ok(delivered, "canonical-thread regression message was not delivered");
+    assert.equal(delivered.thread, computeCanonicalThread("coordinator", ["agent-alpha"]));
   });
 });
