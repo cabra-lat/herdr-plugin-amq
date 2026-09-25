@@ -420,7 +420,7 @@ function buildRequiredDoorbellActions(handle, context) {
     actions.push(`Run: herdr-amq task drain --me ${handle}; claim with herdr-amq task next --me ${handle}.`);
   }
   if (context.mail.count > 0) {
-    actions.push("Reply only when a message explicitly requests action or asks a question.");
+    actions.push("Reply only when a message explicitly requests action or asks a question; do not send an acknowledgement-only reply. After replying, continue the assigned work.");
   }
   return actions.join(" ");
 }

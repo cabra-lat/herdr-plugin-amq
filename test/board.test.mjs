@@ -390,7 +390,7 @@ describe("board.mjs Kanban module", () => {
     assert.ok(Buffer.byteLength(nearLimitPrompt) <= 64 * 1024);
     assert.ok(nearLimitPrompt.includes("herdr-amq mail drain --me range"));
     assert.ok(nearLimitPrompt.includes("herdr-amq task drain --me range"));
-    assert.ok(nearLimitPrompt.endsWith("asks a question."));
+    assert.ok(nearLimitPrompt.endsWith("continue the assigned work."));
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

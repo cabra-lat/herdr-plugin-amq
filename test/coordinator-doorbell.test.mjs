@@ -7,6 +7,7 @@ import path from "node:path";
 import { addBoardTask, loadBoard, updateBoardTask } from "../src/board.mjs";
 import { buildCoordinatorMetrics } from "../src/metrics.mjs";
 import { runDoorbellPass, runManualCoordinatorDoorbell, sanitizeDeliveredState } from "../src/bridge.mjs";
+import { sendMaildirMessage } from "../src/protocol.mjs";
 
 function makeFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "coordinator-doorbell-"));
@@ -21,6 +22,42 @@ function makeFixture() {
   }
   return { root, amqRoot };
 }
+
+test("doorbell prompts once without emitting an automatic acknowledgement", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const message = sendMaildirMessage(amqRoot, {
+      from: "coordinator",
+      to: ["worker"],
+      subject: "Status check",
+      body: "Please continue the assigned work.",
+    });
+    const prompts = [];
+    const result = runDoorbellPass({
+      amqRoot,
+      repoRoot: root,
+      targetHandle: "worker",
+      allowPrompt: true,
+      state: { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {} },
+      getStatus: () => "idle",
+      healName: () => false,
+      prompt: (handle, text) => {
+        prompts.push({ handle, text });
+        return true;
+      },
+    });
+
+    assert.equal(result.doorbelled, 1);
+    assert.equal(prompts.length, 1);
+    assert.equal(prompts[0].handle, "worker");
+    assert.match(prompts[0].text, /do not send an acknowledgement-only reply/i);
+    assert.match(prompts[0].text, /continue the assigned work/i);
+    assert.equal(fs.readdirSync(path.join(amqRoot, "agents", "worker", "outbox", "sent")).length, 0, "doorbell must not create a reply");
+    assert.equal(fs.readdirSync(path.join(amqRoot, "agents", "worker", "inbox", "new")).length, 1, "doorbell must not mark the message read or drain it");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("coordinator metrics doorbell prompts an idle coordinator once per cooldown", () => {
   const { root, amqRoot } = makeFixture();
