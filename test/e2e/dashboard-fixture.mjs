@@ -175,7 +175,7 @@ Confirm the owner warning is visible when a peer has blocked work.
   fs.writeFileSync(path.join(blockedDir, "task-ui-blocked-fixture.md"), blockedContent, "utf8");
 }
 
-export async function createDashboardFixture() {
+export async function createDashboardFixture({ registerAmqRootEnv = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "amq-browser-fixture-"));
   const amqRoot = path.join(root, ".agent-mail");
   const stateDir = path.join(root, "state");
@@ -199,6 +199,7 @@ export async function createDashboardFixture() {
   };
   const rangeDir = seedAgent(amqRoot, "range", rangeProfile);
   seedAgent(amqRoot, "qa", qaProfile);
+  seedAgent(amqRoot, "spotter", { name: "Spotter", role: "Numeric and visual verification", model: "opencode/gpt-5.4", emoji: "S", color: "#a142f4" });
   const latestMessageId = seedMessage(rangeDir);
   seedUserMessage(amqRoot);
   seedTask(amqRoot);
@@ -235,27 +236,105 @@ export async function createDashboardFixture() {
     state_change_seq: 12,
     interactive_ready: true,
   };
-  const herdr = new FakeHerdr(socketPath, [workingAgent, idleAgent]);
+  // Negative control: this agent is reported by the fake Herdr session but is NOT
+  // registered in this AMQ root. It must never become an agent row, so a passing
+  // presence assertion cannot be vacuous.
+  const intruderAgent = {
+    name: "unregistered-intruder",
+    agent: "pi",
+    model: { id: "space-bunny-free", providerID: "opencode", variant: "max" },
+    agent_session: { agent: "pi", source: "herdr:pi", value: "ses_e2e_intruder" },
+    agent_status: "working",
+    pane_id: "pane-intruder",
+    workspace_id: "workspace-intruder",
+    tab_id: "tab-intruder",
+    terminal_id: "terminal-intruder",
+    terminal_title_stripped: "Someone else's session",
+    state_labels: { working: "Doing unrelated work" },
+    tokens: ["unrelated"],
+    state_change_seq: 7,
+    interactive_ready: true,
+  };
+
+  // Title-only agent: no Herdr `name`, identity can only come from the canonical
+  // pane title, and only when the handle is registered in the AMQ root.
+  const titleOnlyAgent = {
+    name: "",
+    agent: "pi",
+    model: { id: "space-bunny-free", providerID: "opencode", variant: "max" },
+    agent_session: { agent: "pi", source: "herdr:pi", value: "ses_e2e_spotter" },
+    agent_status: "idle",
+    pane_id: "pane-spotter",
+    workspace_id: "workspace-spotter",
+    tab_id: "tab-spotter",
+    terminal_id: "terminal-spotter",
+    terminal_title_stripped: "π - spotter",
+    state_labels: { idle: "Watching the arena" },
+    tokens: [],
+    state_change_seq: 3,
+    interactive_ready: true,
+  };
+
+  const herdr = new FakeHerdr(socketPath, [workingAgent, idleAgent, intruderAgent, titleOnlyAgent]);
   await herdr.start();
 
   const previous = {
     HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
     HERDR_BIN_PATH: process.env.HERDR_BIN_PATH,
     HERDR_PLUGIN_STATE_DIR: process.env.HERDR_PLUGIN_STATE_DIR,
+    AM_ROOT: process.env.AM_ROOT,
+    OPENCODE_BIN_PATH: process.env.OPENCODE_BIN_PATH,
   };
   process.env.HERDR_SOCKET_PATH = socketPath;
   process.env.HERDR_BIN_PATH = path.join(root, "missing-herdr");
   process.env.HERDR_PLUGIN_STATE_DIR = stateDir;
+  // Identity resolution reads the registered handles from findAmqRoot(), not from
+  // the server's amqRoot argument. Agents whose Herdr record has no `name` can only
+  // be resolved from the canonical pane title, and only when that handle is
+  // registered here.
+  if (registerAmqRootEnv) process.env.AM_ROOT = amqRoot;
+  // Never spawn a real `opencode` binary from a test: the runtime-model lookup is a
+  // synchronous child process, and one that hangs would freeze the event loop
+  // instead of failing an assertion.
+  process.env.OPENCODE_BIN_PATH = path.join(root, "missing-opencode");
 
   const server = startWebServer({ port: 0, host: "127.0.0.1", amqRoot });
   if (!server.listening) await new Promise((resolve) => server.once("listening", resolve));
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
+  // Herdr identity is resolved asynchronously after the server starts listening, so
+  // returning earlier hands callers a fixture whose presence assertions fail for a
+  // timing reason. Wait for the first real resolution instead of leaving a sleep in
+  // every test, and fail loudly with what was actually seen if it never happens.
+  const readyDeadline = Date.now() + 10000;
+  let ready = false;
+  let lastAgents = null;
+  while (Date.now() < readyDeadline) {
+    lastAgents = await fetch(`${baseUrl}/api/agents`)
+      .then((response) => response.json())
+      .catch(() => null);
+    if (lastAgents && lastAgents.some((agent) => agent.handle === "range" && agent.herdrStatus)) {
+      ready = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!ready) {
+    const seen = (lastAgents || []).map((agent) => `${agent.handle}:${agent.herdrStatus || agent.status}`).join(", ");
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+    throw new Error(`Dashboard fixture never resolved fake Herdr identity (saw: ${seen || "no agents"}).`);
+  }
+
   return {
     baseUrl,
     herdr,
     latestMessageId,
+    /** Registered handles this fixture expects to resolve from the Herdr session. */
+    registeredHandles: ["range", "qa", "spotter", "user"],
+    /** Handle present in the fake Herdr session but absent from the AMQ root. */
+    unregisteredHandle: "unregistered-intruder",
     async close() {
       if (typeof server.closeAllConnections === "function") server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

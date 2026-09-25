@@ -94,8 +94,12 @@ export function clearRuntimeModelCache() {
 }
 
 export function getOpenCodeSessionModels(agents, { now = Date.now(), queryModels = queryOpenCodeModels } = {}) {
+  // Only agents whose model is NOT already in the Herdr record can need the
+  // session lookup. `queryOpenCodeModels` is a synchronous child process, so
+  // querying ids that will never be read costs a blocking spawn on every status
+  // refresh (and, in tests, on every request).
   const ids = [...new Set((Array.isArray(agents) ? agents : [])
-    .filter(isOpenCodeAgent)
+    .filter((agent) => isOpenCodeAgent(agent) && !directModel(agent))
     .map(getHarnessSessionId)
     .filter((id) => SESSION_ID_PATTERN.test(id)))];
   if (!ids.length) return new Map();

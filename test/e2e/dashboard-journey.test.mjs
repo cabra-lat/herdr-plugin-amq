@@ -118,7 +118,10 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
 
     await desktop.click("#user-profile-btn");
     const initialPresenceOrder = await desktop.$$eval(".presence-item", (items) => items.map((item) => item.dataset.agentHandle));
-    assert.deepEqual(initialPresenceOrder, ["user", "qa", "range"]);
+    // `spotter` is present because it exists: its Herdr record carries no `name`,
+    // so it is resolved purely from its canonical `π - spotter` pane title.
+    assert.deepEqual(initialPresenceOrder, ["user", "qa", "range", "spotter"]);
+    assert.equal(await desktop.locator('.presence-item[data-agent-handle="spotter"] .presence-status-pill').textContent(), "Idle");
     assert.equal(await desktop.locator('.presence-item[data-agent-handle="qa"] .presence-status-pill').textContent(), "Idle");
     assert.equal(await desktop.locator('.presence-item[data-agent-handle="qa"] .presence-status-pill').getAttribute("title"), "Turn ended · ready for input");
     assert.equal(await desktop.locator('.presence-item[data-agent-handle="range"] .presence-status-pill').textContent(), "Working");
@@ -393,7 +396,7 @@ test("AGmail desktop and mobile activity journeys", { timeout: 120000 }, async (
     });
     await desktop.locator('.presence-item[data-agent-handle="range"] .presence-status-pill', { hasText: "Idle" }).waitFor({ state: "visible", timeout: 10000 });
     const stablePresenceOrder = await desktop.$$eval(".presence-item", (items) => items.map((item) => item.dataset.agentHandle));
-    assert.deepEqual(stablePresenceOrder, ["range", "user", "qa"]);
+    assert.deepEqual(stablePresenceOrder, ["range", "user", "qa", "spotter"]);
 
     const mobilePrepared = await preparePage(browser, fixture.baseUrl, { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, errors);
     mobileContext = mobilePrepared.context;
