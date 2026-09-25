@@ -16,7 +16,7 @@ herdr-amq drain --me coordinator --include-body
 herdr-amq task list
 herdr-amq task drain --me <handle>
 herdr-amq task next --me <handle>
-herdr-amq task create --title "<title>" --me <handle> [--owner <h>] [--desc <text|@file>]
+herdr-amq task create --title "<title>" --me <handle> [--owner <h>] [--desc <text|@file>]  # alias of assign
 herdr-amq task assign --to <handle> --title <title>
 herdr-amq task claim <task-id> --me <handle>
 herdr-amq task heartbeat <task-id> --me <handle>

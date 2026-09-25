@@ -253,3 +253,32 @@ test("task show renders every field the CLI can write", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("create and assign are one operation under two names", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    // Same code path, different owner default. Both must produce the same card shape.
+    const created = run(root, ["task", "create", "--me", "coordinator", "--title", "Via create", "--notify", "false"]);
+    assert.equal(created.status, 0, created.stderr);
+    const createdId = created.stdout.match(/ID: (task_[0-9a-z_]+)/)?.[1];
+    assert.match(created.stdout, /Task created and assigned to coordinator/);
+
+    const assigned = run(root, ["task", "assign", "--me", "coordinator", "--to", "qa", "--title", "Via assign", "--notify", "false"]);
+    assert.equal(assigned.status, 0, assigned.stderr);
+    const assignedId = assigned.stdout.match(/ID: (task_[0-9a-z_]+)/)?.[1];
+    assert.match(assigned.stdout, /Task created and assigned to qa/);
+
+    const createdCard = fs.readFileSync(path.join(amqRoot, "bus", "backlog", `${createdId}.md`), "utf8");
+    const assignedCard = fs.readFileSync(path.join(amqRoot, "bus", "backlog", `${assignedId}.md`), "utf8");
+    // Same serialized fields, only the owner differs: one implementation, not two.
+    const fields = (text) => (text.match(/^[a-z_]+:/gm) || []).map((line) => line.replace(":", "")).sort();
+    assert.deepEqual(fields(createdCard), fields(assignedCard));
+
+    // `assign` still requires an owner; `create` does not.
+    const noOwner = run(root, ["task", "assign", "--me", "coordinator", "--title", "No owner"]);
+    assert.notEqual(noOwner.status, 0);
+    assert.match(noOwner.stderr, /Target owner is required/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

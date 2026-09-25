@@ -369,3 +369,33 @@ test("coordinator triage snapshot reports note count and note recency per card",
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("an owner with in-progress cards is told to heartbeat them", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const task = addBoardTask(root, amqRoot, { title: "Work in flight", owner: "worker", description: "Still being worked." }, { notify: false });
+    assert.ok(task.ok);
+    updateBoardTask(root, amqRoot, task.task.id, { status: "in_progress", owner: "worker" }, { notify: false });
+    sendMaildirMessage(amqRoot, { from: "coordinator", to: ["worker"], subject: "Check in", body: "Status please." });
+
+    const prompts = [];
+    runDoorbellPass({
+      amqRoot,
+      handles: ["worker"],
+      state: { delivered: {}, deliveredTasks: {} },
+      getStatus: () => "idle",
+      prompt: (handle, text) => { prompts.push({ handle, text }); return true; },
+      allowPrompt: true,
+      persistState: true,
+    });
+
+    assert.equal(prompts.length, 1);
+    const line = prompts[0].text.split("\n").find((text) => text.includes("task heartbeat"));
+    assert.ok(line, `expected a heartbeat instruction\n${prompts[0].text}`);
+    // The instruction must name the verb, the agent, and say why notes are not enough.
+    assert.match(line, /herdr-amq task heartbeat <id> --me worker/);
+    assert.match(line, /not your notes/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

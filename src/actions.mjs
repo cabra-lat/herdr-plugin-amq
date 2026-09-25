@@ -183,6 +183,7 @@ const TASK_FLAGS = {
   list: new Set(["owner", "status", "json", "me", "from", "help"]),
   ls: new Set(["owner", "status", "json", "me", "from", "help"]),
   create: new Set(["title", "to", "owner", "desc", "description", "status", "priority", "next-actor", "depends-on", "json", "notify", "me", "from", "help"]),
+  new: new Set(["title", "to", "owner", "desc", "description", "status", "priority", "next-actor", "depends-on", "json", "notify", "me", "from", "help"]),
   assign: new Set(["to", "owner", "title", "desc", "description", "status", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
   claim: new Set(["id", "notify", "me", "from", "help"]),
   done: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
@@ -208,7 +209,7 @@ function taskUsage() {
     "  list [--owner <h>] [--status <s>] [--json]   List all tasks",
     "  drain [--me <h>] [--claim] [--json]          Drain backlog tasks with full descriptions",
     "  next [--me <h>]                              Auto-claim and start next backlog task",
-    "  create --title <t> [--owner <h>] [--desc <d>] Open a card (owner defaults to --me)",
+    "  create --title <t> [--owner <h>] [--desc <d>]  Open a card (alias of assign; owner defaults to --me)",
     "  assign --to <h> --title <t> [--desc <d>]     Assign a new task to an agent",
     "  claim <id> [--me <h>]                        Claim an existing task",
     "  heartbeat <id> [--me <h>]                    Record liveness without changing the card",
@@ -344,19 +345,28 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       break;
     }
 
-    case "create": {
-      // `create` is the coordinator-facing verb: it opens a card without forcing an
-      // owner, so the person with the most context can scope the work. `assign`
-      // remains the owner-requiring form.
-      const to = flags.to || flags.owner || me;
+    // `create` and `assign` are the same operation: open a card and give it an
+    // owner. `assign` is the historical name; `create` is the coordinator-facing
+    // spelling whose owner defaults to the caller. One implementation, so the two
+    // names cannot drift apart.
+    case "create":
+    case "assign": {
+      const isCreate = subcommand === "create" || subcommand === "new";
+      const to = flags.to || flags.owner || (isCreate ? me : "");
       const title = flags.title || positional.join(" ");
       const descArg = flags.desc || flags.description || "";
       const desc = expandAtFile(descArg, "--desc");
       if (desc.error) return failTask(desc.error);
+
       if (!title || !title.trim()) {
-        console.error("❌ Task title is required: herdr-amq task create --title <title>");
+        console.error(`❌ Task title is required: --title <title>`);
         process.exit(1);
       }
+      if (!to || !to.trim()) {
+        console.error(`❌ Target owner is required: --to <handle>`);
+        process.exit(1);
+      }
+
       let res;
       try {
         res = addBoardTask(repoRoot, amqRoot, {
@@ -373,6 +383,7 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       } catch (error) {
         return failTask(`Failed to write task: ${error.message}`);
       }
+
       if (!res.ok) {
         console.error(`❌ Failed to create task: ${res.error}`);
         process.exit(1);
@@ -381,54 +392,10 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         console.log(JSON.stringify(res.task, null, 2));
         break;
       }
-      console.log(`\n✅ \x1b[32mTask created\x1b[0m (ID: ${res.task.id})`);
-      console.log(`Owner: ${res.task.owner}`);
+      console.log(`\n✅ \x1b[32mTask created and assigned to ${to}\x1b[0m (ID: ${res.task.id})`);
       if (res.task.next_actor) console.log(`Next actor: ${res.task.next_actor}`);
       if (res.task.depends_on?.length) console.log(`Depends on: ${res.task.depends_on.join(", ")}`);
       console.log(`Title: ${res.task.title}\n`);
-      break;
-    }
-
-    case "assign": {
-      const to = flags.to || flags.owner;
-      const title = flags.title || positional.join(" ");
-      const desc = flags.desc || flags.description || "";
-      const status = flags.status || "backlog";
-
-      if (!title || !title.trim()) {
-        console.error("❌ Task title is required: --title <title>");
-        process.exit(1);
-      }
-      if (!to || !to.trim()) {
-        console.error("❌ Target owner is required: --to <handle>");
-        process.exit(1);
-      }
-
-      let res;
-      try {
-        res = addBoardTask(repoRoot, amqRoot, {
-          title,
-          owner: to,
-          status,
-          description: desc,
-          from: me,
-          priority: flags.priority || undefined,
-          depends_on: listFlag(flags["depends-on"]),
-          next_actor: nextActorFlag(flags["next-actor"]),
-          notify: flags.notify !== "false",
-        });
-      } catch (error) {
-        return failTask(`Failed to write task: ${error.message}`);
-      }
-
-      if (res.ok) {
-        console.log(`\n✅ \x1b[32mTask created and assigned to ${to}\x1b[0m (ID: ${res.task.id})`);
-        console.log(`✉️ Automail notification dispatched via AMQ to ${to}.`);
-        console.log(`Title: ${res.task.title}\n`);
-      } else {
-        console.error(`❌ Failed to create task: ${res.error}`);
-        process.exit(1);
-      }
       break;
     }
 
