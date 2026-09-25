@@ -106,3 +106,50 @@ test("existing supported task subcommands retain zero exit codes", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("heartbeat, reassign and block metadata verbs work and fail loudly", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const assigned = run(root, ["task", "assign", "--to", "alice", "--title", "Metadata card", "--notify", "false", "--depends-on", "task_a,task_b"]);
+    assert.equal(assigned.status, 0, assigned.stderr);
+    const id = (assigned.stdout.match(/ID: (task_[0-9a-z_]+)/) || [])[1];
+    assert.ok(id, assigned.stdout);
+
+    const claimed = run(root, ["task", "claim", id, "--me", "alice", "--notify", "false"]);
+    assert.equal(claimed.status, 0, claimed.stderr);
+    const before = fs.readFileSync(path.join(amqRoot, "bus", "doing", `${id}.md`), "utf8");
+
+    const beat = run(root, ["task", "heartbeat", id, "--me", "alice"]);
+    assert.equal(beat.status, 0, beat.stderr);
+    const after = fs.readFileSync(path.join(amqRoot, "bus", "doing", `${id}.md`), "utf8");
+    assert.match(after, /last_heartbeat_at: "[\d-]+T/);
+    // Liveness only: `updated` and claims are untouched by a heartbeat.
+    const updatedBefore = (before.match(/^updated: (.*)$/m) || [])[1];
+    const updatedAfter = (after.match(/^updated: (.*)$/m) || [])[1];
+    assert.equal(updatedAfter, updatedBefore);
+    assert.equal((after.match(/^claims: (\d+)$/m) || [])[1], "1");
+
+    // Unknown flag on the new verbs must fail loudly too.
+    const badFlag = run(root, ["task", "heartbeat", id, "--me", "alice", "--bogus", "x"]);
+    assert.notEqual(badFlag.status, 0);
+    assert.match(badFlag.stderr, /Unknown option --bogus/);
+    const missingId = run(root, ["task", "heartbeat", "--me", "alice"]);
+    assert.notEqual(missingId.status, 0);
+    assert.match(missingId.stderr, /Task ID is required/);
+
+    const moved = run(root, ["task", "reassign", id, "--to", "bob", "--me", "coordinator"]);
+    assert.equal(moved.status, 0, moved.stderr);
+    assert.match(fs.readFileSync(path.join(amqRoot, "bus", "doing", `${id}.md`), "utf8"), /owner: "bob"/);
+    const badReassign = run(root, ["task", "reassign", id, "--me", "coordinator"]);
+    assert.notEqual(badReassign.status, 0);
+    assert.match(badReassign.stderr, /Target owner is required/);
+
+    const blocked = run(root, ["task", "block", id, "--me", "bob", "--reason", "Waiting on spotter", "--next-actor", "spotter", "--notify", "false"]);
+    assert.equal(blocked.status, 0, blocked.stderr);
+    const card = fs.readFileSync(path.join(amqRoot, "bus", "blocked", `${id}.md`), "utf8");
+    assert.match(card, /next_actor: "spotter"/);
+    assert.match(card, /block_reason: "Waiting on spotter"/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

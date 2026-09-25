@@ -21,6 +21,8 @@ import {
   addBoardTask,
   updateBoardTask,
   appendBoardTaskNote,
+  heartbeatBoardTask,
+  reassignBoardTask,
   deleteBoardTask,
   drainTasks,
 } from "./board.mjs";
@@ -180,11 +182,13 @@ function parseTaskArgs(args = []) {
 const TASK_FLAGS = {
   list: new Set(["owner", "status", "json", "me", "from", "help"]),
   ls: new Set(["owner", "status", "json", "me", "from", "help"]),
-  assign: new Set(["to", "owner", "title", "desc", "description", "status", "notify", "me", "from", "help"]),
+  assign: new Set(["to", "owner", "title", "desc", "description", "status", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
   claim: new Set(["id", "notify", "me", "from", "help"]),
   done: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
   complete: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
-  block: new Set(["id", "reason", "desc", "notify", "me", "from", "help"]),
+  block: new Set(["id", "reason", "desc", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
+  heartbeat: new Set(["id", "me", "from", "help"]),
+  reassign: new Set(["id", "to", "owner", "next-actor", "notify", "me", "from", "help"]),
   show: new Set(["id", "me", "from", "help"]),
   drain: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
   next: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
@@ -205,9 +209,11 @@ function taskUsage() {
     "  next [--me <h>]                              Auto-claim and start next backlog task",
     "  assign --to <h> --title <t> [--desc <d>]     Assign a new task to an agent",
     "  claim <id> [--me <h>]                        Claim an existing task",
+    "  heartbeat <id> [--me <h>]                    Record liveness without changing the card",
+    "  reassign <id> --to <h> [--me <h>]            Change a card's owner",
     "  comment <id> --text <text> [--me <h>]         Add a durable note without changing activity",
     "  done <id> [--me <h>] [--proof <evidence>]    Complete a task with proof",
-    "  block <id> [--me <h>] [--reason <reason>]    Mark task blocked with reason",
+    "  block <id> [--reason <r>] [--next-actor <h>] [--depends-on <id,...>]",
     "  show <id>                                    View task details and notes",
     "────────────────────────────────────────────────────────────────────────────",
     "",
@@ -218,6 +224,22 @@ function failTask(message) {
   console.error(`❌ ${message}`);
   process.exitCode = 1;
   return false;
+}
+
+// `--depends-on a,b` -> ["a", "b"]. Returns null when the flag is absent so the
+// caller can preserve whatever the card already recorded.
+function listFlag(value) {
+  if (value === undefined || value === true) return null;
+  const items = String(value).split(",").map((item) => item.trim()).filter(Boolean);
+  return items.length > 0 ? items : null;
+}
+
+// `--next-actor spotter` sets it; `--next-actor none` clears it; absent keeps it.
+function nextActorFlag(value) {
+  if (value === undefined) return undefined;
+  const text = String(value).trim();
+  if (!text || ["none", "null", "unknown", "unassigned"].includes(text.toLowerCase())) return null;
+  return text;
 }
 
 /**
@@ -321,6 +343,9 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
           status,
           description: desc,
           from: me,
+          priority: flags.priority || undefined,
+          depends_on: listFlag(flags["depends-on"]),
+          next_actor: nextActorFlag(flags["next-actor"]),
           notify: flags.notify !== "false",
         });
       } catch (error) {
@@ -415,7 +440,12 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
           repoRoot,
           amqRoot,
           taskId,
-          { status: "blocked" },
+          {
+            status: "blocked",
+            next_actor: nextActorFlag(flags["next-actor"]),
+            depends_on: listFlag(flags["depends-on"]) || undefined,
+            priority: flags.priority || undefined,
+          },
           { from: me, reason, notify: flags.notify !== "false" }
         );
       } catch (error) {
@@ -430,6 +460,61 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         console.error(`❌ Failed to block task: ${res.error}`);
         process.exit(1);
       }
+      break;
+    }
+
+    case "heartbeat": {
+      const taskId = positional[0] || flags.id;
+      if (!taskId) {
+        console.error("❌ Task ID is required: herdr-amq task heartbeat <taskId> [--me <handle>]");
+        process.exit(1);
+      }
+      let res;
+      try {
+        res = heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor: me });
+      } catch (error) {
+        return failTask(`Failed to write task heartbeat: ${error.message}`);
+      }
+      if (!res.ok) {
+        console.error(`❌ Failed to record heartbeat: ${res.error}`);
+        process.exit(1);
+      }
+      console.log(`\n💓 Heartbeat recorded for task ${taskId} (liveness only; status, updated and claims unchanged).`);
+      console.log(`Last heartbeat: ${res.last_heartbeat_at}`);
+      console.log("──────────────────────────────────────────────");
+      break;
+    }
+
+    case "reassign": {
+      const taskId = positional[0] || flags.id;
+      const to = flags.to || flags.owner;
+      if (!taskId) {
+        console.error("❌ Task ID is required: herdr-amq task reassign <taskId> --to <handle>");
+        process.exit(1);
+      }
+      if (!to || !String(to).trim()) {
+        console.error("❌ Target owner is required: herdr-amq task reassign <taskId> --to <handle>");
+        process.exit(1);
+      }
+      let res;
+      try {
+        res = reassignBoardTask(repoRoot, amqRoot, taskId, {
+          owner: to,
+          from: me,
+          notify: flags.notify !== "false",
+        });
+      } catch (error) {
+        return failTask(`Failed to write task reassignment: ${error.message}`);
+      }
+      if (!res.ok) {
+        console.error(`❌ Failed to reassign task: ${res.error}`);
+        process.exit(1);
+      }
+      if (flags["next-actor"] !== undefined) {
+        updateBoardTask(repoRoot, amqRoot, taskId, { next_actor: nextActorFlag(flags["next-actor"]) }, { from: me, notify: false });
+      }
+      console.log(`\n🔀 Task ${taskId} reassigned to ${to}.`);
+      console.log("──────────────────────────────────────────────");
       break;
     }
 

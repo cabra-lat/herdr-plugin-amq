@@ -41,6 +41,28 @@ function conditionFingerprint(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
 }
 
+// Liveness is the newest of the card's own liveness clock and its state clock.
+// The board writes snake_case (`last_heartbeat_at`); the camelCase spellings are
+// accepted for projections that are not read straight off disk.
+function cardLiveness(task) {
+  const candidates = [
+    task?.last_heartbeat_at,
+    task?.heartbeatAt,
+    task?.lastHeartbeat,
+    task?.updated,
+    task?.created,
+  ].map((value) => timestamp(value)).filter((value) => value !== null);
+  return candidates.length > 0 ? Math.max(...candidates) : null;
+}
+
+// A blocked card that carries a reason has been triaged: the coordinator already
+// named the actor and the way out. Re-alerting on it punishes correct triage and
+// trains readers to ignore the alert, so triage state, not age, gates the alert.
+function isTriagedBlocked(task) {
+  const reason = task?.block_reason ?? task?.reason;
+  return typeof reason === "string" && reason.trim().length > 0;
+}
+
 function cardCondition(cards) {
   return (cards || []).map((card) => ({
     id: card.id,
@@ -141,16 +163,22 @@ export function buildCoordinatorMetrics({
     const age = ageMs(task.updated || task.created, now);
     return age === null ? oldest : Math.max(oldest, age);
   }, 0);
-  // Notes are evidence of progress, deliberately not liveness (see noteSummary):
-  // a note never moves `updated`, so commenting cannot keep a stalled card alive.
+  // A card is stale when neither an explicit heartbeat nor a state change has
+  // happened within the threshold. Previously this read only `updated`, so an
+  // actively worked card was indistinguishable from an ignored one.
   const stalledCards = activeCards
-    .map((task) => ({
-      id: task.id,
-      title: task.title,
-      owner: task.owner || null,
-      ageMs: ageMs(task.updated || task.created, now),
-      ...noteSummary(task, now),
-    }))
+    .map((task) => {
+      const livenessMs = cardLiveness(task);
+      return {
+        id: task.id,
+        title: task.title,
+        owner: task.owner || null,
+        ageMs: livenessMs === null ? null : Math.max(0, now - livenessMs),
+        lastActivityAt: livenessMs === null ? null : new Date(livenessMs).toISOString(),
+        heartbeatAt: timestamp(task?.last_heartbeat_at) === null ? null : new Date(timestamp(task.last_heartbeat_at)).toISOString(),
+        ...noteSummary(task, now),
+      };
+    })
     .filter((task) => task.ageMs !== null && task.ageMs > limits.stalledWorkMs);
   const blockedWork = [];
   for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
@@ -163,9 +191,10 @@ export function buildCoordinatorMetrics({
         id: task.id,
         title: task.title,
         owner: task.owner || null,
-        nextActor: task.next_actor || task.nextActor || task.owner || null,
+        nextActor: task.next_actor ?? task.nextActor ?? null,
         dependency: task.depends_on || task.dependency || null,
         reason: task.block_reason || task.reason || null,
+        triaged: isTriagedBlocked(task),
         ageMs: ageMsValue,
         ...noteSummary(task, now),
       });
@@ -230,8 +259,8 @@ export function buildCoordinatorMetrics({
     alerts.push({
       id: "stalled_work",
       severity: stalledCards.some((task) => task.ageMs > limits.queueCriticalMs) ? "critical" : "warning",
-      message: `${stalledCards.length} active card(s) have not moved within the stall threshold.${noteSummary}`,
-      recommendedAction: "Inspect the oldest stalled card, check its note recency, and name its next actor or blocker.",
+      message: `${stalledCards.length} active card(s) have had no heartbeat or state change within the stall threshold.${noteSummary}`,
+      recommendedAction: "Ask the owner for a status; a working owner records it with `task heartbeat <id> --me <handle>`, a blocked one with `--reason`.",
       stalledCount: stalledCards.length,
       cardsWithNotes: withNotes.length,
       cards: stalledCards,
@@ -245,18 +274,24 @@ export function buildCoordinatorMetrics({
       recommendedAction: "Assign or re-sequence the oldest ready card; page only after the critical threshold persists.",
     });
   }
-  if (blockedWork.length > 0) {
-    const severity = blockedWork.some((task) => task.ageMs !== null && task.ageMs >= limits.blockedCriticalMs) ? "critical" : "warning";
+  const untriagedBlocked = blockedWork.filter((task) => !task.triaged);
+  if (untriagedBlocked.length > 0) {
+    const severity = untriagedBlocked.some((task) => task.ageMs !== null && task.ageMs >= limits.blockedCriticalMs) ? "critical" : "warning";
+    const alreadyTriaged = blockedWork.length - untriagedBlocked.length;
+    const excluded = alreadyTriaged > 0 ? ` ${alreadyTriaged} already carry a triage reason and are excluded.` : "";
     alerts.push({
       id: "blocked_cards",
       severity,
-      fingerprint: conditionFingerprint({ id: "blocked_cards", severity, cards: cardCondition(blockedWork) }),
-      message: `${blockedWork.length} blocked card(s) need coordinator attention.`,
-      recommendedAction: "Review each next actor/dependency, then delegate or explicitly re-scope the blocker.",
-      cards: blockedWork,
+      fingerprint: conditionFingerprint({ id: "blocked_cards", severity, cards: cardCondition(untriagedBlocked) }),
+      message: `${untriagedBlocked.length} blocked card(s) are UNTRIAGED (no reason recorded).${excluded}`,
+      recommendedAction: "Name the next actor and the blocker in one `task block <id> --reason ... --next-actor <handle>` call; a card with a reason stops alerting.",
+      untriagedCount: untriagedBlocked.length,
+      triagedExcludedCount: alreadyTriaged,
+      cards: untriagedBlocked,
+      excludedCards: blockedWork.filter((task) => task.triaged),
     });
   }
-  const agedBlockedWork = blockedWork.filter((task) => task.ageMs !== null && task.ageMs >= limits.blockedWarnMs);
+  const agedBlockedWork = untriagedBlocked.filter((task) => task.ageMs !== null && task.ageMs >= limits.blockedWarnMs);
   if (agedBlockedWork.length > 0) {
     const severity = agedBlockedWork.some((task) => task.ageMs >= limits.blockedCriticalMs) ? "critical" : "warning";
     alerts.push({

@@ -17,9 +17,12 @@ herdr-amq task list
 herdr-amq task drain --me <handle>
 herdr-amq task next --me <handle>
 herdr-amq task claim <task-id> --me <handle>
+herdr-amq task heartbeat <task-id> --me <handle>
+herdr-amq task reassign <task-id> --to <handle> [--next-actor <handle>]
 herdr-amq task comment <task-id> --me <handle> --text "Progress note; does not count as activity"
 herdr-amq task done <task-id> --proof "Verification evidence"
-herdr-amq task block <task-id> --reason "Waiting on an external dependency"
+herdr-amq task block <task-id> --reason "Waiting on an external dependency" \
+  --next-actor <handle> --depends-on <task-id,task-id>
 
 herdr-amq migrate [--dry-run] [--verbose]
 herdr-amq --skill
@@ -29,6 +32,15 @@ herdr-amq --skill --install .opencode/skills/herdr-amq/SKILL.md
 Mail messages use Maildir delivery and RFC 5322 threading headers. Attachments are stored through the CAS blobstore or pinned to a Git object when migrating historical files.
 
 Unknown task subcommands and options exit non-zero with a specific diagnostic on stderr. A task comment is persisted on the card and shown by `task show`, but does not change the card's `updated` timestamp, claim, or heartbeat fields.
+
+## Liveness, triage and metadata
+
+- `task heartbeat <id> --me <handle>` records `last_heartbeat_at` and nothing else. It does not change the stage, `updated`, the claim count, or the notes, so it cannot be used to fake progress; it exists so the stall detector measures liveness instead of claim bookkeeping. The stall detector reads the newest of `last_heartbeat_at` and `updated`.
+- `task comment` is evidence of progress and is deliberately **not** liveness: a note never moves `updated`, so commenting cannot keep a stalled card alive. Alerts surface `noteCount`/`lastNoteAt` so a reader can judge, not so a detector can be satisfied.
+- A blocked card that carries a `reason` is considered triaged and is excluded from `blocked_cards`/`blocked_age`; only cards with no reason alert, and the message reports the untriaged count and how many triaged cards were excluded. Record the triage in one call so the fields and the prose cannot disagree:
+  `herdr-amq task block <id> --reason "Waiting on spotter for the numeric capture" --next-actor spotter --depends-on task_xyz`
+- `next_actor` is never inferred from a reason string. Blocking a card without `--next-actor` leaves the field as it was, and a card that has never had one reports none: an absent next actor is better than a confidently wrong one. Pass `--next-actor none` to clear a stale value.
+- `task reassign <id> --to <handle>` changes the owner without churning the card id or its claim history.
 
 ## Task ownership and execution policy
 

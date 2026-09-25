@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { addBoardTask, parseTaskFile, updateBoardTask, loadBoard } from "../src/board.mjs";
+import {
+  addBoardTask,
+  heartbeatBoardTask,
+  parseTaskFile,
+  reassignBoardTask,
+  updateBoardTask,
+  loadBoard,
+} from "../src/board.mjs";
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "amq-lifecycle-"));
@@ -42,7 +49,9 @@ test("task lifecycle persists v1 fields and proof/reason with fake clock", () =>
     assert.equal(blocked.ok, true);
     assert.equal(blocked.task.blocked_at, "2026-09-24T10:02:00.000Z");
     assert.equal(blocked.task.block_reason, "Waiting for numeric capture");
-    assert.equal(blocked.task.next_actor, "coordinator");
+    // Blocking no longer invents a next actor: the field keeps the claim-time
+    // value instead of a confidently wrong "coordinator".
+    assert.equal(blocked.task.next_actor, "qa");
 
     updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress" }, {
       notify: false,
@@ -105,6 +114,89 @@ test("legacy task cards remain readable and are upgraded on next update", () => 
     assert.equal(updated.task.schema_version, 1);
     assert.equal(updated.task.claims, 1);
     assert.equal(updated.task.priority, "normal");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat records liveness without touching card activity", () => {
+  const { root, amqRoot } = fixture();
+  try {
+    const created = addBoardTask(root, amqRoot, { title: "Heartbeat", owner: "qa", description: "Liveness." }, {
+      notify: false,
+      now: new Date("2026-09-24T10:00:00.000Z"),
+    });
+    updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress", owner: "qa" }, {
+      notify: false,
+      now: new Date("2026-09-24T10:01:00.000Z"),
+    });
+
+    const beat = heartbeatBoardTask(root, amqRoot, created.task.id, {
+      actor: "qa",
+      now: new Date("2026-09-24T10:20:00.000Z"),
+    });
+    assert.equal(beat.ok, true);
+    assert.equal(beat.last_heartbeat_at, "2026-09-24T10:20:00.000Z");
+    // Liveness only: no state change, no claim churn, no `updated` bump.
+    assert.equal(beat.task.updated, "2026-09-24T10:01:00.000Z");
+    assert.equal(beat.task.status, "in_progress");
+    assert.equal(beat.task.claims, 1);
+    assert.equal(beat.task.claimed_at, "2026-09-24T10:01:00.000Z");
+
+    // A second in-progress update must not clobber a newer heartbeat.
+    const again = updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress" }, {
+      notify: false,
+      now: new Date("2026-09-24T10:21:00.000Z"),
+    });
+    assert.equal(again.task.last_heartbeat_at, "2026-09-24T10:20:00.000Z");
+
+    const done = updateBoardTask(root, amqRoot, created.task.id, { status: "done" }, {
+      proof: "ok",
+      notify: false,
+      now: new Date("2026-09-24T10:30:00.000Z"),
+    });
+    assert.equal(done.ok, true);
+    const refused = heartbeatBoardTask(root, amqRoot, created.task.id, { actor: "qa" });
+    assert.equal(refused.ok, false);
+    assert.match(refused.error, /done/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reassign changes owner and blocked next actor is explicit or absent", () => {
+  const { root, amqRoot } = fixture();
+  try {
+    const created = addBoardTask(root, amqRoot, { title: "Ownership", owner: "qa", description: "Fields." }, {
+      notify: false,
+      now: new Date("2026-09-24T10:00:00.000Z"),
+    });
+    const moved = reassignBoardTask(root, amqRoot, created.task.id, {
+      owner: "coordinator",
+      from: "coordinator",
+      now: new Date("2026-09-24T10:01:00.000Z"),
+    });
+    assert.equal(moved.ok, true);
+    assert.equal(moved.task.owner, "coordinator");
+    // Same id, no claim churn from a metadata-only change.
+    assert.equal(moved.task.id, created.task.id);
+    assert.equal(moved.task.claims, 0);
+
+    // Blocking without an explicit next actor leaves the field absent rather than
+    // inventing one, and the value is queryable.
+    const blocked = updateBoardTask(root, amqRoot, created.task.id, {
+      status: "blocked",
+      next_actor: "spotter",
+      depends_on: ["task_123"],
+    }, { reason: "Waiting on spotter", notify: false, now: new Date("2026-09-24T10:02:00.000Z") });
+    assert.equal(blocked.task.next_actor, "spotter");
+    assert.deepEqual(blocked.task.depends_on, ["task_123"]);
+
+    const cleared = updateBoardTask(root, amqRoot, created.task.id, { next_actor: null }, {
+      notify: false,
+      now: new Date("2026-09-24T10:03:00.000Z"),
+    });
+    assert.equal(cleared.task.next_actor, null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

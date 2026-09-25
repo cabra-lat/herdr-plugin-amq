@@ -69,7 +69,13 @@ test("blocked cards alert separately and do not fake retry evidence", () => {
           owner: "worker",
           next_actor: "coordinator",
           depends_on: ["qa proof"],
-          block_reason: "Waiting for QA",
+          updated: "2026-09-24T16:40:00.000Z",
+        }, {
+          id: "blocked-triaged",
+          title: "Triaged block",
+          owner: "worker",
+          next_actor: "spotter",
+          block_reason: "Waiting on spotter for the numeric capture",
           updated: "2026-09-24T16:40:00.000Z",
         }],
         done: [],
@@ -83,14 +89,85 @@ test("blocked cards alert separately and do not fake retry evidence", () => {
   assert.equal(result.alerts.some((alert) => alert.id === "retry_failure_trend"), false);
   const blocked = result.alerts.find((alert) => alert.id === "blocked_cards");
   assert.ok(blocked);
-  assert.equal(blocked.cards[0].nextActor, "coordinator");
+  // A card that already carries a triage reason is excluded from the alert.
+  assert.deepEqual(blocked.cards.map((card) => card.id), ["blocked-1"]);
+  assert.equal(blocked.untriagedCount, 1);
+  assert.equal(blocked.triagedExcludedCount, 1);
+  assert.deepEqual(blocked.excludedCards.map((card) => card.id), ["blocked-triaged"]);
+  assert.match(blocked.message, /1 blocked card\(s\) are UNTRIAGED/);
+  assert.match(blocked.recommendedAction, /stops alerting/);
   assert.deepEqual(blocked.cards[0].dependency, ["qa proof"]);
-  assert.match(blocked.recommendedAction, /next actor\/dependency/);
+  assert.match(blocked.recommendedAction, /heartbeat|reason/i);
   assert.match(blocked.fingerprint, /^[a-f0-9]{16}$/);
   const blockedAge = result.alerts.find((alert) => alert.id === "blocked_age");
   assert.ok(blockedAge);
   assert.deepEqual(blockedAge.cards.map((card) => card.id), ["blocked-1"]);
   assert.notEqual(blockedAge.fingerprint, blocked.fingerprint);
+});
+
+test("a fully triaged board raises no blocked alerts", () => {
+  const result = buildCoordinatorMetrics({
+    handles: ["coordinator", "worker"],
+    agentStatuses: { coordinator: "idle", worker: "idle" },
+    board: {
+      columns: {
+        backlog: [],
+        in_progress: [],
+        blocked: [{
+          id: "blocked-triaged",
+          title: "Triaged block",
+          owner: "worker",
+          next_actor: "spotter",
+          block_reason: "Waiting on spotter for the numeric capture",
+          updated: "2026-09-24T16:00:00.000Z",
+        }],
+        done: [],
+      },
+    },
+    now: NOW,
+  });
+  assert.equal(result.alerts.some((alert) => alert.id === "blocked_cards"), false);
+  assert.equal(result.alerts.some((alert) => alert.id === "blocked_age"), false);
+  assert.equal(result.blockedWork.length, 1);
+  assert.equal(result.blockedWork[0].triaged, true);
+  assert.equal(result.blockedWork[0].nextActor, "spotter");
+});
+
+test("an explicit heartbeat keeps a card out of stalled_work", () => {
+  const card = {
+    id: "working-card",
+    title: "Actively worked",
+    owner: "worker",
+    // State clock is 40 minutes old, but the worker heartbeated 2 minutes ago.
+    updated: "2026-09-24T16:20:00.000Z",
+    last_heartbeat_at: "2026-09-24T16:58:00.000Z",
+  };
+  const silent = { id: "quiet-card", title: "Untouched", owner: "worker", updated: "2026-09-24T16:20:00.000Z" };
+  const result = buildCoordinatorMetrics({
+    handles: ["coordinator", "worker"],
+    agentStatuses: { coordinator: "idle", worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [card, silent], blocked: [], done: [] } },
+    now: NOW,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+  });
+  const stalled = result.alerts.find((alert) => alert.id === "stalled_work");
+  assert.ok(stalled);
+  assert.deepEqual(stalled.cards.map((c) => c.id), ["quiet-card"]);
+  assert.equal(stalled.cards[0].heartbeatAt, null);
+  // The snake_case field the board actually writes is the one being read.
+  assert.equal(stalled.cards[0].lastActivityAt, "2026-09-24T16:20:00.000Z");
+
+  const stale = buildCoordinatorMetrics({
+    handles: ["coordinator", "worker"],
+    agentStatuses: { coordinator: "idle", worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [{ ...card, last_heartbeat_at: "2026-09-24T16:30:00.000Z" }], blocked: [], done: [] } },
+    now: NOW,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+  });
+  const staleCards = stale.alerts.find((alert) => alert.id === "stalled_work").cards;
+  assert.deepEqual(staleCards.map((c) => c.id), ["working-card"]);
+  assert.equal(staleCards[0].heartbeatAt, "2026-09-24T16:30:00.000Z");
+  assert.equal(staleCards[0].ageMs, 30 * 60 * 1000);
 });
 
 test("real retry evidence still raises retry_failure_trend", () => {
@@ -177,5 +254,5 @@ test("stalled_work surfaces note recency as evidence without making notes livene
   assert.equal(stalled.cardsWithNotes, 1);
   assert.equal(stalled.stalledCount, 2);
   assert.match(stalled.message, /1 of them carry notes/);
-  assert.match(stalled.recommendedAction, /note recency/);
+  assert.match(stalled.recommendedAction, /heartbeat|reason/i);
 });

@@ -675,7 +675,8 @@ export function addBoardTask(
     proof: null,
     notes: [],
     depends_on: Array.isArray(depends_on) ? depends_on : [],
-    next_actor: next_actor || cleanOwner,
+    // Never invent a next actor for a blocked card: absent beats confidently wrong.
+    next_actor: next_actor === undefined ? (cleanStatus === "blocked" ? null : cleanOwner) : next_actor,
     thread: `agboard/${id}`,
     source: "bus",
   };
@@ -769,14 +770,25 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     claimed_at: enteringProgress ? now : (existingTask.claimed_at || null),
     blocked_at: isBlocked ? (wasBlocked ? existingTask.blocked_at : now) : existingTask.blocked_at,
     done_at: targetStatus === "done" ? (existingTask.done_at || now) : existingTask.done_at,
-    last_heartbeat_at: targetStatus === "in_progress" ? now : existingTask.last_heartbeat_at,
+    // A claim is a liveness signal, an in-progress update is not: only a fresh
+    // claim (or an explicit `task heartbeat`) sets the liveness clock.
+    last_heartbeat_at: enteringProgress ? now : (existingTask.last_heartbeat_at || now),
     claims: enteringProgress ? (Number(existingTask.claims) || 0) + 1 : (Number(existingTask.claims) || 0),
     blocked_ms: blockedMs,
     block_reason: updates.reason ?? opts.reason ?? existingTask.block_reason ?? null,
     proof: updates.proof ?? opts.proof ?? existingTask.proof ?? null,
     notes: Array.isArray(updates.notes) ? updates.notes : (Array.isArray(existingTask.notes) ? existingTask.notes : []),
     depends_on: Array.isArray(updates.depends_on) ? updates.depends_on : (Array.isArray(existingTask.depends_on) ? existingTask.depends_on : []),
-    next_actor: updates.next_actor ?? opts.next_actor ?? (targetStatus === "done" ? null : (targetStatus === "blocked" ? "coordinator" : owner)),
+    // A blocked card is triaged when it carries a reason. There is no reliable way
+    // to infer a next actor from a reason string, so an untriaged block reports no
+    // next actor rather than a confidently wrong one (for example "coordinator").
+    // An explicit `next_actor: null` in the update clears a persisted value.
+    next_actor: Object.hasOwn(updates, "next_actor")
+      ? updates.next_actor
+      : (Object.hasOwn(opts, "next_actor") ? opts.next_actor : (
+        targetStatus === "done" ? null
+          : (targetStatus === "blocked" ? (existingTask.next_actor ?? null) : owner)
+      )),
     source: "bus",
   };
 
@@ -810,6 +822,58 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   }
 
   return { ok: true, taskId, updates, task: updatedTask };
+}
+
+/**
+ * Record an explicit liveness signal for a card.
+ *
+ * A heartbeat only moves `last_heartbeat_at`. It deliberately does not change
+ * `updated`, the stage, the claim count, or the notes, so it cannot be used to
+ * fake progress on the board; it exists so the stall detector can measure liveness
+ * instead of measuring claim bookkeeping.
+ */
+export function heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor, now } = {}) {
+  if (!taskId) return { ok: false, error: "taskId is required" };
+
+  const busDir = getBusDirectory(repoRoot, amqRoot);
+  const stageDirs = ["backlog", "doing", "in_progress", "blocked", "done"];
+  let existingPath = null;
+  let existingTask = null;
+  let stage = "backlog";
+
+  for (const candidateStage of stageDirs) {
+    const candidate = path.join(busDir, candidateStage, `${taskId}.md`);
+    if (fs.existsSync(candidate)) {
+      existingPath = candidate;
+      stage = candidateStage === "doing" ? "in_progress" : candidateStage;
+      existingTask = parseTaskFile(candidate, stage);
+      break;
+    }
+  }
+
+  if (!existingTask) return { ok: false, error: "Task not found" };
+  if (existingTask.status === "done") return { ok: false, error: "Task is done; a heartbeat cannot revive it" };
+
+  const timestamp = now instanceof Date ? now.toISOString() : new Date().toISOString();
+  const updatedTask = { ...existingTask, last_heartbeat_at: timestamp };
+
+  try {
+    fs.writeFileSync(existingPath, serializeTaskFile(updatedTask), "utf8");
+  } catch (error) {
+    return { ok: false, error: `failed to write heartbeat: ${error.message}` };
+  }
+
+  return { ok: true, taskId, actor: actor || null, last_heartbeat_at: timestamp, task: { ...updatedTask, filePath: existingPath } };
+}
+
+/**
+ * Change a card's owner without churning its id or claim history.
+ */
+export function reassignBoardTask(repoRoot, amqRoot, taskId, { owner, from, now, notify = false } = {}) {
+  if (!taskId) return { ok: false, error: "taskId is required" };
+  const cleanOwner = String(owner || "").trim();
+  if (!cleanOwner) return { ok: false, error: "owner is required" };
+  return updateBoardTask(repoRoot, amqRoot, taskId, { owner: cleanOwner }, { from, now, notify });
 }
 
 /**

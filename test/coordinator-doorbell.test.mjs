@@ -173,10 +173,16 @@ test("changed blocked-card condition gets a new coordinator prompt", () => {
     };
     assert.equal(runDoorbellPass(options).coordinatorDoorbell.prompted, true);
     assert.equal(runDoorbellPass(options).coordinatorDoorbell.prompted, false);
-    assert.equal(updateBoardTask(root, amqRoot, created.task.id, { reason: "New dependency is ready for triage." }, { notify: false }).ok, true);
+    // Change the blocked condition WITHOUT triaging it: a card that carries a
+    // reason is triaged and must stop alerting instead of re-prompting.
+    assert.equal(updateBoardTask(root, amqRoot, created.task.id, { next_actor: "spotter" }, { notify: false }).ok, true);
     assert.equal(runDoorbellPass(options).coordinatorDoorbell.prompted, true);
     assert.equal(prompts.length, 2);
-    assert.match(prompts[1].text, /New dependency is ready for triage/);
+    assert.match(prompts[1].text, /next-actor=spotter/);
+    // Triaging the same card silences the alert; correct triage must not page again.
+    assert.equal(updateBoardTask(root, amqRoot, created.task.id, { status: "blocked" }, { reason: "New dependency is ready for triage.", notify: false }).ok, true);
+    assert.equal(runDoorbellPass(options).coordinatorDoorbell.prompted, false);
+    assert.equal(prompts.length, 2);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
