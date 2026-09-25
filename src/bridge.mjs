@@ -518,7 +518,7 @@ function buildCoordinatorAlertPrompt(alert) {
     }
   }
   lines.push("Classify each card as delegate, re-scope/unblock, wait-with-owner, or close/superseded; return the next actor.");
-  lines.push("Coordinator owns triage and approvals; decide and proceed, recording the decision and evidence. The only standing exception is remote deletion: never delete remote branches, tags, or other remote refs.");
+  lines.push("Coordinator owns triage and approvals; decide and proceed, recording the decision and evidence.");
   return boundDoorbellPrompt(lines.join("\n"));
 }
 
@@ -723,7 +723,7 @@ export function runManualCoordinatorDoorbell({
   const text = [
     "Manual coordinator doorbell requested from the AGmail dashboard.",
     "Review current swarm metrics, blocked work, and queue state, then delegate or re-scope as needed.",
-    "Coordinator owns triage and approvals; decide and proceed, recording the decision and evidence. The only standing exception is remote deletion: never delete remote branches, tags, or other remote refs.",
+    "Coordinator owns triage and approvals; decide and proceed, recording the decision and evidence.",
   ].join("\n");
   const ok = prompt("coordinator", text, dryRun || !allowPrompt);
   const prompted = Boolean(ok && allowPrompt && !dryRun);

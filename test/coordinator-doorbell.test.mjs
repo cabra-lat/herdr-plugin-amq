@@ -95,7 +95,7 @@ test("coordinator metrics doorbell prompts an idle coordinator once per cooldown
     assert.match(prompts[0].text, /Coordinator review required/);
     assert.match(prompts[0].text, /Coordinator owns triage and approvals/);
     assert.match(prompts[0].text, /decide and proceed/);
-    assert.match(prompts[0].text, /never delete remote branches, tags, or other remote refs/i);
+    assert.doesNotMatch(prompts[0].text, /remote deletion|remote branches|remote tags|remote refs/i);
     assert.doesNotMatch(prompts[0].text, /human confirmation|advisory; no auto-approval/i);
     assert.match(prompts[0].text, /Triage snapshot:/);
     assert.match(prompts[0].text, /next-actor=/);
@@ -289,7 +289,7 @@ test("manual coordinator doorbell prompts immediately and is logged", () => {
     assert.equal(prompts[0].handle, "coordinator");
     assert.match(prompts[0].text, /Manual coordinator doorbell/);
     assert.match(prompts[0].text, /Coordinator owns triage and approvals/);
-    assert.match(prompts[0].text, /never delete remote branches, tags, or other remote refs/i);
+    assert.doesNotMatch(prompts[0].text, /remote deletion|remote branches|remote tags|remote refs/i);
     assert.doesNotMatch(prompts[0].text, /human confirmation|advisory only; do not auto-approve/i);
   } finally {
     if (oldStateDir === undefined) delete process.env.HERDR_PLUGIN_STATE_DIR;
