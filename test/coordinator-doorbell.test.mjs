@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { addBoardTask, loadBoard, updateBoardTask } from "../src/board.mjs";
+import { addBoardTask, appendBoardTaskNote, loadBoard, updateBoardTask } from "../src/board.mjs";
 import { buildCoordinatorMetrics } from "../src/metrics.mjs";
 import { runDoorbellPass, runManualCoordinatorDoorbell, sanitizeDeliveredState } from "../src/bridge.mjs";
 import { sendMaildirMessage } from "../src/protocol.mjs";
@@ -319,6 +319,46 @@ test("coordinator metrics doorbell can be disabled without prompting", () => {
     });
     assert.equal(result.coordinatorDoorbell.prompted, false);
     assert.equal(prompted, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("coordinator triage snapshot reports note count and note recency per card", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const task = addBoardTask(root, amqRoot, {
+      title: "Actively worked but stalled card",
+      owner: "worker",
+      status: "blocked",
+      description: "Blocked, but the worker keeps leaving progress notes.",
+      notify: false,
+    });
+    assert.ok(task.ok);
+    const note = appendBoardTaskNote(root, amqRoot, task.task.id, { text: "still working through the integration", author: "worker" });
+    assert.equal(note.ok, true);
+
+    const prompts = [];
+    runDoorbellPass({
+      amqRoot,
+      handles: ["coordinator"],
+      state: { delivered: {}, deliveredTasks: {} },
+      getStatus: () => "idle",
+      prompt: (handle, text) => {
+        prompts.push({ handle, text });
+        return true;
+      },
+      allowPrompt: true,
+      persistState: true,
+      coordinatorDoorbell: { enabled: true, cooldownMs: 60000 },
+      thresholds: { blockedWarnMs: 0 },
+    });
+
+    assert.equal(prompts.length, 1);
+    const line = prompts[0].text.split("\n").find((text) => text.includes(task.task.id));
+    assert.ok(line, `expected a triage line for ${task.task.id}\n${prompts[0].text}`);
+    assert.match(line, /notes=1/);
+    assert.match(line, /last-note=/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

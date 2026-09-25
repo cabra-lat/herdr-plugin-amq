@@ -514,6 +514,8 @@ function buildCoordinatorAlertPrompt(alert) {
         `next-actor=${card.nextActor || card.owner || "unassigned"}`,
         `dependency=${JSON.stringify(card.dependency || null)}`,
         `reason=${card.reason || "unspecified"}`,
+        // Note recency is progress evidence, never liveness: notes do not move `updated`.
+        (card.noteCount ? `notes=${card.noteCount} last-note=${formatAge(card.noteAgeMs)} ago` : "notes=0"),
       ].join(" "));
     }
   }

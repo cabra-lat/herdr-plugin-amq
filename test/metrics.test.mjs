@@ -120,3 +120,62 @@ test("coordinator metrics recommend action when backlog has no working agent", (
   assert.match(alert.recommendedAction, /Assign or claim/);
   assert.doesNotMatch(alert.recommendedAction, /approve destructive/i);
 });
+
+test("stalled_work surfaces note recency as evidence without making notes liveness", () => {
+  const result = buildCoordinatorMetrics({
+    handles: ["coordinator", "worker"],
+    agentStatuses: { coordinator: "idle", worker: "idle" },
+    board: {
+      columns: {
+        backlog: [],
+        in_progress: [
+          {
+            id: "stalled-with-notes",
+            title: "Actively worked card",
+            owner: "worker",
+            // `updated` is 40 minutes old: a note must NOT make this card fresh.
+            updated: "2026-09-24T16:20:00.000Z",
+            notes: [
+              { at: "2026-09-24T16:25:00.000Z", author: "worker", text: "first progress note" },
+              { at: "2026-09-24T16:50:00.000Z", author: "worker", text: "most recent progress note" },
+              { at: "", author: "worker", text: "" },
+            ],
+          },
+          {
+            id: "stalled-silent",
+            title: "Ignored card",
+            owner: "worker",
+            updated: "2026-09-24T16:10:00.000Z",
+          },
+        ],
+        blocked: [],
+        done: [],
+      },
+    },
+    now: NOW,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+  });
+
+  const stalled = result.alerts.find((alert) => alert.id === "stalled_work");
+  assert.ok(stalled);
+  const withNotes = stalled.cards.find((card) => card.id === "stalled-with-notes");
+  const silent = stalled.cards.find((card) => card.id === "stalled-silent");
+
+  // Both cards are still stalled: notes never move `updated`.
+  assert.equal(withNotes.ageMs, 40 * 60 * 1000);
+  assert.equal(silent.ageMs, 50 * 60 * 1000);
+  assert.deepEqual(stalled.cards.map((card) => card.id).sort(), ["stalled-silent", "stalled-with-notes"]);
+
+  // Note evidence is surfaced, and empty notes are not counted.
+  assert.equal(withNotes.noteCount, 2);
+  assert.equal(withNotes.lastNoteAt, "2026-09-24T16:50:00.000Z");
+  assert.equal(withNotes.noteAgeMs, 10 * 60 * 1000);
+  assert.equal(silent.noteCount, 0);
+  assert.equal(silent.lastNoteAt, null);
+  assert.equal(silent.noteAgeMs, null);
+
+  assert.equal(stalled.cardsWithNotes, 1);
+  assert.equal(stalled.stalledCount, 2);
+  assert.match(stalled.message, /1 of them carry notes/);
+  assert.match(stalled.recommendedAction, /note recency/);
+});

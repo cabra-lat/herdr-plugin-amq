@@ -51,6 +51,26 @@ function cardCondition(cards) {
   }));
 }
 
+// Notes are evidence of progress, deliberately NOT liveness: appending a note
+// never moves `updated`, so commenting cannot keep a stalled card alive and the
+// detector cannot be gamed. Consumers surface note recency so a reader can tell
+// a moving card from an ignored one.
+function noteSummary(task, now) {
+  const notes = Array.isArray(task?.notes)
+    ? task.notes.filter((note) => note && typeof note.text === "string" && note.text.trim())
+    : [];
+  const times = notes
+    .map((note) => timestamp(note.at))
+    .filter((value) => value !== null)
+    .sort((a, b) => a - b);
+  const lastNoteMs = times.length > 0 ? times[times.length - 1] : null;
+  return {
+    noteCount: notes.length,
+    lastNoteAt: lastNoteMs === null ? null : new Date(lastNoteMs).toISOString(),
+    noteAgeMs: lastNoteMs === null ? null : Math.max(0, now - lastNoteMs),
+  };
+}
+
 function normalizeStatus(value) {
   const status = String(value || "unknown").toLowerCase();
   if (["active", "working"].includes(status)) return "working";
@@ -121,8 +141,16 @@ export function buildCoordinatorMetrics({
     const age = ageMs(task.updated || task.created, now);
     return age === null ? oldest : Math.max(oldest, age);
   }, 0);
+  // Notes are evidence of progress, deliberately not liveness (see noteSummary):
+  // a note never moves `updated`, so commenting cannot keep a stalled card alive.
   const stalledCards = activeCards
-    .map((task) => ({ id: task.id, title: task.title, owner: task.owner || null, ageMs: ageMs(task.updated || task.created, now) }))
+    .map((task) => ({
+      id: task.id,
+      title: task.title,
+      owner: task.owner || null,
+      ageMs: ageMs(task.updated || task.created, now),
+      ...noteSummary(task, now),
+    }))
     .filter((task) => task.ageMs !== null && task.ageMs > limits.stalledWorkMs);
   const blockedWork = [];
   for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
@@ -139,6 +167,7 @@ export function buildCoordinatorMetrics({
         dependency: task.depends_on || task.dependency || null,
         reason: task.block_reason || task.reason || null,
         ageMs: ageMsValue,
+        ...noteSummary(task, now),
       });
     }
   }
@@ -194,11 +223,17 @@ export function buildCoordinatorMetrics({
     });
   }
   if (stalledCards.length > 0) {
+    const withNotes = stalledCards.filter((task) => task.noteCount > 0);
+    const noteSummary = withNotes.length > 0
+      ? ` ${withNotes.length} of them carry notes; treat a recent note as evidence of progress, not as liveness.`
+      : "";
     alerts.push({
       id: "stalled_work",
       severity: stalledCards.some((task) => task.ageMs > limits.queueCriticalMs) ? "critical" : "warning",
-      message: `${stalledCards.length} active card(s) have not moved within the stall threshold.`,
-      recommendedAction: "Inspect the oldest stalled card and name its next actor or blocker.",
+      message: `${stalledCards.length} active card(s) have not moved within the stall threshold.${noteSummary}`,
+      recommendedAction: "Inspect the oldest stalled card, check its note recency, and name its next actor or blocker.",
+      stalledCount: stalledCards.length,
+      cardsWithNotes: withNotes.length,
       cards: stalledCards,
     });
   }
