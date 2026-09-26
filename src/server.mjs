@@ -763,7 +763,15 @@ export function startWebServer({
       const taskId = decodeURIComponent(pathname.slice("/api/board/tasks/".length));
       const repoRoot = path.resolve(path.dirname(amqRoot));
       const body = await parseJsonBody(req);
-      const result = updateBoardTask(repoRoot, amqRoot, taskId, body);
+      // An actor is optional but must never be guessed. Without one the notification
+      // records "not recorded" rather than crediting the card owner with a change they
+      // did not make. Callers may pass `from` in the body or X-AGmail-Actor.
+      const actor = String(
+        (body && typeof body.from === "string" && body.from) ||
+        (req.headers["x-agmail-actor"] || "") ||
+        "",
+      ).trim();
+      const result = updateBoardTask(repoRoot, amqRoot, taskId, body, actor ? { from: actor } : {});
       if (result.ok) {
         broadcastSSE({ type: "board_update", at: new Date().toISOString() });
       }

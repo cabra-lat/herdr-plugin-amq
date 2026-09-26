@@ -576,15 +576,17 @@ export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
       to = ["coordinator"];
       subject = `[AGboard] [CLAIMED] ${task.title}`;
       body = [
-        `Task claimed by ${sender}:`,
+        `Task state changed to in_progress:`,
         ``,
         `• Task: ${task.title}`,
         `• ID: ${task.id}`,
         `• Status: in_progress`,
+        `• Changed by: ${opts.actor || "not recorded (no actor supplied with the change)"}`,
+        `• Card owner: ${task.owner || "unassigned"}`,
         task.description ? `• Details: ${task.description}` : "",
         ``,
         `Track or complete via:`,
-        `  herdr-amq task done ${task.id} --me ${sender} --proof "<evidence>"`,
+        `  herdr-amq task done ${task.id} --me ${task.owner} --proof "<evidence>"`,
       ].filter(Boolean).join("\n");
       break;
     }
@@ -593,15 +595,27 @@ export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
       to = ["coordinator"];
       priority = "urgent";
       subject = `[AGboard] [BLOCKED] ${task.title}`;
+      // WHO CHANGED THE STATE and WHO OWNS THE CARD are different facts, and a
+      // notification that conflates them asserts an action somebody never took. It also
+      // pages the owner to clear a blocker they did not create and cannot clear, which
+      // is worse than the wrong text: it sends a healthy agent to debug a problem that
+      // was never theirs.
+      const nextActor = task.next_actor || null;
+      const ownerIsOnTheHook = !nextActor || nextActor === task.owner;
       body = [
-        `⚠️ TASK BLOCKED by ${sender}:`,
+        `⚠️ TASK BLOCKED:`,
         ``,
         `• Task: ${task.title}`,
         `• ID: ${task.id}`,
+        `• Changed by: ${opts.actor || "not recorded (no actor supplied with the change)"}`,
+        `• Card owner: ${task.owner || "unassigned"}`,
+        `• Next actor: ${nextActor || "unassigned - needs triage"}`,
         `• Reason: ${opts.reason || task.description || "Unspecified blocker"}`,
         ``,
-        `Needs coordination / unblock review.`,
-      ].filter(Boolean).join("\n");
+        ownerIsOnTheHook
+          ? `The owner is on the hook for this. Needs coordination / unblock review.`
+          : `Next actor is ${nextActor}, not the owner. The owner is NOT expected to unblock this.`,
+      ].join("\n");
       break;
     }
 
@@ -609,10 +623,12 @@ export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
       to = ["coordinator"];
       subject = `[AGboard] [COMPLETED] ${task.title}`;
       body = [
-        `✅ Task completed by ${sender}:`,
+        `✅ Task state changed to done:`,
         ``,
         `• Task: ${task.title}`,
         `• ID: ${task.id}`,
+        `• Changed by: ${opts.actor || "not recorded (no actor supplied with the change)"}`,
+        `• Card owner: ${task.owner || "unassigned"}`,
         opts.proof ? `• Evidence / Proof: ${opts.proof}` : "",
         task.description ? `• Details: ${task.description}` : "",
       ].filter(Boolean).join("\n");
@@ -848,18 +864,27 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   }
 
   const shouldNotify = (updates.notify !== undefined ? updates.notify : opts.notify) ?? true;
-  const sender = updates.from || opts.from || updatedTask.owner || "coordinator";
+  // NEVER fall back to the card owner here. The owner is whoever the work belongs to;
+  // the actor is whoever performed this particular change, and when nobody says, the
+  // board does not get to pick the owner's name and assert an action they never took.
+  // The board's own automation identity stands in, and the body says the actor was not
+  // recorded, so the record is honest about being incomplete rather than confidently
+  // wrong. This was the third instance of "an unnamed clock/actor borrows an identity":
+  // the liveness clock (opts.from), then the notification sender, both fixed by
+  // refusing to invent one.
+  const actor = String(updates.from || opts.from || "").trim();
+  const sender = actor || "board";
 
   if (shouldNotify && amqRoot && oldTask) {
     try {
       if (updates.owner && updates.owner !== oldTask.owner && updates.owner !== "coordinator") {
-        notifyTaskEvent(amqRoot, "assigned", updatedTask, { from: sender });
+        notifyTaskEvent(amqRoot, "assigned", updatedTask, { from: sender, actor: actor || null });
       } else if (updatedTask.status === "in_progress" && oldTask.status !== "in_progress") {
-        notifyTaskEvent(amqRoot, "claimed", updatedTask, { from: sender });
+        notifyTaskEvent(amqRoot, "claimed", updatedTask, { from: sender, actor: actor || null });
       } else if (updatedTask.status === "blocked" && oldTask.status !== "blocked") {
-        notifyTaskEvent(amqRoot, "blocked", updatedTask, { from: sender, reason: updatedTask.block_reason || updates.description });
+        notifyTaskEvent(amqRoot, "blocked", updatedTask, { from: sender, actor: actor || null, reason: updatedTask.block_reason || updates.description });
       } else if (updatedTask.status === "done" && oldTask.status !== "done") {
-        notifyTaskEvent(amqRoot, "done", updatedTask, { from: sender, proof: updatedTask.proof || updates.description });
+        notifyTaskEvent(amqRoot, "done", updatedTask, { from: sender, actor: actor || null, proof: updatedTask.proof || updates.description });
       }
     } catch {}
   }
