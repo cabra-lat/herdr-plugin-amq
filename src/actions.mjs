@@ -322,7 +322,26 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
 
   const repoRoot = path.resolve(path.dirname(amqRoot));
   const { flags, positional } = parseTaskArgs(rawArgs);
-  const me = flags.me || flags.from || process.env.AMQ_ME || "coordinator";
+  // NO FALLBACK TO ANOTHER HANDLE. This read `|| "coordinator"`, so a write subcommand run
+  // with no --me recorded `coordinator` as the actor: claim, block, done, unblock, reassign
+  // and comment all stamped a lane that was not the one doing the work. The same silent
+  // attribution substitution fixed in `mail send` at line 947, one surface over.
+  //
+  // Read-only subcommands (list, ls, show, drain, next) never used `me` for anything, so they
+  // are unaffected and must keep working without --me. Only the subcommands that actually
+  // WRITE an actor require one, and they require it loudly rather than guessing.
+  const me = flags.me || flags.from || process.env.AMQ_ME;
+  const TASK_WRITE_SUBCOMMANDS = new Set([
+    "create", "assign", "claim", "done", "complete", "unblock",
+    "block", "heartbeat", "reassign", "comment", "note",
+  ]);
+  if (!me && TASK_WRITE_SUBCOMMANDS.has(String(subcommand ?? "").trim())) {
+    console.error(`❌ task ${subcommand} needs an actor: pass --me <handle> or set AM_ME.`);
+    console.error("   Refusing rather than recording a default lane: a wrong actor here is");
+    console.error("   written into the card and read back by every other agent as fact.");
+    process.exitCode = 1;
+    return 1;
+  }
 
   // Help must be reachable, otherwise the unknown-subcommand diagnostic points at a
   // command that does not work. `task --help`, `task -h` and `task help` all print
@@ -902,8 +921,14 @@ export function handleMailCommand(subcmd, args = []) {
     console.log("       herdr-amq reply --id <id> --body <b> [--attach <p>]");
     console.log("       herdr-amq drain --me <handle> [--include-body]");
     console.log("\nCommands:");
-    console.log("  send --to <handle> --subject <subj> --body <text|@file> [--from <h>] [--attach <p>]");
-    console.log("  reply --id <msg_id> --body <text|@file> [--from <h>] [--attach <p>]");
+    // --attach REPEATS. The parser accumulates repeated flags and also accepts a
+    // comma-separated list; the help used to say `[--attach <p>]`, singular, which is the
+    // same defect in the other direction: a documented flag that silently drops repeats.
+    // 9816c9c fixed the behaviour, and the documentation was what was left wrong.
+    console.log("  send --to <handle> --subject <subj> --body <text|@file> [--from <h>] [--attach <p>]...");
+    console.log("  reply --id <msg_id> --body <text|@file> [--from <h>] [--attach <p>]...");
+    console.log("    --attach may be repeated, or given comma-separated. Every value is delivered.");
+    console.log("    --from defaults to AM_ME. Without either, the send is refused, never attributed");
     console.log("  drain --me <handle> [--include-body]");
     console.log("────────────────────────────────────────────────────────────────────────────\n");
     return;
@@ -964,6 +989,7 @@ export function handleMailCommand(subcmd, args = []) {
         console.error("   Refusing to send rather than guess: a defaulted sender would attribute this");
         console.error("   message to another lane, and a successful send would hide that.");
         console.error("   Set --from <handle>, or export AM_ME, and try again.");
+        process.exitCode = 1;
         return 1;
       }
       const to = getMultiArg("--to");
