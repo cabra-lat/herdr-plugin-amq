@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import {
   loadAgentDirectory,
+  loadTransportIdentities,
   loadAllMessages,
   loadThreads,
   extractAttachments,
@@ -41,6 +42,15 @@ describe("store.mjs tests with mock AMQ root", () => {
     const betaDir = path.join(agentsDir, "agent-beta");
     fs.mkdirSync(path.join(betaDir, "inbox", "cur"), { recursive: true });
     fs.mkdirSync(path.join(betaDir, "outbox", "sent"), { recursive: true });
+
+    // Registration. These two used to be bare directories and the assertion below was that a
+    // bare directory is an agent, which is the fiction this commit removes: on the live tree it
+    // listed `board` (a sender identity) and `worker` (a probe mailbox) as teammates, and
+    // invented a "Swarm Agent" role for each. So the fixture now registers them the way an
+    // agent gets registered, and the arms further down pin what a directory alone does NOT buy.
+    for (const [dir, name] of [[alphaDir, "Agent Alpha"], [betaDir, "Agent Beta"]]) {
+      fs.writeFileSync(path.join(dir, "profile.json"), JSON.stringify({ handle: path.basename(dir), name }));
+    }
 
     // Message 1: sent by beta to alpha (unread in alpha's new inbox)
     const msg1Content = `---json
@@ -111,6 +121,68 @@ Acknowledged beta, processing task.`;
     assert.ok(beta);
     assert.equal(beta.unreadCount, 0);
     assert.equal(beta.profile.model, null);
+  });
+
+  // ── A mailbox is not an agent ────────────────────────────────────────────────
+  // The failure these pin is not "a stray directory shows up in the UI". It is that the
+  // listing had to invent a role for it, because the directory carried no role at all: the
+  // default was the string "Swarm Agent", so an un-registered mailbox was described as a
+  // swarm agent with a name, a colour and an offline status. Absence read as a value.
+
+  test("a bare mailbox directory is not an agent, and gets no invented profile", () => {
+    const dir = path.join(tempRoot, "agents", "board");
+    fs.mkdirSync(path.join(dir, "inbox", "new"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "outbox", "sent"), { recursive: true });
+    try {
+      const agents = loadAgentDirectory(tempRoot);
+      assert.equal(
+        agents.find((a) => a.handle === "board"),
+        undefined,
+        "a mailbox that was never registered must not appear in the roster"
+      );
+      const ids = loadTransportIdentities(tempRoot);
+      const board = ids.find((t) => t.handle === "board");
+      assert.ok(board, "it must still be reported as a transport identity, not silently dropped");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("presence.json is not a registration signal (the `board` falsification)", () => {
+    // This arm exists because I got it wrong first. presence.json holds a handle, a status and
+    // a timestamp, and "an agent that has checked in at least once" is a sentence that reads
+    // as obviously true. It is false: nothing in src/ writes presence.json, and on the live
+    // tree board/presence.json said {"status":"active"} written 39 ms after a notification was
+    // SENT, because the external amq CLI records presence for whichever handle it acts as. A
+    // signal that the act of mailing creates cannot also be evidence of registration.
+    const dir = path.join(tempRoot, "agents", "board");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "presence.json"),
+      JSON.stringify({ schema: 1, handle: "board", status: "active", last_seen: "2026-09-26T18:08:37.266Z" })
+    );
+    try {
+      assert.equal(loadAgentDirectory(tempRoot).find((a) => a.handle === "board"), undefined);
+      assert.ok(loadTransportIdentities(tempRoot).find((t) => t.handle === "board"));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the operator account stays a member despite having no profile and no brief", () => {
+    // `user` is the human. It has no profile.json and no brief, so the signal test would drop
+    // it, and dropping the operator from the roster is a far worse phantom than the two
+    // mailboxes this commit removes. This arm is here so that "fix the roster" cannot
+    // eventually be implemented as "require a profile" without someone noticing.
+    const dir = path.join(tempRoot, "agents", "user");
+    fs.mkdirSync(path.join(dir, "inbox", "new"), { recursive: true });
+    try {
+      const user = loadAgentDirectory(tempRoot).find((a) => a.handle === "user");
+      assert.ok(user, "the operator must remain in the roster");
+      assert.equal(user.profile.role, "Human Operator");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("parseMessageFile detects metadata, folder, and image attachments", () => {

@@ -10,6 +10,7 @@ import {
   loadAllMessages,
   loadThreads,
   loadAgentDirectory,
+  loadTransportIdentities,
   sendAmqMessage,
   replyAmqMessage,
   resolveAttachmentPath,
@@ -611,7 +612,21 @@ export function startWebServer({
         };
       });
       res.writeHead(200, { "Content-Type": "application/json" });
+      // The array shape is unchanged, and stays unchanged on purpose: this endpoint is consumed
+      // as a bare array in more than one place, and a client handed an object where it expects
+      // a list reads an empty fleet rather than a broken response. Transport identities, which
+      // are mailboxes rather than teammates, have their own endpoint below.
       res.end(JSON.stringify(enriched));
+      return;
+    }
+
+    if (pathname === "/api/transport-identities" && req.method === "GET") {
+      // Mailboxes that exist because mail was sent to or from them: `board`, which sends the
+      // board's own notifications, and anything a probe ever addressed. They are addressable
+      // and they are not teammates, and a client that shows a message from one without being
+      // able to say what it is leaves the reader guessing.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(loadTransportIdentities(amqRoot)));
       return;
     }
 

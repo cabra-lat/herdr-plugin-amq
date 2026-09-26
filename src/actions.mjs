@@ -19,6 +19,7 @@ import {
   runDoorbellPass,
   listInbox,
 } from "./bridge.mjs";
+import { loadTransportIdentities } from "./store.mjs";
 import {
   loadBoard,
   addBoardTask,
@@ -49,6 +50,7 @@ export function handleStatus() {
   const amqRoot = findAmqRoot();
   const pid = isDaemonRunning();
   const handles = amqRoot ? getAgentHandles(amqRoot) : [];
+  const transportIdentities = amqRoot ? loadTransportIdentities(amqRoot) : [];
   const version = getPluginVersion();
 
   console.log(`\n📦 \x1b[1mHerdr AMQ Bridge Status\x1b[0m \x1b[2m(v${version})\x1b[0m`);
@@ -85,7 +87,16 @@ export function handleStatus() {
   console.log(`\x1b[1mRegistered Agents (${handles.length}):\x1b[0m`);
   if (!handles.length) {
     console.log("  (no agents registered in config)");
-    return;
+  }
+
+  // The label above says REGISTERED, so the list under it has to be the registered set and not
+  // every directory that has ever been addressed. `getAgentHandles` is the addressable set, and
+  // it contained `board` (a sender identity) and `worker` (a probe mailbox) on the live tree.
+  // They are listed separately and labelled, rather than dropped: unread mail in them is real
+  // and a reader who cannot account for it will assume it is being hidden from them.
+  let transportTotal = 0;
+  for (const t of transportIdentities) {
+    transportTotal += t.inboxMessages;
   }
 
   let totalUnread = 0;
@@ -106,7 +117,17 @@ export function handleStatus() {
   }
 
   console.log("──────────────────────────────────────────────");
-  console.log(`Total Unread: ${totalUnread}`);
+  if (transportIdentities.length) {
+    console.log(`\x1b[1mMailboxes that are not agents (${transportIdentities.length}):\x1b[0m`);
+    for (const t of transportIdentities) {
+      const detail = [
+        t.sentMessages ? `${t.sentMessages} sent` : null,
+        t.inboxMessages ? `${t.inboxMessages} unread` : null,
+      ].filter(Boolean).join(", ") || "empty";
+      console.log(`  • \x1b[90m${t.handle.padEnd(16)}\x1b[0m \x1b[90m${detail} — addressable, not a teammate\x1b[0m`);
+    }
+  }
+  console.log(`Total Unread: ${totalUnread + transportTotal}`);
   console.log("");
 }
 

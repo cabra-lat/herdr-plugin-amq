@@ -759,6 +759,70 @@ export function loadThreads(
   return threads;
 }
 
+/**
+ * Is this mailbox a real agent, or only a place mail was put?
+ *
+ * A directory under `agents/` is created by DELIVERY as well as by REGISTRATION, so the
+ * directory listing is not a roster. On the live tree it contained two handles that were
+ * never agents: `board`, which exists only because a board notification was sent from it, and
+ * `worker`, which exists because a probe once addressed a message to it. Both appeared in the
+ * dashboard as teammates, and the listing invented a fact about each of them: the default
+ * role string is "Swarm Agent", so a mailbox was described as a swarm agent with a name and a
+ * colour and an offline status. That is the absent-key-read-as-a-value failure wearing a
+ * profile picture.
+ *
+ * A registration signal is required, and there are exactly three, because I first wrote four
+ * and the live tree falsified the fourth within the hour:
+ *   profile.json   written by registerAgent, and by nothing else in this codebase
+ *   a brief on disk an agent defined in .opencode/agents and friends, written by a person
+ *   the operator   `user` is a first-class mailbox with no profile and no brief, and this
+ *                  module already special-cases it. It is the human, not a lane, and dropping
+ *                  it here would be a far worse phantom than the two this fixes.
+ *
+ * presence.json is NOT a signal, and I want that recorded rather than quietly dropped. It
+ * looked like one - it holds a handle and a status and a timestamp, and reading it as
+ * "an agent that has checked in" is a completely plausible sentence. It is false: nothing in
+ * src/ writes presence.json, and on the live tree `board/presence.json` says
+ * {"status":"active"} written 39 ms after the last board notification was sent, because the
+ * external `amq` CLI records presence for whichever handle it is asked to act as. So it is
+ * written as a CONSEQUENCE of addressing a handle, and reading it back as a fact about identity
+ * is precisely the defect this function exists to remove, one level down. A signal that the
+ * act of mailing creates cannot also be evidence that someone registered the agent.
+ *
+ * The test is deliberately "has a signal", not "looks like an agent": a handle that registers
+ * later becomes a member on the next read, with no migration and no cleanup step.
+ */
+function hasRegistrationSignal(agentsDir, handle, briefs) {
+  if (handle === "user") return true;
+  if (fs.existsSync(path.join(agentsDir, handle, "profile.json"))) return true;
+  return briefs.has(handle);
+}
+
+/**
+ * Mailboxes that exist because mail was sent to or from them, and which are therefore
+ * addressable but are not teammates. Returned rather than silently dropped, so a reader who
+ * sees a message from `board` can be told what `board` is instead of being left to guess.
+ */
+export function loadTransportIdentities(amqRoot) {
+  if (!amqRoot || !fs.existsSync(amqRoot)) return [];
+  const agentsDir = path.join(amqRoot, "agents");
+  if (!fs.existsSync(agentsDir)) return [];
+  const briefs = scanAgentBriefs(getRepoRootFromAmq(amqRoot));
+  return fs.readdirSync(agentsDir)
+    .filter((h) => !h.startsWith(".") && fs.statSync(path.join(agentsDir, h)).isDirectory())
+    .filter((h) => !hasRegistrationSignal(agentsDir, h, briefs))
+    .map((handle) => {
+      const dir = path.join(agentsDir, handle);
+      const inbox = ["inbox/new", "inbox/cur"].reduce((n, rel) => {
+        const d = path.join(dir, rel);
+        return n + (fs.existsSync(d) ? fs.readdirSync(d).filter((f) => f.endsWith(".md")).length : 0);
+      }, 0);
+      const outboxDir = path.join(dir, "outbox", "sent");
+      const sent = fs.existsSync(outboxDir) ? fs.readdirSync(outboxDir).filter((f) => f.endsWith(".md")).length : 0;
+      return { handle, inboxMessages: inbox, sentMessages: sent };
+    });
+}
+
 export function loadAgentDirectory(amqRoot) {
   if (!amqRoot || !fs.existsSync(amqRoot)) return [];
 
@@ -800,8 +864,12 @@ export function loadAgentDirectory(amqRoot) {
     }
   }
 
+  // A mailbox is not an agent. See hasRegistrationSignal for why this is a filter and not a
+  // rename, and loadTransportIdentities for what happens to the ones that drop out.
+  const members = handles.filter((h) => hasRegistrationSignal(agentsDir, h, briefs));
+
   const list = [];
-  for (const h of handles) {
+  for (const h of members) {
     const presencePath = path.join(agentsDir, h, "presence.json");
     let presence = null;
     if (fs.existsSync(presencePath)) {

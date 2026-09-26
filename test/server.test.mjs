@@ -38,6 +38,13 @@ describe("server.mjs API integration tests", () => {
     fs.mkdirSync(path.join(a2Dir, "inbox", "cur"), { recursive: true });
     fs.mkdirSync(path.join(a2Dir, "outbox", "sent"), { recursive: true });
 
+    // Register them. A bare directory stopped being an agent: /api/agents used to list every
+    // handle under agents/ and invent a "Swarm Agent" role for each, which is how `board` and a
+    // probe mailbox named `worker` appeared as teammates on the live tree.
+    for (const [dir, name] of [[a1Dir, "Agent One"], [a2Dir, "Agent Two"]]) {
+      fs.writeFileSync(path.join(dir, "profile.json"), JSON.stringify({ handle: path.basename(dir), name }));
+    }
+
     // Add a sent message from agent-one
     fs.writeFileSync(
       path.join(a1Dir, "outbox", "sent", "msg-1.md"),
@@ -124,6 +131,27 @@ Test body`
     const handles = agents.map((a) => a.handle);
     assert.ok(handles.includes("agent-one"), "agent-one must be present");
     assert.ok(handles.includes("agent-two"), "agent-two must be present");
+  });
+
+  test("GET /api/agents keeps its array shape, and un-registered mailboxes are not agents", async () => {
+    // Two properties, because they fail differently. The shape: this endpoint is consumed as a
+    // bare array in more than one place, and a client handed an object reads an empty fleet
+    // rather than an error. The membership: a mailbox created by delivery is not a teammate.
+    const ghost = path.join(tempRoot, "agents", "worker");
+    fs.mkdirSync(path.join(ghost, "inbox", "new"), { recursive: true });
+    try {
+      const agents = await (await fetch(`${baseUrl}/api/agents`)).json();
+      assert.ok(Array.isArray(agents), "the response must stay a bare array");
+      assert.equal(agents.find((a) => a.handle === "worker"), undefined);
+
+      const ids = await (await fetch(`${baseUrl}/api/transport-identities`)).json();
+      assert.ok(Array.isArray(ids));
+      const found = ids.find((t) => t.handle === "worker");
+      assert.ok(found, "reported separately, not dropped");
+      assert.equal(found.inboxMessages, 0);
+    } finally {
+      fs.rmSync(ghost, { recursive: true, force: true });
+    }
   });
 
   test("GET /api/messages?folder=sent returns sent transmissions", async () => {
