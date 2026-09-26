@@ -944,7 +944,28 @@ export function handleMailCommand(subcmd, args = []) {
 
   switch (action) {
     case "send": {
-      const from = getArg("--from", "--me") || process.env.AM_ME || "coordinator";
+      // NO FALLBACK TO ANOTHER HANDLE. This used to be
+      //   || process.env.AM_ME || "coordinator"
+      // which meant that with AM_ME unset and --from omitted, a lane sent mail that was
+      // delivered, reported success, and was attributed to `coordinator`. The sender never
+      // learned it had spoken as somebody else.
+      //
+      // That is worse than losing an attachment, because attribution is what every
+      // coordination decision here rests on: cards are claimed against a sender, replies go
+      // to whoever sent something, and the wrong lane is judged on the content. And the
+      // failure is self-concealing, because the send SUCCEEDED.
+      //
+      // Resolve to this process's own identity when it can be determined, and fail loudly
+      // with the name of the missing variable when it cannot. Mirrors the `mail reply`
+      // guard below, which already had this shape and is correct.
+      const from = getArg("--from", "--me") || process.env.AM_ME;
+      if (!from) {
+        console.error("❌ Missing required --from / --me handle.");
+        console.error("   Refusing to send rather than guess: a defaulted sender would attribute this");
+        console.error("   message to another lane, and a successful send would hide that.");
+        console.error("   Set --from <handle>, or export AM_ME, and try again.");
+        return 1;
+      }
       const to = getMultiArg("--to");
       const subject = getArg("--subject", "-s") || "(no subject)";
       const bodyArg = getArg("--body", "-b");
