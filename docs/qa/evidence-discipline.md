@@ -462,3 +462,28 @@ board, so those patterns are exercised by fixtures only. That is stated rather t
 call sites, and resolving work-age needs git. A prompt line that always reads `work=unknown` is
 worse than no line, so the signal lives in the `/api/board` payload, which is where the card asked
 for it — beside `livenessLease` and the state clock, report-only.
+
+## The proof field stored a filename and reported success
+
+`task done --proof @/path/to/file` was not expanded, while `--text @file`, `--reason @file` and
+`--desc @file` all were. The card was therefore closed with the **literal string** `"@/tmp/.../proof.txt"`
+stored as its evidence, and the command exited 0.
+
+That is the worst shape a defect can take here: the stored value looks like a reference to
+evidence, so a reader skims past it, and the command's own success output says nothing is wrong. The
+card's frontmatter is the independent observable — the same reason the CLI tests read the card file
+rather than the CLI's report of it — and reading the two affected cards is the only reason this was
+found at all. Two of my own cards were closed that way before it was noticed.
+
+`--proof` now expands `@file` like every sibling flag, and an unreadable path exits non-zero and
+leaves the card **open**: failing to read the evidence is not a reason to record the work as
+finished.
+
+| break | result |
+| --- | --- |
+| none (control) | 14 pass, 0 fail |
+| remove the `--proof @file` expansion | 12 pass, **2 fail** |
+
+Note the asymmetry that made this survivable: an unreadable `--reason` had always failed loudly, so
+the *pattern* was already established for the sibling flags. What was missing was the `--proof`
+case, and nothing about the interface advertised that the flags behaved differently.

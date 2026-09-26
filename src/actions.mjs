@@ -267,6 +267,12 @@ function nextActorFlag(value) {
 // `--text @file` and `--reason @file` read the file, matching `amq send --body` and
 // `amq reply --body`. A path that does not exist is an error rather than a literal
 // "@/path" stored on the card and reported as success.
+//
+// `--proof @file` was NOT handled here, and it failed SILENTLY: the card was closed with
+// the literal string "@/tmp/.../proof.txt" stored as its evidence, which reads like a
+// reference and is not one. Two cards were closed that way before this was found. The
+// expansion is silent-by-design for every other flag, so the gap was invisible from the
+// card alone - which is the argument for checking what a card actually stores.
 function expandAtFile(value, label) {
   if (typeof value !== "string" || !value.startsWith("@")) return { value };
   const filePath = value.slice(1);
@@ -456,7 +462,15 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         process.exit(1);
       }
 
-      const proof = flags.proof || flags.evidence || positional.slice(1).join(" ") || "";
+      const proofArg = flags.proof || flags.evidence || positional.slice(1).join(" ") || "";
+      // Evidence is the one field that must never be a filename. A card closed with
+      // "@some/path" stores a reference to evidence that is not on the card, and every
+      // later reader sees a plausible-looking string instead of a missing proof.
+      const proofExpanded = expandAtFile(proofArg, "--proof");
+      if (proofExpanded.error) {
+        return failTask(proofExpanded.error);
+      }
+      const proof = proofExpanded.value;
       let res;
       try {
         res = updateBoardTask(

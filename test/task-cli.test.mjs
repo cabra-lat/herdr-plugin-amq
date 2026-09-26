@@ -412,3 +412,39 @@ test("reassign on a missing card fails loudly and prints no success line", () =>
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// `--proof @file` failed SILENTLY: cards were closed with the literal string
+// "@/tmp/.../proof.txt" stored as their evidence. It reads like a reference and is not
+// one, and nothing in the command's success output says otherwise.
+test("--proof @file stores the file's CONTENTS, not the path", () => {
+  const { root, amqRoot } = makeFixture();
+  const proofFile = path.join(root, "proof.txt");
+  fs.writeFileSync(proofFile, "MEASURED: 366s wall, exit 0, RESULT: PASS\n");
+  try {
+    const created = run(root, ["task", "assign", "--to", "alice", "--title", "Proof card"]);
+    assert.equal(created.status, 0, created.stderr);
+    const id = created.stdout.match(/ID: (task_[A-Za-z0-9_]+)/)?.[1];
+    assert.ok(id, created.stdout);
+    const out = run(root, ["task", "done", id, "--me", "alice", "--proof", `@${proofFile}`]);
+    assert.equal(out.status, 0, out.stderr);
+    const stored = readCard(amqRoot, id);
+    assert.ok(String(stored.proof).includes("MEASURED: 366s wall"), `the proof must be the file contents, got: ${stored.proof}`);
+    assert.ok(!String(stored.proof).includes(proofFile), "the path must not be stored as the evidence");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("--proof @missing fails LOUDLY instead of storing a path as the evidence", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const created = run(root, ["task", "assign", "--to", "alice", "--title", "Proof card"]);
+    assert.equal(created.status, 0, created.stderr);
+    const id = created.stdout.match(/ID: (task_[A-Za-z0-9_]+)/)?.[1];
+    assert.ok(id, created.stdout);
+    const out = run(root, ["task", "done", id, "--me", "alice", "--proof", "@/nope/does-not-exist.txt"]);
+    assert.notEqual(out.status, 0, "an unreadable proof path must exit non-zero");
+    assert.match(out.stderr, /could not be read/, `and must say why, got: ${out.stderr}`);
+    // And the card must NOT be closed: failing to read the evidence is not a reason to
+    // record the work as finished.
+    assert.notEqual(readCard(amqRoot, id).status, "done", "the card must stay open");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
