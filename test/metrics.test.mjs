@@ -145,6 +145,7 @@ test("an explicit heartbeat keeps a card out of stalled_work", () => {
     // State clock is 40 minutes old, but the worker heartbeated 2 minutes ago.
     updated: "2026-09-24T16:20:00.000Z",
     last_heartbeat_at: "2026-09-24T16:58:00.000Z",
+    last_heartbeat_by: "worker",
   };
   const silent = { id: "quiet-card", title: "Untouched", owner: "worker", updated: "2026-09-24T16:20:00.000Z" };
   const result = buildCoordinatorMetrics({
@@ -164,6 +165,9 @@ test("an explicit heartbeat keeps a card out of stalled_work", () => {
   const stale = buildCoordinatorMetrics({
     handles: ["coordinator", "worker"],
     agentStatuses: { coordinator: "idle", worker: "idle" },
+    // Attributed but 30 minutes old: that is a real liveness claim that has gone
+    // stale, which is what stalled_work exists to report. An UNATTRIBUTED old clock
+    // is a different thing and is covered by its own test below.
     board: { columns: { backlog: [], in_progress: [{ ...card, last_heartbeat_at: "2026-09-24T16:30:00.000Z" }], blocked: [], done: [] } },
     now: NOW,
     thresholds: { stalledWorkMs: 5 * 60 * 1000 },
@@ -172,6 +176,67 @@ test("an explicit heartbeat keeps a card out of stalled_work", () => {
   assert.deepEqual(staleCards.map((c) => c.id), ["working-card"]);
   assert.equal(staleCards[0].heartbeatAt, "2026-09-24T16:30:00.000Z");
   assert.equal(staleCards[0].ageMs, 30 * 60 * 1000);
+  assert.equal(staleCards[0].liveness, "stale");
+  assert.equal(staleCards[0].livenessBy, "worker");
+});
+
+test("an unattributed liveness clock is unknown: not stalled, not live, never alerted", () => {
+  // The condition on the change. A null-author clock is a MISSING FACT, so it must
+  // not be read as liveness (which would let an untouched card look alive) and it
+  // must not be read as stall either (which would put every legacy card in the
+  // alert the moment this ships, and a detector that floods is one people stop
+  // reading). It is reported as `unknown` and excluded from the stalled list.
+  const unattributedOld = {
+    id: "legacy-card",
+    title: "Claimed long ago, author never recorded",
+    owner: "worker",
+    updated: "2026-09-24T10:00:00.000Z",
+    last_heartbeat_at: "2026-09-24T10:01:00.000Z",
+    last_heartbeat_by: null,
+  };
+  const unattributedFresh = {
+    id: "legacy-fresh",
+    title: "Unattributed but recent",
+    owner: "worker",
+    updated: "2026-09-24T16:57:00.000Z",
+    last_heartbeat_at: "2026-09-24T16:58:00.000Z",
+    last_heartbeat_by: null,
+  };
+  const result = buildCoordinatorMetrics({
+    handles: ["coordinator", "worker"],
+    agentStatuses: { coordinator: "idle", worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [unattributedOld, unattributedFresh], blocked: [], done: [] } },
+    now: NOW,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+  });
+
+  const stalled = result.alerts.find((alert) => alert.id === "stalled_work");
+  // Nothing alerts, even though the clock on `legacy-card` is two hours old.
+  assert.equal(stalled, undefined, "an unattributed clock must not raise stalled_work");
+
+  const unknown = result.unattributedLiveness;
+  assert.deepEqual(unknown.map((c) => c.id).sort(), ["legacy-card", "legacy-fresh"]);
+  assert.ok(unknown.every((c) => c.liveness === "unknown"));
+  // Checked against the serialised projection, not a field that happens to be
+  // absent: the source card has last_heartbeat_by: null and the projection must
+  // not have grown a name for it anywhere.
+  assert.ok(
+    !/"(by|heartbeatBy|livenessBy)":"[^"]+"/.test(JSON.stringify(unknown)),
+    "no author may be invented for an unattributed clock",
+  );
+
+  // A card with no heartbeat at all is different: it falls back to its own state
+  // clock, which nobody has fabricated an author for, so it can still go stale.
+  const staleViaActivity = buildCoordinatorMetrics({
+    handles: ["coordinator", "worker"],
+    agentStatuses: { coordinator: "idle", worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [{ id: "no-heartbeat", title: "Only touched", owner: "worker", updated: "2026-09-24T16:20:00.000Z" }], blocked: [], done: [] } },
+    now: NOW,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+  });
+  const activityCards = staleViaActivity.alerts.find((alert) => alert.id === "stalled_work").cards;
+  assert.deepEqual(activityCards.map((c) => c.id), ["no-heartbeat"]);
+  assert.equal(activityCards[0].livenessVia, "activity");
 });
 
 test("real retry evidence still raises retry_failure_trend", () => {

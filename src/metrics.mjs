@@ -48,6 +48,43 @@ function conditionFingerprint(value) {
 // Liveness is the newest of the card's own liveness clock and its state clock.
 // The board writes snake_case (`last_heartbeat_at`); the camelCase spellings are
 // accepted for projections that are not read straight off disk.
+//
+// A liveness clock with no author is not evidence of liveness AND not evidence of
+// stall: it is an unknown. Treating it as live keeps a card that nobody has touched
+// looking alive; treating it as stale floods the detector with every legacy card
+// the moment the behaviour changes, and a detector that cries wolf is worse than
+// one that stays quiet. So the state is reported honestly as `unknown` and the card
+// is excluded from the stalled list rather than counted either way. The author is
+// never invented to resolve it.
+const LIVENESS_STATES = { LIVE: "live", STALE: "stale", UNKNOWN: "unknown" };
+
+function cardLivenessState(task, now, stalledWorkMs) {
+  const heartbeatAt = timestamp(task?.last_heartbeat_at ?? task?.heartbeatAt ?? task?.lastHeartbeat);
+  const updatedAt = timestamp(task?.updated);
+  const createdAt = timestamp(task?.created);
+  const via = heartbeatAt === null ? "activity" : "heartbeat";
+  const at = heartbeatAt === null
+    ? (updatedAt === null ? createdAt : Math.max(updatedAt ?? -Infinity, createdAt ?? -Infinity))
+    : heartbeatAt;
+  if (at === null || !Number.isFinite(at)) {
+    return { state: LIVENESS_STATES.UNKNOWN, via, at: null, ageMs: null, by: null };
+  }
+  const ageMs = Math.max(0, now - at);
+  const by = task?.last_heartbeat_by || null;
+  // Only a clock that names nobody is unattributable. A card with no heartbeat at
+  // all falls back to its own state clock, which no one has fabricated an author for.
+  if (via === "heartbeat" && !by) {
+    return { state: LIVENESS_STATES.UNKNOWN, via, at, ageMs, by: null };
+  }
+  return {
+    state: ageMs > stalledWorkMs ? LIVENESS_STATES.STALE : LIVENESS_STATES.LIVE,
+    via,
+    at,
+    ageMs,
+    by,
+  };
+}
+
 function cardLiveness(task) {
   const candidates = [
     task?.last_heartbeat_at,
@@ -170,23 +207,42 @@ export function buildCoordinatorMetrics({
   // A card is stale when neither an explicit heartbeat nor a state change has
   // happened within the threshold. Previously this read only `updated`, so an
   // actively worked card was indistinguishable from an ignored one.
-  const stalledCards = activeCards
-    .map((task) => {
-      const livenessMs = cardLiveness(task);
-      return {
+  const stalledCards = [];
+  const unattributedLiveness = [];
+  for (const task of activeCards) {
+    const liveness = cardLivenessState(task, now, limits.stalledWorkMs);
+    const note = noteSummary(task, now);
+    if (liveness.state === LIVENESS_STATES.UNKNOWN) {
+      // Reported, never alerted: visible to a reader who asks, silent in the list.
+      unattributedLiveness.push({
         id: task.id,
         title: task.title,
         owner: task.owner || null,
-        ageMs: livenessMs === null ? null : Math.max(0, now - livenessMs),
-        lastActivityAt: livenessMs === null ? null : new Date(livenessMs).toISOString(),
+        liveness: liveness.state,
+        via: liveness.via,
+        lastActivityAt: liveness.at === null ? null : new Date(liveness.at).toISOString(),
+        ...note,
+      });
+      continue;
+    }
+    if (liveness.state === LIVENESS_STATES.STALE) {
+      stalledCards.push({
+        id: task.id,
+        title: task.title,
+        owner: task.owner || null,
+        ageMs: liveness.ageMs,
+        lastActivityAt: new Date(liveness.at).toISOString(),
         heartbeatAt: timestamp(task?.last_heartbeat_at) === null ? null : new Date(timestamp(task.last_heartbeat_at)).toISOString(),
         heartbeatAgeMs: ageMs(task?.last_heartbeat_at, now),
         heartbeatBy: task?.last_heartbeat_by || null,
         heartbeatByNonOwner: Boolean(task?.last_heartbeat_by && task.owner && task.last_heartbeat_by !== task.owner),
-        ...noteSummary(task, now),
-      };
-    })
-    .filter((task) => task.ageMs !== null && task.ageMs > limits.stalledWorkMs);
+        liveness: liveness.state,
+        livenessBy: liveness.by,
+        livenessVia: liveness.via,
+        ...note,
+      });
+    }
+  }
   const blockedWork = [];
   for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
     if (columnName !== "blocked") continue;
@@ -284,7 +340,7 @@ export function buildCoordinatorMetrics({
     alerts.push({
       id: "stalled_work",
       severity: stalledCards.some((task) => task.ageMs > limits.queueCriticalMs) ? "critical" : "warning",
-      message: `${stalledCards.length} active card(s) have had no heartbeat or state change within the stall threshold.${noteSummary}`,
+      message: `${stalledCards.length} active card(s) have had no heartbeat or state change within the stall threshold.${noteSummary}${unattributedLiveness.length > 0 ? ` ${unattributedLiveness.length} more active card(s) have a liveness clock that names no author, so their liveness is unknown and they are counted neither as live nor as stalled.` : ""}`,
       recommendedAction: "Ask the owner for a status; a working owner records it with `task heartbeat <id> --me <handle>`, a blocked one with `--reason`.",
       stalledCount: stalledCards.length,
       cardsWithNotes: withNotes.length,
@@ -371,6 +427,9 @@ export function buildCoordinatorMetrics({
     failures: { blockedCards: failureCount },
     blockedWork,
     stalledWork: stalledCards,
+    // Reported so a reader can see them, never alerted: see cardLivenessState.
+    unattributedLiveness,
+    unattributedLivenessCount: unattributedLiveness.length,
     resources: {
       ...resource,
       heavyJobCap: limits.heavyJobCap,

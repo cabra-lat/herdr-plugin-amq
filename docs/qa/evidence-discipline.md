@@ -180,6 +180,34 @@ The first break is the production defect reproduced exactly; the tests fail on t
 assertion, on the invented clock, and on the untouched-after-refusal assertion, which is the
 combination the original code could not satisfy.
 
+## Unattributable liveness: three states, not two (commit 8a4c1d2)
+
+An unattributed liveness clock is a **missing fact**, and the two obvious readings are
+both wrong in opposite directions. Reading it as *live* lets an untouched card look alive;
+reading it as *stalled* is a flood. `cardLivenessState()` therefore returns one of three
+states — `live`, `stale`, `unknown` — and `unknown` cards are excluded from
+`stalledWork` while remaining visible under `unattributedLiveness`. No author is ever
+invented to resolve one, which is why the 128 legacy nulls are still nulls.
+
+The distinction that keeps this honest: a card with **no** heartbeat falls back to its own
+state clock (`livenessVia: "activity"`) and can still go stale, because nobody fabricated
+an author for it. Only a clock that exists and names nobody is `unknown`.
+
+| break | result |
+| --- | --- |
+| none (control) | 10 pass, 0 fail |
+| treat an unattributed clock as stale (the flood) | 9 pass, **1 fail** |
+| treat an unattributed clock as live (quiet but wrong) | 9 pass, **1 fail** |
+
+Both breaks fail the *same* assertion, which is the point: the two bad readings are
+indistinguishable from each other by inspection and only the third state separates them.
+
+**Correction to the magnitude of the risk.** The flood was forecast as imminent and it is
+not, at least today: all 128 legacy null-author clocks sit in `done` and `blocked`
+columns, and the stall detector only ever considered `backlog`/`doing`/`review`. On the
+real board the change moves 0 alerts. The design is still correct — a single claim in an
+active column would have flooded — but the number worth remembering is 0, not 128.
+
 **Unresolved observation, recorded rather than diagnosed.** Across this restart the on-disk
 delivery map went from 68 entries (32 with `attempts > 1`) to 1 entry. Two daemons interleaving on
 one file is a plausible cause and the retry metric's own windowing defect is a separate matter;
