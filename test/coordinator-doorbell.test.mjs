@@ -370,7 +370,11 @@ test("coordinator triage snapshot reports note count and note recency per card",
   }
 });
 
-test("an owner with in-progress cards is told to heartbeat them", () => {
+test("an owner with in-progress cards is told to MOVE the card, not to heartbeat it", () => {
+  // The prompt used to instruct agents to heartbeat in order to clear the stall
+  // alert. The detector aged that same clock, so obeying could not reduce the count -
+  // the instruction was a loop dressed as a remedy. The heartbeat survives in the
+  // prompt only as the honest liveness declaration it actually is.
   const { root, amqRoot } = makeFixture();
   try {
     const task = addBoardTask(root, amqRoot, { title: "Work in flight", owner: "worker", description: "Still being worked." }, { notify: false });
@@ -392,9 +396,14 @@ test("an owner with in-progress cards is told to heartbeat them", () => {
     assert.equal(prompts.length, 1);
     const line = prompts[0].text.split("\n").find((text) => text.includes("task heartbeat"));
     assert.ok(line, `expected a heartbeat instruction\n${prompts[0].text}`);
-    // The instruction must name the verb, the agent, and say why notes are not enough.
+    // The instruction must name the verb and the agent, and say why notes are not enough.
     assert.match(line, /herdr-amq task heartbeat <id> --me worker/);
-    assert.match(line, /not your notes/);
+    assert.match(line, /Notes are narration, never liveness/);
+
+    // And it must NOT tell them a heartbeat clears the alert, because it does not.
+    assert.match(line, /heartbeat will not clear it/);
+    assert.doesNotMatch(line, /The stall detector reads that clock/,
+      "the prompt must not claim the detector reads the heartbeat clock; it reads the state clock");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -509,10 +509,13 @@ function buildRequiredDoorbellActions(handle, context) {
     actions.push(`Run: herdr-amq task drain --me ${handle}; claim with herdr-amq task next --me ${handle}.`);
   }
   if (context.board.doing > 0) {
-    // Liveness is the one signal the stall detector reads, and only the owner can
-    // honestly record it. A note is narration, not a heartbeat. Ordered before the
-    // reply policy so the prompt still ends on "continue the assigned work".
-    actions.push(`You own ${context.board.doing} in-progress card(s): record liveness on each you are still working with \`herdr-amq task heartbeat <id> --me ${handle}\`. The stall detector reads that clock, not your notes.`);
+    // A heartbeat is still worth recording - it is the honest declaration that the
+    // owner is present, and it is read as a lease - but it is no longer what the stall
+    // detector ages. The detector reads the card's STATE clock, so the instruction
+    // that told agents to heartbeat in order to clear the alert was a loop: obeying it
+    // could not move the number. Telling agents to move the card is the remedy that
+    // actually works, and the heartbeat is offered as what it is.
+    actions.push(`You own ${context.board.doing} in-progress card(s). A card is reported as stalled when it has not CHANGED STATE within the threshold, so a heartbeat will not clear it - move the card (claim, re-scope, block with a reason, or close). Record liveness with \`herdr-amq task heartbeat <id> --me ${handle}\` when you are still working: it is the honest declaration that you are present, and it is read as a lease, not as progress. Notes are narration, never liveness.`);
   }
   if (context.mail.count > 0) {
     actions.push("Reply only when a message explicitly requests action or asks a question; do not send an acknowledgement-only reply. After replying, continue the assigned work.");

@@ -840,8 +840,15 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
  *
  * A heartbeat only moves `last_heartbeat_at`. It deliberately does not change
  * `updated`, the stage, the claim count, or the notes, so it cannot be used to
- * fake progress on the board; it exists so the stall detector can measure liveness
- * instead of measuring claim bookkeeping.
+ * fake progress on the board.
+ *
+ * It is reported as a liveness LEASE and is never alerted on. It used to be the clock
+ * the stall detector aged, which made the alert's own remedy (heartbeat) the event
+ * being timed: obeying it reset the timer and guaranteed the same alert one window
+ * later, so a working owner and an ignoring one looked identical. The detector now
+ * ages the card's state clock, and this exists to answer a different question -
+ * whether the owner says they are there - which no amount of heartbeating can answer
+ * about the work.
  */
 export function heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor, now } = {}) {
   if (!taskId) return { ok: false, error: "taskId is required" };
