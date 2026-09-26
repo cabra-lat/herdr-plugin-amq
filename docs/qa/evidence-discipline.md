@@ -180,7 +180,7 @@ The first break is the production defect reproduced exactly; the tests fail on t
 assertion, on the invented clock, and on the untouched-after-refusal assertion, which is the
 combination the original code could not satisfy.
 
-## Unattributable liveness: three states, not two (commit 8a4c1d2)
+## Unattributable liveness: three states, not two (commit 59b9ce4)
 
 An unattributed liveness clock is a **missing fact**, and the two obvious readings are
 both wrong in opposite directions. Reading it as *live* lets an untouched card look alive;
