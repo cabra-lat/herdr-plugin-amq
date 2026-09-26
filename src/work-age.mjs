@@ -263,3 +263,116 @@ export async function buildWorkAge(task, now, { resolveDate = nullDateResolver, 
 export function __resetWorkAgeCache() {
   dateCache.clear();
 }
+
+// ── Two-clock classification ───────────────────────────────────────────────────
+//
+// The state clock says whether the card was moved; work-age says whether anything was
+// built. Read together they separate situations one clock cannot.
+//
+// THE LABELS NAME CLOCKS, NOT PEOPLE. A verdict-shaped label is read as a judgement
+// about whoever owns the card, and the moment a human can see a verdict next to a
+// colleague's name the metric becomes a performance signal: owners learn to move the
+// clock instead of finishing the work. That is not hypothetical - the strongest argument
+// for excluding notes and mtime as work signals was an agent writing substantial reasons
+// purely to move a clock. A label that reads as a verdict rebuilds the exact incentive
+// the two-clock design removes. So: say what the clocks say, and let the reader draw
+// the conclusion, which is the only way the reading stays honest.
+
+export const CLOCK_OBSERVATIONS = Object.freeze({
+  BOTH_RECENT: "both-recent",
+  WORK_RECENT_STATE_STALE: "work-recent-state-stale",
+  STATE_RECENT_WORK_STALE: "state-recent-work-stale",
+  BOTH_STALE: "both-stale",
+  WORK_UNKNOWN: "work-unknown",
+});
+
+// What each observation is ALSO consistent with. A label that reads as a conclusion
+// without its alternatives is the failure mode, so the alternatives travel with it.
+// The important one: WORK_RECENT_STATE_STALE is equally what an implemented-but-forgotten
+// card looks like, and equally what work that does not address this card looks like. The
+// two clocks cannot separate those, and a reader who assumes fresh work means finished
+// work will be wrong sometimes.
+const OBSERVATION_NOTES = Object.freeze({
+  [CLOCK_OBSERVATIONS.BOTH_RECENT]: {
+    describes: "the card was moved and something was built, both recently",
+    alsoConsistentWith: [
+      "an owner who is actively working and keeping the card current",
+      "work that was committed and the card updated in the same pass",
+    ],
+  },
+  [CLOCK_OBSERVATIONS.WORK_RECENT_STATE_STALE]: {
+    describes: "something was built recently; the card itself has not moved",
+    alsoConsistentWith: [
+      "an implemented-but-forgotten card: the work landed and nobody closed or moved the card",
+      "work that does not actually address this card, committed near it in time",
+      "a reviewer or QA dependency that has not reported back yet",
+    ],
+  },
+  [CLOCK_OBSERVATIONS.STATE_RECENT_WORK_STALE]: {
+    describes: "the card was moved recently; nothing has been built against it",
+    alsoConsistentWith: [
+      "bookkeeping activity, such as rewriting a reason or a note for clarity",
+      "a card being re-scoped, reassigned or re-prioritised before any code exists",
+      "an agent whose real work is elsewhere and who is keeping this card tidy",
+    ],
+  },
+  [CLOCK_OBSERVATIONS.BOTH_STALE]: {
+    describes: "neither the card nor the cited work has moved recently",
+    alsoConsistentWith: [
+      "work that exists only as uncommitted local changes, which this signal cannot see",
+      "a card whose work was landed under a different card or with no citation at all",
+      "a genuinely abandoned card",
+    ],
+  },
+  [CLOCK_OBSERVATIONS.WORK_UNKNOWN]: {
+    describes: "the card cites no dated work, so the work axis cannot be read at all",
+    alsoConsistentWith: [
+      "work that exists but cites no commit, which is indistinguishable from no work",
+    ],
+  },
+});
+
+/**
+ * Classify one card by the pair of clocks. Pure, and deliberately total: any input
+ * produces a label, because a card that cannot be classified must SAY so rather than
+ * defaulting to the stale reading - defaulting would invent evidence of inactivity.
+ */
+export function classifyTwoClocks({ stateAgeMs, work = null, staleAfterMs }) {
+  const base = {
+    thresholdMs: staleAfterMs,
+    stateAgeMs: Number.isFinite(stateAgeMs) ? stateAgeMs : null,
+    workAgeMs: work && Number.isFinite(work.ageMs) ? work.ageMs : null,
+    workState: work?.state || "no-claims",
+    latestSha: work?.latestSha || null,
+    // Report-only, exactly like the signal it is derived from. If this ever needs to
+    // page someone, that is a separate decision taken deliberately, not a threshold
+    // added here.
+    reportOnly: true,
+    alerts: false,
+    thresholdPages: false,
+  };
+
+  const dated = work && work.state === "dated" && Number.isFinite(work.ageMs);
+  if (!dated) {
+    return { ...base, label: CLOCK_OBSERVATIONS.WORK_UNKNOWN, ...OBSERVATION_NOTES[CLOCK_OBSERVATIONS.WORK_UNKNOWN] };
+  }
+  if (!Number.isFinite(stateAgeMs)) {
+    // Same principle from the other side: no state clock means the card cannot be placed
+    // on the state axis, so the pair is unreadable rather than stale.
+    return { ...base, label: CLOCK_OBSERVATIONS.WORK_UNKNOWN, ...OBSERVATION_NOTES[CLOCK_OBSERVATIONS.WORK_UNKNOWN] };
+  }
+
+  const stateStale = stateAgeMs > staleAfterMs;
+  const workStale = work.ageMs > staleAfterMs;
+  const label = stateStale && workStale
+    ? CLOCK_OBSERVATIONS.BOTH_STALE
+    : (workStale ? CLOCK_OBSERVATIONS.STATE_RECENT_WORK_STALE : CLOCK_OBSERVATIONS.WORK_RECENT_STATE_STALE);
+  // BOTH_RECENT is the only label not reachable above, because either axis being stale
+  // routes to one of the others first.
+  if (!stateStale && !workStale) {
+    return { ...base, label: CLOCK_OBSERVATIONS.BOTH_RECENT, ...OBSERVATION_NOTES[CLOCK_OBSERVATIONS.BOTH_RECENT] };
+  }
+  return { ...base, label, ...OBSERVATION_NOTES[label] };
+}
+
+export const CLOCK_LABEL_VALUES = Object.freeze(Object.values(CLOCK_OBSERVATIONS));

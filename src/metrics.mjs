@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { buildWorkAge, makeGitDateResolver } from "./work-age.mjs";
+import { buildWorkAge, makeGitDateResolver, classifyTwoClocks } from "./work-age.mjs";
 
 // The columns the queue/stall/work-age signals consider "active". One list, so the
 // async work-age wrapper and the sync builder cannot drift into covering different
@@ -585,6 +585,15 @@ export function buildCoordinatorMetrics({
       reportOnly: true,
       alerts: false,
       note: "Report only, deliberately. A finished card waiting on QA or a reviewer has no new commits, so a work-age alert would fire on a timer for exactly the cards that are healthy.",
+      // The two clocks, read together. Labels name CLOCKS and never agents: a verdict
+      // next to a colleague's name turns the metric into a performance signal, and owners
+      // respond by moving the clock instead of finishing the work.
+      classification: {
+        reportOnly: true,
+        alerts: false,
+        thresholdsPage: false,
+        note: "Labels describe the two clocks, not the owner. Each label carries what it is ALSO consistent with, because the clocks cannot separate those cases - fresh work with a still card is equally an implemented-but-forgotten card and work that does not address this card.",
+      },
       cards: workAgeById ? Object.fromEntries(workAgeById) : {},
     },
     unattributedLiveness,
@@ -621,10 +630,30 @@ export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...option
   const workAgeById = new Map();
   await Promise.all(activeCards.map(async (task) => {
     try {
-      workAgeById.set(task.id, await buildWorkAge(task, now, { resolveDate }));
+      const work = await buildWorkAge(task, now, { resolveDate });
+      // The second clock. Both are read here so the pair can be labelled in one place
+      // and the two cannot disagree about which cards are in scope.
+      const stateAt = cardProgressClock(task);
+      workAgeById.set(task.id, {
+        ...work,
+        stateAgeMs: stateAt === null ? null : Math.max(0, nowMsOf(now) - stateAt),
+        observation: classifyTwoClocks({
+          stateAgeMs: stateAt === null ? null : Math.max(0, nowMsOf(now) - stateAt),
+          work,
+          staleAfterMs: limitsOf(options).stalledWorkMs,
+        }),
+      });
     } catch {
       workAgeById.set(task.id, null);
     }
   }));
   return { metrics: buildCoordinatorMetrics({ ...options, workAgeById }), workAgeById };
+}
+
+function nowMsOf(now) {
+  return now instanceof Date ? now.getTime() : (typeof now === "number" ? now : Date.parse(now));
+}
+
+function limitsOf(options) {
+  return { ...DEFAULT_THRESHOLDS, ...(options.thresholds || {}) };
 }

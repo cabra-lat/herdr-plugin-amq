@@ -487,3 +487,40 @@ finished.
 Note the asymmetry that made this survivable: an unreadable `--reason` had always failed loudly, so
 the *pattern* was already established for the sibling flags. What was missing was the `--proof`
 case, and nothing about the interface advertised that the flags behaved differently.
+
+## Two clocks, five labels, and none of them name a person
+
+The state clock says whether a card was moved; work-age says whether anything was built. Read
+together they separate situations one clock cannot. Five labels, all built from clock vocabulary:
+`both-recent`, `work-recent-state-stale`, `state-recent-work-stale`, `both-stale`, `work-unknown`.
+
+**A verdict-shaped label would have rebuilt the exact incentive the two-clock design removes.** The
+strongest argument for excluding notes and mtime as work signals was an agent writing substantial
+reasons purely to move a clock. A label reading as a judgement about the owner is argued with as
+one, and the moment a human sees one next to a colleague's name the metric becomes a performance
+signal: owners learn to move the clock instead of finishing the work. So the labels name clocks, and
+the test asserts that directly — a forbidden-vocabulary check over every label, description,
+alternative, and field name, asserting no `idle`/`neglected`/`behind`/`failed` and no `owner`,
+`agent`, `verdict` or `severity` field. Renaming one label to `neglected-by-owner` is a break, and
+it is red.
+
+**The boundary case travels in the payload, not in a comment.** `work-recent-state-stale` is equally
+what an implemented-but-forgotten card looks like, and equally what work that does not address this
+card looks like. The two clocks cannot separate those, so every label carries an
+`alsoConsistentWith` list, and a reader who assumes fresh work means finished work will be wrong
+sometimes — which the payload says rather than the code comment. `state-recent-work-stale` likewise
+lists bookkeeping first, because a card moved with nothing built is the signature of exactly the
+behaviour that motivated the design.
+
+`work-unknown` is the honest default in both directions: a card citing no dated work, or with no
+readable state clock, is **unreadable**, not stale. Defaulting either way would invent evidence of
+inactivity that does not exist. Report-only throughout — `alerts: false`, `thresholdPages: false`,
+no `severity` field.
+
+| break | result |
+| --- | --- |
+| none (control) | 11 pass, 0 fail |
+| rename a label to a verdict (`neglected-by-owner`) | 7 pass, **4 fail** |
+| drop the `alsoConsistentWith` alternatives | 9 pass, **2 fail** |
+| default undated work to `both-stale` | 10 pass, **1 fail** |
+| make the classification alert-capable | 10 pass, **1 fail** |
