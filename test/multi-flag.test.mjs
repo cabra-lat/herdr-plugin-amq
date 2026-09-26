@@ -27,7 +27,7 @@ function fixture() {
 
 function run(root, args) {
   return execFileSync(process.execPath, [CLI, ...args], {
-    env: { ...process.env, AM_ROOT: path.join(root, ".agent-mail") },
+    env: { ...process.env, AM_ME: "worker", AM_ROOT: path.join(root, ".agent-mail") },
     encoding: "utf8",
   });
 }
