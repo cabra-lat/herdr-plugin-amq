@@ -208,7 +208,7 @@ columns, and the stall detector only ever considered `backlog`/`doing`/`review`.
 real board the change moves 0 alerts. The design is still correct — a single claim in an
 active column would have flooded — but the number worth remembering is 0, not 128.
 
-## Two health metrics, two different questions (commit 6b2d7e1)
+## Two health metrics, two different questions (commit 175957f)
 
 `queue_age` read `ageMs(task.updated || task.created)` while `stalled_work` — directly above it,
 under the comment "Previously this read only `updated`, so an actively worked card was
