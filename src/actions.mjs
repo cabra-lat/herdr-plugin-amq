@@ -20,6 +20,7 @@ import {
   listInbox,
 } from "./bridge.mjs";
 import { loadTransportIdentities } from "./store.mjs";
+import { healFleet } from "./fleet-heal.mjs";
 import {
   loadBoard,
   addBoardTask,
@@ -1306,6 +1307,7 @@ Usage: herdr-amq fleet <command> [options]
 Commands:
   status, list     Show discovered fleet personas, worktrees, and Herdr status
   prepopulate      Create AMQ maildirs and worktrees for all fleet personas
+  heal             Wire up agents that exist but are not in the roster
   up               Launch missing agents and replace mismatched kinds
   down             Close fleet agent panes without removing worktrees
 
@@ -1337,6 +1339,41 @@ Options:
       if (p.role) console.log(`   \x1b[90m↳ ${p.role.slice(0, 70)}\x1b[0m`);
     }
     console.log("────────────────────────────────────────────────────────────────────────────\n");
+    return;
+  }
+
+  if (subcommand === "heal") {
+    const dryRun = rawArgs.includes("--dry-run") || rawArgs.includes("-n");
+    const res = healFleet({ amqRoot, repoRoot, dryRun });
+    if (!res.ok) {
+      console.error(`❌ heal failed: ${res.error}`);
+      process.exit(1);
+    }
+    const { rosterAdded, panesRenamed, registered, skipped } = res.actions;
+    const total = rosterAdded.length + panesRenamed.length + registered.length;
+    const prefix = res.dryRun ? "\x1b[90m[DRY RUN]\x1b[0m" : "";
+    console.log(`\n🩹 \x1b[1mFleet heal${res.dryRun ? " (dry run)" : ""}\x1b[0m`);
+    console.log("──────────────────────────────────────────────────────────────────────────────");
+    console.log(`  ${res.observedOpenHandles.length} tab(s) open: ${res.observedOpenHandles.join(", ") || "none"}`);
+    for (const h of rosterAdded) {
+      console.log(`  ${prefix} roster   + ${h}`);
+    }
+    for (const p of panesRenamed) {
+      console.log(`  ${prefix} pane     rename ${p.paneId} -> '${p.handle}'  \x1b[90m(was: ${(p.title || "").slice(0, 40)})\x1b[0m`);
+    }
+    for (const h of registered) {
+      console.log(`  ${prefix} register   + ${h}`);
+    }
+    for (const s of skipped) {
+      console.log(`  \x1b[33mskipped  ${s.what}: ${s.reason}\x1b[0m`);
+    }
+    if (total === 0) {
+      console.log("  \x1b[32mnothing to heal — every open agent is already wired\x1b[0m");
+    }
+    if (rosterAdded.length && !res.dryRun) {
+      console.log(`  \x1b[90mroster: ${res.rosterPath}\x1b[0m`);
+    }
+    console.log("──────────────────────────────────────────────────────────────────────────────\n");
     return;
   }
 
