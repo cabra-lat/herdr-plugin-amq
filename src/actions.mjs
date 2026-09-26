@@ -10,6 +10,7 @@ import {
   getPluginVersion,
   getStateDirDivergence,
 } from "./config.mjs";
+import { describeCaller, recordStopAttempt, readStopLog } from "./stop-attribution.mjs";
 import {
   getUnregisteredDaemon,
   isDaemonRunning,
@@ -122,6 +123,9 @@ export function handleStart() {
 }
 
 export function handleStop() {
+  // Record BEFORE stopping: once the daemon is gone, the context worth having is exactly
+  // what can no longer be read.
+  recordStopAttempt({ ...describeCaller({ source: "cli:stop" }), outcome: "requested" });
   const res = stopDaemon();
   if (res.ok) {
     console.log(`🛑 ${res.message}`);
@@ -158,8 +162,7 @@ export function handleDoorbell() {
   }
 }
 
-export function handleStartup() {
-  const amqRoot = findAmqRoot();
+export function handleStartup() {  const amqRoot = findAmqRoot();
   console.log(`[herdr-amq] Startup hook executed. Found AMQ root: ${amqRoot || "none"}`);
 }
 

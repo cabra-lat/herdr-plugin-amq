@@ -64,6 +64,7 @@ import {
 import { buildCoordinatorMetricsWithWorkAge } from "./metrics.mjs";
 import { getJobQueue } from "./job-queue.mjs";
 import { loadMetricsHistory, recordMetricsSample, applyHistoryWindow, DEFAULT_HISTORY_WINDOW_MS } from "./metrics-history.mjs";
+import { describeCaller, recordStopAttempt, readStopLog } from "./stop-attribution.mjs";
 
 
 
@@ -1035,6 +1036,18 @@ export function startWebServer({
         // deliver what it claims is worse than a button that explains itself.
         const owner = isBridgeSupervised(pid);
         if (owner.supervised) {
+          // A refused attempt is still an attempt. Recording it means that if something
+          // is polling this endpoint, the log names the caller instead of the refusals
+          // looking identical to "nobody called".
+          recordStopAttempt({
+            ...describeCaller({
+              source: "http:toggle",
+              remoteAddress: req.socket?.remoteAddress || null,
+              origin: req.headers?.origin || null,
+            }),
+            outcome: "refused-supervised",
+            target: pid,
+          });
           result = {
             ok: false,
             supervised: true,
@@ -1044,9 +1057,30 @@ export function startWebServer({
               "It cannot be stopped from here - use `systemctl --user stop herdr-amq-bridge.service`.",
           };
         } else {
+          recordStopAttempt({
+            ...describeCaller({
+              source: "http:toggle",
+              remoteAddress: req.socket?.remoteAddress || null,
+              origin: req.headers?.origin || null,
+            }),
+            outcome: "requested",
+            target: pid,
+          });
           result = stopDaemon();
         }
       } else {
+        // The START branch is attributed too. A spurious start is how a rival daemon
+        // appeared during the earlier outage, and "it started one instead of stopping
+        // one" is a caller worth naming just as much as a stop.
+        recordStopAttempt({
+          ...describeCaller({
+            source: "http:toggle",
+            remoteAddress: req.socket?.remoteAddress || null,
+            origin: req.headers?.origin || null,
+          }),
+          outcome: "start-requested",
+          target: null,
+        });
         result = startDaemonBackground();
       }
       res.writeHead(200, { "Content-Type": "application/json" });
