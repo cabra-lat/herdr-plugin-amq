@@ -145,7 +145,7 @@ immediately, which looks like the alert clearing, but it inverts the meaning —
 means "delivery has stopped failing", which is the good case. It is the reason the age is filtered
 to open incidents before it is measured.
 
-## Unattributed heartbeats (commit 2c9a1be)
+## Unattributed heartbeats (commit f2370d7)
 
 128 of the 138 live cards carried a `last_heartbeat_at` with `last_heartbeat_by: null`, so
 the field that makes a card look alive had no accountable source. The finding was reported as
