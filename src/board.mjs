@@ -1020,9 +1020,15 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     // to infer a next actor from a reason string, so an untriaged block reports no
     // next actor rather than a confidently wrong one (for example "coordinator").
     // An explicit `next_actor: null` in the update clears a persisted value.
-    next_actor: Object.hasOwn(updates, "next_actor")
+    // PRESENCE must mean "a real value was supplied", not merely "the key is there".
+    // The CLI passes `next_actor: nextActorFlag(flags["next-actor"])`, and that helper
+    // returns `undefined` when no flag was given -- so the key is present with an undefined
+    // value and a bare hasOwnProperty check treated "nobody said anything" as "clear it".
+    // An unblocked card then came back with no next actor, which reads as a live card with
+    // nobody on it. Only an explicit `null` clears the field.
+    next_actor: Object.hasOwn(updates, "next_actor") && updates.next_actor !== undefined
       ? updates.next_actor
-      : (Object.hasOwn(opts, "next_actor") ? opts.next_actor : (
+      : (Object.hasOwn(opts, "next_actor") && opts.next_actor !== undefined ? opts.next_actor : (
         targetStatus === "done" ? null
           : (targetStatus === "blocked" ? (existingTask.next_actor ?? null) : owner)
       )),

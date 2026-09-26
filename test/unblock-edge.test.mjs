@@ -130,3 +130,44 @@ test("a card unblocked into the queue is findable and reports the queued stage",
   assert.equal(found.stage, "queued");
   await rm(b.repoRoot, { recursive: true, force: true });
 });
+
+test("an unblock preserves the next actor, and never invents one that was not there", async () => {
+  // Found in PRODUCTION, not by this suite: the coordinator ran `unblock` on a real card
+  // and it came back with "Next actor: (unset)". The cause is that the CLI passes
+  // `next_actor: nextActorFlag(flags["next-actor"])` and that helper returns `undefined`
+  // when no flag was given -- so the key was PRESENT with an undefined value, and a bare
+  // hasOwnProperty check read that as "clear the field". Absence of a flag is not a
+  // request to unassign somebody's work.
+  const b = await board();
+  const t = await blockedCard(b);
+  updateBoardTask(b.repoRoot, b.amqRoot, t.id, { status: "blocked", reason: "need a ruling" }, { actor: "tester" });
+
+  // The exact shape the CLI sends when --next-actor is omitted.
+  const res = updateBoardTask(
+    b.repoRoot, b.amqRoot, t.id,
+    { status: "in_progress", reason: "ruling delivered", next_actor: undefined },
+    { from: "coordinator" },
+  );
+  assert.equal(res.ok, true);
+  const done = res.task || res;
+  // A card coming off a block is being picked up by its owner, so the next actor is the
+  // owner. Not null: an unblocked card with no next actor is unassigned, not unblocked.
+  assert.equal(done.next_actor, "tester", "an omitted flag must fall back to the owner, not clear the field");
+  await rm(b.repoRoot, { recursive: true, force: true });
+});
+
+test("an explicit next_actor: null still clears the field", async () => {
+  // The fix must not break the deliberate clear. An absent value and an explicit null are
+  // different states, and conflating them is the defect this whole change is about.
+  const b = await board();
+  const t = await blockedCard(b);
+  updateBoardTask(b.repoRoot, b.amqRoot, t.id, { status: "blocked", reason: "need a ruling" }, { actor: "tester" });
+  const res = updateBoardTask(
+    b.repoRoot, b.amqRoot, t.id,
+    { status: "in_progress", reason: "ruling delivered", next_actor: null },
+    { from: "coordinator" },
+  );
+  assert.equal(res.ok, true);
+  assert.equal((res.task || res).next_actor, null, "an explicit null is a decision to unassign");
+  await rm(b.repoRoot, { recursive: true, force: true });
+});
