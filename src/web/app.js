@@ -2684,6 +2684,19 @@
     }
   }
 
+  // A bare sample count is a silent window: "350" on a history that dropped 150 older
+  // samples reads identically to "350" on one that never had them. When anything was
+  // dropped, say so and name the span, so the number can be interpreted.
+  function formatHistoryWindow(history) {
+    const samples = history?.samples?.length ?? 0;
+    const retention = history?.retention || {};
+    if (retention.mode !== "window" || !retention.droppedOld) return String(samples);
+    return t("metrics.historyWindowed")
+      .replace("{shown}", String(samples))
+      .replace("{total}", String(retention.total ?? samples))
+      .replace("{window}", formatMetricDuration(retention.windowMs));
+  }
+
   // ─── Swarm Coordination Kanban Board ───────────────────────────────────────
 
   async function fetchBoard() {
@@ -2782,7 +2795,7 @@
       [t("metrics.jobsActive"), metrics.jobs?.active ?? 0],
       [t("metrics.jobOutcomes"), `S${metrics.jobs?.outcomes?.succeeded ?? 0} / F${metrics.jobs?.outcomes?.failed ?? 0} / C${metrics.jobs?.outcomes?.cancelled ?? 0}`],
       [t("metrics.jobConcurrency"), `${metrics.jobs?.concurrency?.current ?? 0} / ${metrics.jobs?.concurrency?.max ?? 0}`],
-      [t("metrics.history"), state.board?.coordinatorHistory?.samples?.length ?? 0],
+      [t("metrics.history"), formatHistoryWindow(state.board?.coordinatorHistory)],
     ];
     coordinatorMetricsGrid.innerHTML = cards.map(([label, value]) =>
       `<div class="coordinator-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`

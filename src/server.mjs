@@ -63,7 +63,7 @@ import {
 } from "./blobs.mjs";
 import { buildCoordinatorMetricsWithWorkAge } from "./metrics.mjs";
 import { getJobQueue } from "./job-queue.mjs";
-import { loadMetricsHistory, recordMetricsSample } from "./metrics-history.mjs";
+import { loadMetricsHistory, recordMetricsSample, applyHistoryWindow, DEFAULT_HISTORY_WINDOW_MS } from "./metrics-history.mjs";
 
 
 
@@ -264,6 +264,21 @@ export function isBridgeSupervised(pid) {
     pid: target,
     ppid,
   };
+}
+
+// historyWindow=<ms> | "all". Default is the 6h window. "all" restores the previous
+// unbounded-by-time behaviour for anyone who needs the full span.
+function resolveHistoryWindow(params) {
+  const raw = params && typeof params.get === "function" ? params.get("historyWindow") : null;
+  if (raw === null || raw === undefined || String(raw).trim() === "") {
+    return { windowMs: DEFAULT_HISTORY_WINDOW_MS };
+  }
+  const text = String(raw).trim().toLowerCase();
+  if (text === "all") return { windowMs: Infinity };
+  const n = Number(text);
+  // Unparseable falls back to the default rather than emptying the history.
+  if (!Number.isFinite(n) || n <= 0) return { windowMs: DEFAULT_HISTORY_WINDOW_MS };
+  return { windowMs: Math.floor(n) };
 }
 
 export function startWebServer({
@@ -871,7 +886,10 @@ export function startWebServer({
         jobQueue,
         repos: [repoRoot, path.join(repoRoot, "..", "herdr-plugin-amq")],
       });
-      const history = recordMetricsSample(metricsHistoryFile, coordinator);
+      const history = applyHistoryWindow(
+        recordMetricsSample(metricsHistoryFile, coordinator),
+        resolveHistoryWindow(url.searchParams)
+      );
       const { columns, columnsMeta } = applyColumnLimits(board.columns, url.searchParams);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
