@@ -842,6 +842,26 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   const nowMs = Date.parse(now);
   const wasBlocked = existingTask.status === "blocked";
   const isBlocked = targetStatus === "blocked";
+  // Re-triaging a blocker is a real action, but only when it ROUTES the card.
+  // Rewriting the reason on its own is prose: the blocked_oldest alert exists
+  // precisely because a triaged blocker is still a blocker, and if a reason
+  // rewrite reset this clock then any lane could silence the alert by saying
+  // more words about a card nobody had touched. Changing who is next, or who
+  // owns it, is a different thing -- somebody made a decision about who acts
+  // next, and the age from that point is the honest one. Without this the
+  // alert reports "blocked for 117 minutes" about a card that was correctly
+  // re-routed three minutes ago, which is a false stale reading, not a stale
+  // card.
+  const nextActor = updates.next_actor ? canonicalizeOwner(updates.next_actor) : existingTask.next_actor;
+  // Presence, not value: an ABSENT key means "leave it alone", and comparing the
+  // absent case against "" would report a change on every patch that simply did
+  // not mention the field. That is what the reason-only control caught.
+  const touches = (k) => Object.prototype.hasOwnProperty.call(updates, k) && updates[k] !== undefined;
+  const reroutedWhileBlocked =
+    wasBlocked &&
+    isBlocked &&
+    ((touches("next_actor") && canonicalizeOwner(updates.next_actor) !== canonicalizeOwner(existingTask.next_actor || "")) ||
+      (touches("owner") && canonicalizeOwner(updates.owner) !== canonicalizeOwner(existingTask.owner || "")));
   let blockedMs = Number.isFinite(Number(existingTask.blocked_ms)) ? Number(existingTask.blocked_ms) : 0;
   if (wasBlocked && !isBlocked && existingTask.blocked_at) {
     const blockedAtMs = Date.parse(existingTask.blocked_at);
@@ -865,7 +885,10 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     status: targetStatus,
     priority: updates.priority || existingTask.priority || "normal",
     claimed_at: enteringProgress ? now : (existingTask.claimed_at || null),
-    blocked_at: isBlocked ? (wasBlocked ? existingTask.blocked_at : now) : existingTask.blocked_at,
+    next_actor: nextActor,
+    blocked_at: isBlocked
+      ? (wasBlocked ? (reroutedWhileBlocked ? now : existingTask.blocked_at) : now)
+      : existingTask.blocked_at,
     done_at: targetStatus === "done" ? (existingTask.done_at || now) : existingTask.done_at,
     // A claim is a liveness signal, an in-progress update is not: only a fresh
     // claim (or an explicit `task heartbeat`) sets the liveness clock.
