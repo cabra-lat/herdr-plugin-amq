@@ -210,9 +210,17 @@ const TASK_FLAGS = {
   new: new Set(["title", "to", "owner", "desc", "description", "status", "priority", "next-actor", "depends-on", "json", "notify", "me", "from", "help"]),
   assign: new Set(["to", "owner", "title", "desc", "description", "status", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
   claim: new Set(["id", "notify", "me", "from", "help"]),
-  done: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
-  complete: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
+  // `--reason` exists so a card can be completed FROM `blocked`: leaving blocked is an edge
+  // and every edge is narrated. Without it the core guard refuses the exit and the only way
+  // out would be a manufactured intermediate stage.
+  done: new Set(["id", "proof", "evidence", "reason", "notify", "me", "from", "help"]),
+  complete: new Set(["id", "proof", "evidence", "reason", "notify", "me", "from", "help"]),
   block: new Set(["id", "reason", "desc", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
+  // The stage is REQUIRED and has no default. Defaulting an unblock to in_progress is the
+  // same class of assumption as defaulting next_actor to owner: it invents a decision the
+  // person leaving the block did not make. doing = picking it up now, queued = scheduled
+  // behind other work, backlog = nobody is coming back to it.
+  unblock: new Set(["id", "reason", "stage", "next-actor", "priority", "notify", "me", "from", "help"]),
   heartbeat: new Set(["id", "me", "from", "help"]),  reassign: new Set(["id", "to", "owner", "next-actor", "depends-on", "clear-depends-on", "notify", "me", "from", "help"]),
   show: new Set(["id", "me", "from", "help"]),
   drain: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
@@ -483,7 +491,7 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
           amqRoot,
           taskId,
           { status: "done" },
-          { from: me, proof, notify: flags.notify !== "false" }
+          { from: me, proof, reason: (flags.reason || "").trim() || undefined, notify: flags.notify !== "false" }
         );
       } catch (error) {
         return failTask(`Failed to write task completion: ${error.message}`);
@@ -500,6 +508,72 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       break;
     }
 
+    case "unblock": {
+      const taskId = positional[0] || flags.id;
+      if (!taskId) {
+        console.error("❌ Task ID is required: herdr-amq task unblock <taskId> --stage <doing|queued|backlog> --reason <reason>");
+        process.exit(1);
+      }
+
+      // No default, on purpose. See the verb's flag set.
+      const stageArg = String(flags.stage || "").trim();
+      if (!stageArg) {
+        console.error(
+          "❌ --stage is required: herdr-amq task unblock <taskId> --stage <doing|queued|backlog> --reason <reason>\n" +
+          "   A card coming off a block is `doing` if it is being picked up now, `queued` if it is\n" +
+          "   scheduled behind other work, and `backlog` if nobody is coming back to it. There is no\n" +
+          "   default because choosing one here would record a decision you did not make."
+        );
+        process.exit(1);
+      }
+      const STAGE_ALIASES = { doing: "in_progress", in_progress: "in_progress", queued: "queued", backlog: "backlog" };
+      const stage = STAGE_ALIASES[stageArg];
+      if (!stage) {
+        console.error(`❌ Unrecognised --stage ${JSON.stringify(stageArg)}. Legal values: doing, queued, backlog.`);
+        process.exit(1);
+      }
+
+      const reasonArg = flags.reason || positional.slice(1).join(" ");
+      const expandedReason = expandAtFile(reasonArg, "--reason");
+      if (expandedReason.error) return failTask(expandedReason.error);
+      const reason = (expandedReason.value ?? "").trim();
+      if (!reason) {
+        console.error(
+          "❌ --reason is required: leaving `blocked` is an edge, and an edge without narration\n" +
+          "   is an edge that gets walked without narration. Say what resolved the block."
+        );
+        process.exit(1);
+      }
+
+      let res;
+      try {
+        res = updateBoardTask(
+          repoRoot,
+          amqRoot,
+          taskId,
+          {
+            status: stage,
+            next_actor: nextActorFlag(flags["next-actor"]),
+            priority: flags.priority || undefined,
+          },
+          { from: me, reason, notify: flags.notify !== "false" }
+        );
+      } catch (error) {
+        return failTask(`Failed to write task unblock: ${error.message}`);
+      }
+
+      if (res.ok) {
+        const done = res.task || res;
+        console.log(`\n✅ \x1b[32mTask ${taskId} unblocked → ${done.stage || stage}\x1b[0m`);
+        console.log(`Reason: ${reason}`);
+        console.log(`\x1b[2mRecorded as a note; the reason field is cleared because the card is no longer blocked.\x1b[0m\n`);
+      } else {
+        console.error(`❌ Failed to unblock task: ${res.error}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case "block": {
       const taskId = positional[0] || flags.id;
       if (!taskId) {
@@ -510,7 +584,18 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       const reasonArg = flags.reason || flags.desc || positional.slice(1).join(" ");
       const expandedReason = expandAtFile(reasonArg, "--reason");
       if (expandedReason.error) return failTask(expandedReason.error);
-      const reason = (expandedReason.value ?? "").trim() || "Blocked";
+      // No synthetic default. The core now requires a real reason to enter `blocked`, and a
+      // literal "Blocked" would satisfy that guard while carrying no information - which is
+      // the same hole the guard was added to close.
+      const reason = (expandedReason.value ?? "").trim();
+      if (!reason) {
+        console.error(
+          "❌ --reason is required: herdr-amq task block <taskId> --reason <reason>\n" +
+          "   The reason is the narration of the edge. A blocker that cannot say what it is\n" +
+          "   waiting on is indistinguishable from one nobody has triaged."
+        );
+        process.exit(1);
+      }
       if (reason.length < 40) {
         // A silently invisible short reason is how blockers became un-actionable; a
         // warning is enough, the field is still written.

@@ -138,7 +138,9 @@ describe("actions.mjs CLI integration", () => {
       assert.ok(fs.existsSync(path.join(tempRoot, ".opencode", "bus", "blocked", "test-card-1.md")));
 
       // Done
-      handleTaskCommand("done", ["test-card-1", "--proof", "All tests passed"]);
+      // --reason is required here because the card is coming OUT of blocked: every edge
+      // touching blocked is narrated, and the core guard refuses the exit without it.
+      handleTaskCommand("done", ["test-card-1", "--proof", "All tests passed", "--reason", "review landed"]);
       assert.ok(fs.existsSync(path.join(tempRoot, ".opencode", "bus", "done", "test-card-1.md")));
     } finally {
       console.log = origLog;

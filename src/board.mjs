@@ -34,6 +34,16 @@ export function findStatusFile(repoRoot) {
  * Defaults to .agent-mail/bus (lives alongside agent mailboxes and blobs).
  * Falls back to legacy .opencode/bus if present.
  */
+// ONE source of truth for the directories a card can physically live in.
+//
+// This list had drifted in four places and omitted `queued`. To be precise about what that
+// was and was not: it was NOT an observable bug, because getBoardTask falls back to
+// loadBoard() when the fast path misses, so a queued card was still found (verified: a
+// red arm that removed `queued` from this list still returned stage=queued, and no test
+// went red). It is a consolidation so the next stage cannot be added to three of four
+// lists, not a fix for cards going missing.
+const STAGE_DIRS_FOR_LOOKUP = ["backlog", "queued", "doing", "in_progress", "blocked", "done"];
+
 export function getBusDirectory(repoRoot, amqRoot) {
   if (process.env.AMQ_BUS_DIR) {
     return path.resolve(process.env.AMQ_BUS_DIR);
@@ -788,7 +798,7 @@ export function cardStateChanged(previous, next) {
 export function getBoardTask(repoRoot, amqRoot, taskId) {
   if (!taskId) return null;
   const busDir = getBusDirectory(repoRoot, amqRoot);
-  const stageDirs = ["backlog", "doing", "in_progress", "blocked", "done"];
+  const stageDirs = STAGE_DIRS_FOR_LOOKUP;
   for (const s of stageDirs) {
     const candidate = path.join(busDir, s, `${taskId}.md`);
     if (fs.existsSync(candidate)) {
@@ -907,6 +917,35 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   const nowMs = Date.parse(now);
   const wasBlocked = existingTask.status === "blocked";
   const isBlocked = targetStatus === "blocked";
+
+  // TREATMENT B: a reason is the NARRATION of the edge, and both edges touching `blocked`
+  // require one. Refused HERE rather than in the CLI, because the CLI is not the only
+  // door -- an HTTP PATCH reaches this same function, and a guard that only exists in one
+  // door is a guard that will be walked around the same evening it was written.
+  //
+  // Entering blocked without a reason produces a blocker the coordinator cannot triage,
+  // and it is silently accepted today (measured, not assumed). Leaving blocked without one
+  // discards the answer to "why was this stuck, and what resolved it" -- and the reason
+  // field is what the alert reads, so an un-narrated exit also strands the history.
+  //
+  // The exit reason is NOT kept as `block_reason`: a card that is no longer blocked must
+  // not carry a reason slot, or "carries a reason" stops meaning "is a triaged blocker"
+  // and the blocked_oldest ownership split silently changes meaning. It is appended to
+  // `notes` as history instead, which is what notes are for.
+  if (wasBlocked !== isBlocked) {
+    const narration = String(updates.reason ?? opts.reason ?? "").trim();
+    if (!narration) {
+      return {
+        ok: false,
+        error: isBlocked
+          ? "Entering `blocked` requires a reason. Nothing was written."
+          : "Leaving `blocked` requires a reason explaining what resolved it. Nothing was written.",
+        rejected: ["reason"],
+        hint: "The reason is the narration of the transition; an edge that can be walked without one will be.",
+      };
+    }
+    updates = { ...updates, reason: narration };
+  }
   // Re-triaging a blocker is a real action, but only when it ROUTES the card.
   // Rewriting the reason on its own is prose: the blocked_oldest alert exists
   // precisely because a triaged blocker is still a blocker, and if a reason
@@ -961,9 +1000,21 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     last_heartbeat_by: nextHeartbeatBy,
     claims: enteringProgress ? (Number(existingTask.claims) || 0) + 1 : (Number(existingTask.claims) || 0),
     blocked_ms: blockedMs,
-    block_reason: updates.reason ?? opts.reason ?? existingTask.block_reason ?? null,
+    // `block_reason` lives on blocked cards and NOWHERE ELSE. A reason supplied on any
+    // transition that does not land on `blocked` must not linger in the field the alert
+    // reads, or "carries a reason" stops meaning "is a triaged blocker" and the
+    // blocked_oldest ownership split changes meaning without anyone changing it.
+    block_reason: isBlocked
+      ? (updates.reason ?? opts.reason ?? existingTask.block_reason ?? null)
+      : null,
+    notes: wasBlocked && !isBlocked
+      ? [...(Array.isArray(existingTask.notes) ? existingTask.notes : []), {
+        at: now,
+        author: String(opts.from || updates.owner || existingTask.owner || "unknown"),
+        text: `unblocked: ${updates.reason ?? opts.reason}`,
+      }]
+      : (Array.isArray(updates.notes) ? updates.notes : (Array.isArray(existingTask.notes) ? existingTask.notes : [])),
     proof: updates.proof ?? opts.proof ?? existingTask.proof ?? null,
-    notes: Array.isArray(updates.notes) ? updates.notes : (Array.isArray(existingTask.notes) ? existingTask.notes : []),
     depends_on: Array.isArray(updates.depends_on) ? updates.depends_on : (Array.isArray(existingTask.depends_on) ? existingTask.depends_on : []),
     // A blocked card is triaged when it carries a reason. There is no reliable way
     // to infer a next actor from a reason string, so an untriaged block reports no
@@ -1069,7 +1120,7 @@ export function heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor, now } = {
   if (!taskId) return { ok: false, error: "taskId is required" };
 
   const busDir = getBusDirectory(repoRoot, amqRoot);
-  const stageDirs = ["backlog", "doing", "in_progress", "blocked", "done"];
+  const stageDirs = STAGE_DIRS_FOR_LOOKUP;
   let existingPath = null;
   let existingTask = null;
   let stage = "backlog";
@@ -1132,7 +1183,7 @@ export function appendBoardTaskNote(repoRoot, amqRoot, taskId, { text, author = 
   if (!text || !String(text).trim()) return { ok: false, error: "note text is required" };
 
   const busDir = getBusDirectory(repoRoot, amqRoot);
-  const stageDirs = ["backlog", "doing", "in_progress", "blocked", "done"];
+  const stageDirs = STAGE_DIRS_FOR_LOOKUP;
   let existingPath = null;
   let existingTask = null;
   let stage = "backlog";
@@ -1170,7 +1221,7 @@ export function deleteBoardTask(repoRoot, amqRoot, taskId) {
   if (!taskId) return { ok: false, error: "taskId is required" };
 
   const busDir = getBusDirectory(repoRoot, amqRoot);
-  const stageDirs = ["backlog", "doing", "in_progress", "blocked", "done"];
+  const stageDirs = STAGE_DIRS_FOR_LOOKUP;
   let deleted = false;
 
   for (const s of stageDirs) {

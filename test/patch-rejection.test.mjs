@@ -82,9 +82,14 @@ test("legal statuses are still accepted, including the doing alias", () => {
     assert.equal(getBoardTask(root, amqRoot, id).task.status, "in_progress");
     assert.equal(updateBoardTask(root, amqRoot, id, { status: "doing" }).ok, true, "doing is an accepted alias");
     assert.equal(getBoardTask(root, amqRoot, id).task.status, "in_progress", "and normalises to in_progress");
-    assert.equal(updateBoardTask(root, amqRoot, id, { status: "blocked" }).ok, true);
+    // Entering blocked now REQUIRES a reason: the narration of the edge is enforced in the
+    // core, not the CLI. See test/unblock-edge.test.mjs.
+    assert.equal(updateBoardTask(root, amqRoot, id, { status: "blocked" }).ok, false, "entering blocked without a reason must be refused");
+    assert.equal(updateBoardTask(root, amqRoot, id, { status: "blocked", reason: "waiting on a ruling" }).ok, true);
     assert.equal(getBoardTask(root, amqRoot, id).task.status, "blocked");
-    assert.equal(updateBoardTask(root, amqRoot, id, { status: "done" }).ok, true);
+    // Leaving blocked requires a reason too, so both edges out of here are narrated.
+    assert.equal(updateBoardTask(root, amqRoot, id, { status: "done" }).ok, false, "leaving blocked without a reason must be refused");
+    assert.equal(updateBoardTask(root, amqRoot, id, { status: "done", reason: "ruling delivered" }).ok, true);
     assert.equal(getBoardTask(root, amqRoot, id).task.status, "done");
     assert.equal(updateBoardTask(root, amqRoot, id, { status: "backlog" }).ok, true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

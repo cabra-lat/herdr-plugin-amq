@@ -41,6 +41,9 @@ test("task lifecycle persists v1 fields and proof/reason with fake clock", () =>
     assert.equal(claimed.task.claims, 1);
     assert.equal(claimed.task.last_heartbeat_at, "2026-09-24T10:01:00.000Z");
 
+    // No `reason` in updates on purpose: the guard reads updates.reason ?? opts.reason, so
+    // the opts.reason below already satisfies it. Putting one here would SHADOW the
+    // narration this test is asserting on.
     const blocked = updateBoardTask(root, amqRoot, created.task.id, { status: "blocked" }, {
       reason: "Waiting for numeric capture",
       notify: false,
@@ -53,18 +56,22 @@ test("task lifecycle persists v1 fields and proof/reason with fake clock", () =>
     // value instead of a confidently wrong "coordinator".
     assert.equal(blocked.task.next_actor, "qa");
 
-    updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress" }, {
+    updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress", reason: "ruling delivered, resuming" }, {
       notify: false,
       now: new Date("2026-09-24T10:04:00.000Z"),
     });
-    const done = updateBoardTask(root, amqRoot, created.task.id, { status: "done" }, {
+    // Leaving blocked needs a reason, so the lifecycle test narrates the exit too.
+    const done = updateBoardTask(root, amqRoot, created.task.id, { status: "done", reason: "ruling delivered" }, {
       proof: "3/3 checks passed",
       notify: false,
       now: new Date("2026-09-24T10:05:00.000Z"),
     });
     assert.equal(done.ok, true);
     assert.equal(done.task.proof, "3/3 checks passed");
-    assert.equal(done.task.block_reason, "Waiting for numeric capture");
+    // The reason slot is CLEARED on the way out: a card that is no longer blocked must not
+    // read as a triaged blocker, or the blocked_oldest ownership split changes meaning.
+    // The narration survives as a note instead.
+    assert.equal(done.task.block_reason, null, "the reason slot is cleared on the way out of blocked");
     assert.equal(done.task.blocked_ms, 2 * 60 * 1000);
     assert.equal(done.task.done_at, "2026-09-24T10:05:00.000Z");
     assert.deepEqual(done.task.depends_on, ["task_prerequisite"]);
@@ -74,7 +81,7 @@ test("task lifecycle persists v1 fields and proof/reason with fake clock", () =>
     const parsed = parseTaskFile(file, "done");
     assert.equal(parsed.schema_version, 1);
     assert.equal(parsed.proof, "3/3 checks passed");
-    assert.equal(parsed.block_reason, "Waiting for numeric capture");
+    assert.equal(parsed.block_reason, null, "and it stays cleared after a round-trip through the file");
     assert.equal(parsed.next_actor, null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

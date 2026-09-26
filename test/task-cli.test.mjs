@@ -171,7 +171,8 @@ test("existing supported task subcommands retain zero exit codes", () => {
       ["task", "claim", id, "--me", "alice"],
       ["task", "show", id],
       ["task", "block", id, "--reason", "Waiting"],
-      ["task", "done", id, "--proof", "Verified"],
+      // Coming out of blocked needs narration: the core guard refuses an un-narrated exit.
+      ["task", "done", id, "--proof", "Verified", "--reason", "ruling delivered"],
     ]) {
       const result = run(root, args);
       assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
@@ -447,4 +448,53 @@ test("--proof @missing fails LOUDLY instead of storing a path as the evidence", 
     // record the work as finished.
     assert.notEqual(readCard(amqRoot, id).status, "done", "the card must stay open");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// The CLI half of the blocked edge. test/unblock-edge.test.mjs covers the core guard, but a
+// guard in the core does not prove the COMMAND can express the transition -- and when I
+// removed the `--stage` requirement to build a red arm, NOTHING went red, which is how I
+// know the verb itself was untested. These are the arms for the two refusals the verb owes.
+test("unblock refuses without --stage: no default, because a default records a decision you did not make", async () => {
+  const { root } = makeFixture();
+  try {
+    const created = run(root, ["task", "assign", "--to", "alice", "--title", "Needs a stage"]);
+    const id = created.stdout.match(/ID: (task_[A-Za-z0-9_]+)/)?.[1];
+    assert.equal(run(root, ["task", "block", id, "--reason", "Waiting on a ruling"]).status, 0);
+
+    const noStage = run(root, ["task", "unblock", id, "--reason", "ruling delivered"]);
+    assert.notEqual(noStage.status, 0, "unblock must not invent a destination stage");
+    assert.match(noStage.stderr, /--stage is required/);
+
+    // Still blocked: a refusal that moved the card anyway would be worse than no check.
+    // Read through the board module, not `task show`, which does not emit JSON on stdout.
+    const { getBoardTask } = await import("../src/board.mjs");
+    assert.equal(getBoardTask(root, path.join(root, ".agent-mail"), id).task.status, "blocked");
+  } finally { /* fixture cleans itself up */ }
+});
+
+test("unblock refuses without --reason, and rejects a stage it does not know", async () => {
+  const { root } = makeFixture();
+  try {
+    const created = run(root, ["task", "assign", "--to", "alice", "--title", "Needs narration"]);
+    const id = created.stdout.match(/ID: (task_[A-Za-z0-9_]+)/)?.[1];
+    run(root, ["task", "block", id, "--reason", "Waiting on a ruling"]);
+
+    const noReason = run(root, ["task", "unblock", id, "--stage", "queued"]);
+    assert.notEqual(noReason.status, 0, "an edge walked without narration is an edge walked");
+    assert.match(noReason.stderr, /--reason is required/);
+
+    const badStage = run(root, ["task", "unblock", id, "--stage", "finished", "--reason", "ruling delivered"]);
+    assert.notEqual(badStage.status, 0);
+    assert.match(badStage.stderr, /Unrecognised --stage/);
+
+    // The two legal non-default stages, and `doing` as the alias of in_progress.
+    for (const [stage, expected] of [["queued", "queued"], ["backlog", "backlog"], ["doing", "in_progress"]]) {
+      const ok = run(root, ["task", "unblock", id, "--stage", stage, "--reason", "ruling delivered"]);
+      assert.equal(ok.status, 0, `${stage}: ${ok.stderr}`);
+      const { getBoardTask } = await import("../src/board.mjs");
+      assert.equal(getBoardTask(root, path.join(root, ".agent-mail"), id).task.status, expected, `expected ${expected} after --stage ${stage}`);
+      // re-block so the next iteration leaves a real blocked edge
+      if (stage !== "done") run(root, ["task", "block", id, "--reason", "Waiting again"]);
+    }
+  } finally { /* fixture cleans itself up */ }
 });

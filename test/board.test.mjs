@@ -196,7 +196,7 @@ describe("board.mjs Kanban module", () => {
       tmpDir,
       amqRoot,
       addRes.task.id,
-      { status: "done" },
+      { status: "done", reason: "ruling delivered" },
       { from: "spotter", proof: "strip verified 8 frames pass" }
     );
     assert.equal(doneRes.ok, true);
@@ -249,7 +249,7 @@ describe("board.mjs Kanban module", () => {
     assert.ok(fs.existsSync(doingFile), "Task file should now be in bus/doing/");
 
     // 4. Move task to blocked
-    const moveBlockedRes = updateBoardTask(tmpDir, amqRoot, taskId, { status: "blocked" }, { notify: false });
+    const moveBlockedRes = updateBoardTask(tmpDir, amqRoot, taskId, { status: "blocked", reason: "waiting on a ruling" }, { notify: false });
     assert.equal(moveBlockedRes.ok, true);
 
     assert.equal(fs.existsSync(doingFile), false, "Old doing file should be moved");
@@ -257,7 +257,7 @@ describe("board.mjs Kanban module", () => {
     assert.ok(fs.existsSync(blockedFile), "Task file should now be in bus/blocked/");
 
     // 5. Move task to done
-    const moveDoneRes = updateBoardTask(tmpDir, amqRoot, taskId, { status: "done" }, { notify: false });
+    const moveDoneRes = updateBoardTask(tmpDir, amqRoot, taskId, { status: "done", reason: "ruling delivered" }, { notify: false });
     assert.equal(moveDoneRes.ok, true);
 
     assert.equal(fs.existsSync(blockedFile), false, "Old blocked file should be moved");
