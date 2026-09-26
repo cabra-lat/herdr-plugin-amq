@@ -85,6 +85,22 @@ function cardLivenessState(task, now, stalledWorkMs) {
   };
 }
 
+// The clock the stall detector ages: the card's own STATE clock, never a heartbeat.
+//
+// A heartbeat is an assertion that the owner is present. It was previously the newest
+// event on the card, which made the detector age the very event its own recommended
+// remedy writes: obeying the alert reset the clock and started the same timer again,
+// so the alert was guaranteed to return one window later and carried no information
+// about whether anyone was working. An assertion cannot be both the remedy and the
+// trigger. Stall now means "this card has not moved", whose remedy is moving it, and
+// the liveness lease is reported separately in the payload rather than alerted on.
+function cardProgressClock(task) {
+  const updatedAt = timestamp(task?.updated);
+  const createdAt = timestamp(task?.created);
+  const candidates = [updatedAt, createdAt].filter((value) => value !== null);
+  return candidates.length > 0 ? Math.max(...candidates) : null;
+}
+
 function cardLiveness(task) {
   const candidates = [
     task?.last_heartbeat_at,
@@ -200,11 +216,12 @@ export function buildCoordinatorMetrics({
       if (["backlog", "doing", "review"].includes(stage)) activeCards.push(task);
     }
   }
-  // The queue age answers the same liveness question as stalled_work, so it asks
-  // the same function. It previously read `updated` only, so a card heartbeated
-  // every minute read as live to stalled_work and as ancient to queue_age on the
-  // same card at the same moment. An `unknown` card is no evidence of queue age
-  // either, so it is excluded and counted rather than silently folded in.
+  // The queue age answers the same question as stalled_work, so it ages the same
+  // clock: the card's own state clock. It previously read `updated` only while
+  // stalled_work read the liveness clock, so the two disagreed about one card at one
+  // instant; and when stalled_work moved to the state clock, queue_age moved with it
+  // rather than being left behind on the heartbeat. Both progress signals now read
+  // the same clock, and the liveness lease is reported separately and never alerted.
   let queueAgeMs = 0;
   let queueOldest = null;
   let queueUnknown = 0;
@@ -214,8 +231,10 @@ export function buildCoordinatorMetrics({
       queueUnknown += 1;
       continue;
     }
-    if (liveness.ageMs !== null && liveness.ageMs > queueAgeMs) {
-      queueAgeMs = liveness.ageMs;
+    const progressAt = cardProgressClock(task);
+    const progressAgeMs = progressAt === null ? null : Math.max(0, now - progressAt);
+    if (progressAgeMs !== null && progressAgeMs > queueAgeMs) {
+      queueAgeMs = progressAgeMs;
       queueOldest = task;
     }
   }
@@ -231,9 +250,21 @@ export function buildCoordinatorMetrics({
   // actively worked card was indistinguishable from an ignored one.
   const stalledCards = [];
   const unattributedLiveness = [];
+  const livenessLease = [];
   for (const task of activeCards) {
     const liveness = cardLivenessState(task, now, limits.stalledWorkMs);
     const note = noteSummary(task, now);
+    // The lease is reported, never alerted on. Alerting on it would recreate the
+    // loop this change exists to remove: the remedy for "your lease expired" is to
+    // renew the lease, so the alert would return one window later by construction.
+    livenessLease.push({
+      id: task.id,
+      owner: task.owner || null,
+      state: liveness.state,
+      via: liveness.via,
+      by: liveness.by,
+      lastActivityAt: liveness.at === null ? null : new Date(liveness.at).toISOString(),
+    });
     if (liveness.state === LIVENESS_STATES.UNKNOWN) {
       // Reported, never alerted: visible to a reader who asks, silent in the list.
       unattributedLiveness.push({
@@ -247,13 +278,21 @@ export function buildCoordinatorMetrics({
       });
       continue;
     }
-    if (liveness.state === LIVENESS_STATES.STALE) {
+    const progressAt = cardProgressClock(task);
+    const progressAgeMs = progressAt === null ? null : Math.max(0, now - progressAt);
+    if (progressAgeMs !== null && progressAgeMs > limits.stalledWorkMs) {
+      // `reason` is projected here because the coordinator prompt reads
+      // `card.reason`; omitting it made every prompted card print
+      // reason=unspecified even when the card carried a block reason, which is a
+      // read failure rather than a missing value. The board writes
+      // `block_reason`, so both spellings are accepted.
       stalledCards.push({
         id: task.id,
         title: task.title,
         owner: task.owner || null,
-        ageMs: liveness.ageMs,
-        lastActivityAt: new Date(liveness.at).toISOString(),
+        reason: task.block_reason || task.reason || null,
+        ageMs: progressAgeMs,
+        lastActivityAt: new Date(progressAt).toISOString(),
         heartbeatAt: timestamp(task?.last_heartbeat_at) === null ? null : new Date(timestamp(task.last_heartbeat_at)).toISOString(),
         heartbeatAgeMs: ageMs(task?.last_heartbeat_at, now),
         heartbeatBy: task?.last_heartbeat_by || null,
@@ -406,8 +445,8 @@ export function buildCoordinatorMetrics({
     alerts.push({
       id: "stalled_work",
       severity: stalledCards.some((task) => task.ageMs > limits.queueCriticalMs) ? "critical" : "warning",
-      message: `${stalledCards.length} active card(s) have had no heartbeat or state change within the stall threshold.${noteSummary}${unattributedLiveness.length > 0 ? ` ${unattributedLiveness.length} more active card(s) have a liveness clock that names no author, so their liveness is unknown and they are counted neither as live nor as stalled.` : ""}`,
-      recommendedAction: "Ask the owner for a status; a working owner records it with `task heartbeat <id> --me <handle>`, a blocked one with `--reason`.",
+      message: `${stalledCards.length} active card(s) have not changed state within the stall threshold. This is measured on the card's own state clock, NOT on heartbeats: a heartbeat declares that an owner is present but does not move the card, so heartbeating is not a remedy for this alert and following it cannot make the number go down.${noteSummary}${unattributedLiveness.length > 0 ? ` ${unattributedLiveness.length} more active card(s) have a liveness clock that names no author, so their liveness is unknown and they are counted neither as live nor as stalled.` : ""}`,
+      recommendedAction: "Move the card: record a state change (claim, re-scope, block with a reason, or close). A status request is not the remedy - nothing about asking changes the clock this alert ages.",
       stalledCount: stalledCards.length,
       cardsWithNotes: withNotes.length,
       cards: stalledCards,
@@ -487,6 +526,7 @@ export function buildCoordinatorMetrics({
       oldestCardLiveness: queueOldest ? cardLivenessState(queueOldest, now, limits.stalledWorkMs).state : null,
       unattributedExcluded: queueUnknown,
       scope: "backlog, doing, review",
+      clock: "card state clock (updated/created); heartbeats do not move it",
     },
     blockedOldest: {
       cards: blockedWork.length,
@@ -508,6 +548,7 @@ export function buildCoordinatorMetrics({
     blockedWork,
     stalledWork: stalledCards,
     // Reported so a reader can see them, never alerted: see cardLivenessState.
+    livenessLease,
     unattributedLiveness,
     unattributedLivenessCount: unattributedLiveness.length,
     resources: {

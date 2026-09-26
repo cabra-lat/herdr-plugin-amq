@@ -245,6 +245,45 @@ cannot see a temporal dead zone; only calling the function did. Three relocation
 before the ordering was right. Anything that runs at import time or on a real board must be
 executed, not just parsed.
 
+## The stall detector was a timer, and heartbeating was its own remedy (commit 4b81a0d)
+
+On every flagged card the alert reported `age` exactly equal to `heartbeat age`, on all six
+cards, all three owners. That is not six findings: it is one statement about the detector. The
+newest event on each card was its own heartbeat, and staleness was defined as time since the
+newest event — so the alert was a timer that would reach every card and hold at 100%. It was
+also unsatisfiable: the recommended action was to heartbeat, which is the event being aged, so
+obeying reset the clock and guaranteed the same alert one window later. No threshold fixes an
+event being both the remedy and the trigger.
+
+**The fix separates the two signals rather than tuning either.** `cardProgressClock()` — the
+card's own state clock — is now what `stalled_work` and `queue_age` age. A heartbeat is an
+assertion that an owner is present; it is reported as `livenessLease` in the payload and is
+never alerted on, because alerting on a lease whose remedy is renewal recreates the same loop.
+Both progress signals read the same clock, deliberately: moving `stalled_work` to the state
+clock while leaving `queue_age` on the heartbeat would have re-created the
+two-metrics-disagree defect fixed an hour earlier, which the first version of this change did.
+
+| break | result |
+| --- | --- |
+| none (control) | 14 pass, 0 fail |
+| restore the self-perpetuating clock (age the heartbeat again) | 11 pass, **2 fail** |
+| drop the `reason` projection | 13 pass, **1 fail** |
+| leave `queue_age` on the heartbeat clock | 12 pass, **1 fail** |
+
+**The second break was green on the first attempt, and that is the part worth keeping.** I
+"fixed" a read failure — the coordinator prompt renders `reason=${card.reason || "unspecified"}`
+and the projection omitted `reason` entirely, so it printed `unspecified` on 8 of 8 cards —
+and no test noticed, because no test existed. I only found it because I re-broke the fix I had
+just made and expected red. A fix verified only by the suite passing is not a fix.
+
+**A false inference, corrected rather than implemented.** The claim that the "two cards naming no
+author" figure was a hardcoded artifact does not hold. They are `task_1790366734903_8d1fe8` and
+`task_1790367326671_ae199e`, both owned by testkit, and both are in the **backlog** column.
+`activeCards` spans backlog/doing/review, so they are counted; a search restricted to the
+in_progress set cannot find them. The count is stable because the *set* is stable: two legacy
+cards with null-author heartbeats that nobody has touched. Nothing needed fixing, and a
+"fixed artifact" patch would have been fabricated.
+
 **Unresolved observation, recorded rather than diagnosed.** Across this restart the on-disk
 delivery map went from 68 entries (32 with `attempts > 1`) to 1 entry. Two daemons interleaving on
 one file is a plausible cause and the retry metric's own windowing defect is a separate matter;

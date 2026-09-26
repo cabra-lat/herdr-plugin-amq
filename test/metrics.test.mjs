@@ -137,7 +137,11 @@ test("a fully triaged board raises no blocked alerts", () => {
   assert.equal(result.blockedWork[0].nextActor, "spotter");
 });
 
-test("an explicit heartbeat keeps a card out of stalled_work", () => {
+test("a heartbeat does NOT clear a stalled card, because it does not move the card", () => {
+  // The loop this replaces: the detector aged the newest event on the card, a
+  // heartbeat was that event, and the alert's own remedy was to heartbeat - so
+  // obeying reset the clock and guaranteed the same alert one window later. A card
+  // that is declared present but has not moved is still a card that has not moved.
   const card = {
     id: "working-card",
     title: "Actively worked",
@@ -157,10 +161,13 @@ test("an explicit heartbeat keeps a card out of stalled_work", () => {
   });
   const stalled = result.alerts.find((alert) => alert.id === "stalled_work");
   assert.ok(stalled);
-  assert.deepEqual(stalled.cards.map((c) => c.id), ["quiet-card"]);
-  assert.equal(stalled.cards[0].heartbeatAt, null);
+  // Both cards are stale: the heartbeated one is declared present but has not moved,
+  // and "present" is not "moving".
+  assert.deepEqual(stalled.cards.map((c) => c.id).sort(), ["quiet-card", "working-card"]);
+  const quiet = stalled.cards.find((c) => c.id === "quiet-card");
+  assert.equal(quiet.heartbeatAt, null);
   // The snake_case field the board actually writes is the one being read.
-  assert.equal(stalled.cards[0].lastActivityAt, "2026-09-24T16:20:00.000Z");
+  assert.equal(quiet.lastActivityAt, "2026-09-24T16:20:00.000Z");
 
   const stale = buildCoordinatorMetrics({
     handles: ["coordinator", "worker"],
@@ -173,11 +180,22 @@ test("an explicit heartbeat keeps a card out of stalled_work", () => {
     thresholds: { stalledWorkMs: 5 * 60 * 1000 },
   });
   const staleCards = stale.alerts.find((alert) => alert.id === "stalled_work").cards;
+  // An attributed but old clock is reported as a stale LEASE, not as a stalled card:
+  // the lease is a separate signal that is never alerted on.
   assert.deepEqual(staleCards.map((c) => c.id), ["working-card"]);
   assert.equal(staleCards[0].heartbeatAt, "2026-09-24T16:30:00.000Z");
-  assert.equal(staleCards[0].ageMs, 30 * 60 * 1000);
+  // ageMs is the STATE clock age, never the heartbeat age. Before the fix these were
+  // the same number on every card, which is how the alert was identified as a timer.
+  // Here: state last changed 40 minutes ago, the heartbeat 30 minutes ago.
+  assert.equal(staleCards[0].ageMs, 40 * 60 * 1000, "ageMs must be the state clock, not the heartbeat");
+  assert.equal(staleCards[0].heartbeatAgeMs, 30 * 60 * 1000, "the heartbeat age is reported separately");
+  assert.notEqual(staleCards[0].ageMs, staleCards[0].heartbeatAgeMs);
   assert.equal(staleCards[0].liveness, "stale");
   assert.equal(staleCards[0].livenessBy, "worker");
+
+  // The lease is in the payload, and it is NOT an alert of its own.
+  assert.ok(Array.isArray(result.livenessLease));
+  assert.equal(result.alerts.find((a) => a.id === "liveness_lease"), undefined);
 });
 
 test("an unattributed liveness clock is unknown: not stalled, not live, never alerted", () => {
@@ -406,7 +424,7 @@ test("a split state directory is reported instead of silently reading a stale fi
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-test("queue_age and stalled_work answer the same liveness question about the same card", () => {
+test("queue_age and stalled_work age the same clock, and it is not the heartbeat", () => {
   // The regression: cardLivenessState was applied to stalled_work and queue_age
   // kept reading `updated` only, so a card heartbeated every minute and never
   // touched read as live to one metric and as ancient to the other, simultaneously.
@@ -427,9 +445,12 @@ test("queue_age and stalled_work answer the same liveness question about the sam
     thresholds: { stalledWorkMs: 5 * 60 * 1000, queueWarnMs: 5 * 60 * 1000 },
   });
 
-  // Both metrics must agree: alive, one minute old.
-  assert.equal(result.stalledWork.length, 0, "stalled_work must not call a heartbeated card stale");
-  assert.equal(result.queue.oldestAgeMs, 60 * 1000, "queue_age must use the same liveness clock");
+  // The card was heartbeated a minute ago but has not MOVED in 7 hours, so both
+  // progress signals call it stale, by the same number. Agreeing is the property
+  // under test; which clock they read is asserted next.
+  assert.equal(result.stalledWork.length, 1, "a declared-present but unmoved card is still unmoved");
+  assert.equal(result.queue.oldestAgeMs, 7 * 60 * 60 * 1000, "queue_age must age the same state clock");
+  assert.equal(result.stalledWork[0].ageMs, result.queue.oldestAgeMs, "the two must not disagree");
 
   // And the disagreement is what the alert message must not hide.
   const stale = buildCoordinatorMetrics({
@@ -439,8 +460,9 @@ test("queue_age and stalled_work answer the same liveness question about the sam
     now,
     thresholds: { stalledWorkMs: 5 * 60 * 1000, queueWarnMs: 5 * 60 * 1000 },
   });
-  assert.equal(stale.stalledWork.length, 1, "an attributed but old clock is stale");
-  assert.equal(stale.queue.oldestAgeMs, 30 * 60 * 1000, "queue_age must agree that it is old");
+  assert.equal(stale.stalledWork.length, 1);
+  // Still 7 hours: the older heartbeat changes nothing about progress.
+  assert.equal(stale.queue.oldestAgeMs, 7 * 60 * 60 * 1000, "an older heartbeat must not move either clock");
 });
 
 test("blocked_oldest reports a TRIAGED blocker, which no other alert covers by age", () => {
@@ -508,4 +530,56 @@ test("blocked age is measured live from blocked_at, not from the stored blocked_
     5 * 60 * 60 * 1000,
     "the live age from blocked_at is the honest figure; the stored snapshot is not",
   );
+});
+
+test("a stalled card's reason is projected, so the prompt stops printing reason=unspecified", () => {
+  // The coordinator prompt renders `reason=${card.reason || "unspecified"}`. This
+  // projection omitted `reason` entirely, so every prompted card printed
+  // "unspecified" — verified false on 8 of 8 cards, i.e. the detector had never once
+  // reported a reason correctly. The board writes `block_reason`, the prompt reads
+  // `reason`, so both spellings have to be accepted here.
+  const blockedWithReason = {
+    id: "stalled-with-reason",
+    title: "Blocked, and says why",
+    owner: "worker",
+    updated: "2026-09-24T16:20:00.000Z",
+    created: "2026-09-24T16:00:00.000Z",
+    last_heartbeat_at: "2026-09-24T16:55:00.000Z",
+    last_heartbeat_by: "worker",
+    block_reason: "waiting on an upstream decision",
+  };
+  const result = buildCoordinatorMetrics({
+    handles: ["worker"],
+    agentStatuses: { worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [blockedWithReason], blocked: [], done: [] } },
+    now: NOW,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+  });
+
+  const card = result.stalledWork.find((c) => c.id === "stalled-with-reason");
+  assert.ok(card, "the card must appear in stalled_work");
+  // The exact string the prompt would render. Before this, it was "unspecified".
+  assert.equal(card.reason, "waiting on an upstream decision");
+  assert.notEqual(card.reason, "unspecified");
+
+  // The camelCase spelling is accepted too, since the prompt reads `reason`.
+  const viaReasonField = buildCoordinatorMetrics({
+    handles: ["worker"],
+    agentStatuses: { worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [{ ...blockedWithReason, block_reason: undefined, reason: "recorded as reason" }], blocked: [], done: [] } },
+    now: NOW,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+  });
+  assert.equal(viaReasonField.stalledWork[0].reason, "recorded as reason");
+
+  // A card with no reason at all must be null, never the string "unspecified": the
+  // prompt's own fallback handles absence, and a fabricated value would hide it.
+  const noReason = buildCoordinatorMetrics({
+    handles: ["worker"],
+    agentStatuses: { worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [{ ...blockedWithReason, block_reason: undefined, reason: undefined }], blocked: [], done: [] } },
+    now: NOW,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+  });
+  assert.equal(noReason.stalledWork[0].reason, null);
 });

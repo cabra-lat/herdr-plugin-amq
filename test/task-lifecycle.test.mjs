@@ -229,8 +229,13 @@ test("a heartbeat by a non-owner is recorded as such", async () => {
       now: new Date("2026-09-24T10:12:00.000Z"),
       thresholds: { stalledWorkMs: 5 * 60 * 1000 },
     });
-    // Fresh liveness, so it is not stalled, but the author is still visible.
-    assert.equal(result.stalledWork.length, 0);
+    // A fresh heartbeat makes the LEASE fresh but does not move the card, so the
+    // card is still reported as not having moved. The two are separate signals now;
+    // conflating them was the loop.
+    assert.equal(result.stalledWork.length, 1);
+    const lease = result.livenessLease.find((entry) => entry.id === byOther.task.id);
+    assert.equal(lease.state, "live", "a fresh attributed heartbeat is a fresh lease");
+    assert.equal(lease.by, "coordinator");
 
     const stale = { ...byOther.task, last_heartbeat_at: "2026-09-24T10:00:30.000Z" };
     const stalled = buildCoordinatorMetrics({
