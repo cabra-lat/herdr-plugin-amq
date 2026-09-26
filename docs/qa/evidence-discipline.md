@@ -245,7 +245,7 @@ cannot see a temporal dead zone; only calling the function did. Three relocation
 before the ordering was right. Anything that runs at import time or on a real board must be
 executed, not just parsed.
 
-## The stall detector was a timer, and heartbeating was its own remedy (commit 4b81a0d)
+## The stall detector was a timer, and heartbeating was its own remedy (commit 3a714a6)
 
 On every flagged card the alert reported `age` exactly equal to `heartbeat age`, on all six
 cards, all three owners. That is not six findings: it is one statement about the detector. The
