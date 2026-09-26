@@ -59,7 +59,7 @@ import {
   readGitRef,
   storeBlob,
 } from "./blobs.mjs";
-import { buildCoordinatorMetrics } from "./metrics.mjs";
+import { buildCoordinatorMetricsWithWorkAge } from "./metrics.mjs";
 import { getJobQueue } from "./job-queue.mjs";
 import { loadMetricsHistory, recordMetricsSample } from "./metrics-history.mjs";
 
@@ -713,11 +713,15 @@ export function startWebServer({
       const repoRoot = path.resolve(path.dirname(amqRoot));
       const board = loadBoard(repoRoot, amqRoot);
       const statusMap = await getHerdrStatusMap({ amqRoot });
-      const coordinator = buildCoordinatorMetrics({
+      // The async wrapper resolves cited-commit dates with git, then delegates to the
+      // sync builder. Work-age is report-only and degrades to "undated" on any failure,
+      // so it can never take /api/board down.
+      const { metrics: coordinator } = await buildCoordinatorMetricsWithWorkAge({
         handles: getAgentHandles(amqRoot),
         agentStatuses: Object.fromEntries(statusMap),
         board,
         jobQueue,
+        repos: [repoRoot, path.join(repoRoot, "..", "herdr-plugin-amq")],
       });
       const history = recordMetricsSample(metricsHistoryFile, coordinator);
       res.writeHead(200, { "Content-Type": "application/json" });

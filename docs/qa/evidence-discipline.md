@@ -390,3 +390,57 @@ task and its stage, or 404 for a card that does not exist.
 | restore unconditional `updated = now` | 37 pass, **1 fail** |
 | remove the `GET` route | 37 pass, **1 fail** |
 | drop the ids/stage from the alert text | 37 pass, **1 fail** |
+
+## Work-age: a third clock, and the two git bugs a fixture could not have found
+
+The state clock answers "has anyone moved this card". It cannot answer "has anyone built
+anything", because a card can be moved by a coordinator rewriting a reason for clarity - which is
+bookkeeping, and which moves the state clock. A stalled card and a finished-one-waiting-on-QA are
+indistinguishable, because both stop moving.
+
+A card's work is the set of commit SHAs and CI run ids its evidence **cites**
+(`src/work-age.mjs`). Not notes: note volume is narration, and an agent that writes long reasons
+while doing nothing would be the loudest worker on the board. Not mtime: it moves when a reason is
+rewritten for clarity. A cited commit is the artifact only building produces.
+
+**Report only, and that is enforced rather than promised.** There is no work-age alert and no
+work-age threshold. The control is deliberately not a name match — matching alert ids against
+`/work/` is wrong, because `stalled_work` contains "work" — but the stronger invariant that
+supplying work-age at *any* age and *any* threshold must leave the alert set byte-identical. The
+first draft of that test failed on its own name-matching, which is the test being wrong rather
+than the code.
+
+No citations reports `ageMs: null` and `state: "no-claims"`, never age zero: "never built anything"
+and "built something just now" must not look alike.
+
+**Two real bugs, both found on live data, both invisible to a single synthetic repo.**
+
+1. `git log --no-walk a b c` **aborts** with `fatal: ambiguous argument` if any one rev is unknown,
+   discarding the ones that did resolve. A card routinely cites a commit living in the *other*
+   repository, so the whole batch failed and every card went undated. Replaced with
+   `cat-file --batch-check`, which answers per object, so a miss costs only that SHA.
+2. `cat-file` answers with **full** hashes while notes cite **abbreviations**. Filing the resolved
+   date under the full hash alone left every real citation permanently `missing` — the resolver
+   returned zero dates against two real repository HEADs while reporting no error. Dates are now
+   filed under every requested prefix.
+
+Neither could be found by a fixture with one synthetic repository, which is the argument for
+running new resolution code against real data before believing it.
+
+| break | result |
+| --- | --- |
+| none (control) | 17 pass, 0 fail |
+| single batched `git log` (aborts on one unknown rev) | 16 pass, **1 fail** |
+| cache keyed by the full hash only | 16 pass, **1 fail** |
+| accept pure digits as SHAs | 14 pass, **3 fail** |
+| make work-age alerting-capable | 14 pass, **3 fail** |
+
+Pure digits are excluded on purpose: 7+ digit decimals are hex-shaped, and without the rule every
+run id in a note reads as a commit. Run ids are counted as claims and reported **undated**, because
+no local source dates them — and there are currently **no** run-id-shaped citations anywhere in the
+board, so those patterns are exercised by fixtures only. That is stated rather than implied.
+
+**Not in the doorbell prompt, deliberately.** `runDoorbellPass` is synchronous with a dozen
+call sites, and resolving work-age needs git. A prompt line that always reads `work=unknown` is
+worse than no line, so the signal lives in the `/api/board` payload, which is where the card asked
+for it — beside `livenessLease` and the state clock, report-only.

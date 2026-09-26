@@ -1,4 +1,20 @@
 import { createHash } from "node:crypto";
+import { buildWorkAge, makeGitDateResolver } from "./work-age.mjs";
+
+// The columns the queue/stall/work-age signals consider "active". One list, so the
+// async work-age wrapper and the sync builder cannot drift into covering different
+// cards - which is how two health metrics ended up disagreeing about the same card.
+const ACTIVE_STAGES = Object.freeze(["backlog", "doing", "review"]);
+
+export function activeBoardTasks(board) {
+  const out = [];
+  for (const [columnName, columnTasks] of Object.entries(board?.columns || {})) {
+    const stage = columnName === "in_progress" ? "doing" : columnName;
+    if (!ACTIVE_STAGES.includes(stage)) continue;
+    for (const task of (Array.isArray(columnTasks) ? columnTasks : []).filter(Boolean)) out.push(task);
+  }
+  return out;
+}
 
 const DEFAULT_THRESHOLDS = Object.freeze({
   queueWarnMs: 300 * 1000,
@@ -183,6 +199,11 @@ export function buildCoordinatorMetrics({
   jobQueue = null,
   now = Date.now(),
   thresholds = {},
+  // Pre-resolved work-age, keyed by card id. Resolving work-age needs git and is
+  // therefore async, while this builder is sync and has several callers; the async
+  // wrapper `buildCoordinatorMetricsWithWorkAge` resolves the dates and passes the
+  // result in here rather than making every caller await.
+  workAgeById = null,
 } = {}) {
   const limits = { ...DEFAULT_THRESHOLDS, ...thresholds };
   const statuses = {};
@@ -208,14 +229,13 @@ export function buildCoordinatorMetrics({
 
   const allCards = Object.values(board.columns || {}).flat().filter(Boolean);
   const cardsByStage = { backlog: 0, doing: 0, review: 0, blocked: 0, done: 0 };
-  const activeCards = [];
   for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
     const stage = columnName === "in_progress" ? "doing" : columnName;
     for (const task of (Array.isArray(columnTasks) ? columnTasks : []).filter(Boolean)) {
       if (Object.hasOwn(cardsByStage, stage)) cardsByStage[stage] += 1;
-      if (["backlog", "doing", "review"].includes(stage)) activeCards.push(task);
     }
   }
+  const activeCards = activeBoardTasks(board);
   // The queue age answers the same question as stalled_work, so it ages the same
   // clock: the card's own state clock. It previously read `updated` only while
   // stalled_work read the liveness clock, so the two disagreed about one card at one
@@ -285,8 +305,7 @@ export function buildCoordinatorMetrics({
     }
     const progressAt = cardProgressClock(task);
     const progressAgeMs = progressAt === null ? null : Math.max(0, now - progressAt);
-    if (progressAgeMs !== null && progressAgeMs > limits.stalledWorkMs) {
-      // `reason` is projected here because the coordinator prompt reads
+    if (progressAgeMs !== null && progressAgeMs > limits.stalledWorkMs) {      // `reason` is projected here because the coordinator prompt reads
       // `card.reason`; omitting it made every prompted card print
       // reason=unspecified even when the card carried a block reason, which is a
       // read failure rather than a missing value. The board writes
@@ -305,6 +324,10 @@ export function buildCoordinatorMetrics({
         liveness: liveness.state,
         livenessBy: liveness.by,
         livenessVia: liveness.via,
+        // Report only. There is no work-age alert and no work-age threshold: a card
+        // whose implementation is finished and is waiting on QA or a reviewer has no
+        // new commits, so any alert here would page on exactly those cards.
+        work: workAgeById?.get(task.id) || null,
         ...note,
       });
     }
@@ -554,6 +577,16 @@ export function buildCoordinatorMetrics({
     stalledWork: stalledCards,
     // Reported so a reader can see them, never alerted: see cardLivenessState.
     livenessLease,
+    // Work-age, report only. Read beside the state clock and never instead of it: the
+    // state clock says nobody has moved the card, work-age says nobody has committed
+    // anything, and the two together are what separate a stalled card from a
+    // finished-one-waiting-on-somebody-else.
+    workAge: {
+      reportOnly: true,
+      alerts: false,
+      note: "Report only, deliberately. A finished card waiting on QA or a reviewer has no new commits, so a work-age alert would fire on a timer for exactly the cards that are healthy.",
+      cards: workAgeById ? Object.fromEntries(workAgeById) : {},
+    },
     unattributedLiveness,
     unattributedLivenessCount: unattributedLiveness.length,
     resources: {
@@ -571,4 +604,27 @@ export function buildCoordinatorMetrics({
     },
     alerts,
   };
+}
+
+/**
+ * Async wrapper: resolve work-age for the active cards, then build the sync metrics.
+ *
+ * Split this way because resolving a cited commit needs git, and this builder is sync
+ * with several callers. A git failure degrades to "undated" rather than failing the
+ * board: the work-age signal is report-only, so it must never be able to take the
+ * metrics down with it.
+ */
+export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...options } = {}) {
+  const { board = { columns: {} }, now = Date.now() } = options;
+  const activeCards = activeBoardTasks(board);
+  const resolveDate = makeGitDateResolver({ repos });
+  const workAgeById = new Map();
+  await Promise.all(activeCards.map(async (task) => {
+    try {
+      workAgeById.set(task.id, await buildWorkAge(task, now, { resolveDate }));
+    } catch {
+      workAgeById.set(task.id, null);
+    }
+  }));
+  return { metrics: buildCoordinatorMetrics({ ...options, workAgeById }), workAgeById };
 }
