@@ -63,6 +63,7 @@ export function getBusDirectory(repoRoot, amqRoot) {
 
 export const STAGE_DIRS = {
   backlog: "backlog",
+  queued: "queued",
   in_progress: "doing",
   doing: "doing",
   blocked: "blocked",
@@ -71,7 +72,11 @@ export const STAGE_DIRS = {
 
 export function ensureBusDirectories(busDir) {
   if (!busDir) return;
-  const stages = ["backlog", "doing", "blocked", "done"];
+  // `queued` is a real directory, not a flavour of backlog. A scheduled card waiting its
+  // turn has to live somewhere the board can count it as scheduled; without a directory
+  // the status would be a word in a field with nowhere to go, which is the same defect as
+  // a queued concept that only lives in a reason string.
+  const stages = ["backlog", "queued", "doing", "blocked", "done"];
   for (const s of stages) {
     const d = path.join(busDir, s);
     if (!fs.existsSync(d)) {
@@ -133,6 +138,9 @@ export function serializeTaskFile(task) {
     `notes: ${JSON.stringify(Array.isArray(task.notes) ? task.notes : [])}`,
     `depends_on: ${JSON.stringify(dependsOn)}`,
     `next_actor: ${JSON.stringify(task.next_actor || null)}`,
+    // The ORDER is state. Writing "queued" into a reason field is the defect this stage
+    // exists to fix, so the position has to be a real field on the card.
+    `queue_sequence: ${task.queue_sequence === undefined || task.queue_sequence === null ? "null" : JSON.stringify(task.queue_sequence)}`,
     `thread: ${JSON.stringify(task.thread || `agboard/${safeId}`)}`,
     `source: "bus"`,
     "---",
@@ -188,7 +196,7 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
     const title = meta.title || baseName;
     const owner = canonicalizeOwner(meta.owner || "coordinator");
     const rawStatus = meta.status || defaultStage;
-    const status = ["backlog", "in_progress", "doing", "blocked", "done"].includes(rawStatus)
+    const status = TASK_STATUSES.includes(rawStatus)
       ? (rawStatus === "doing" ? "in_progress" : rawStatus)
       : defaultStage;
 
@@ -221,6 +229,7 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
       notes: Array.isArray(meta.notes) ? meta.notes : [],
       depends_on: dependsOn,
       next_actor: meta.next_actor || null,
+      queue_sequence: meta.queue_sequence === null || meta.queue_sequence === undefined ? null : Number(meta.queue_sequence),
       thread: meta.thread || `agboard/${id}`,
       source: "bus",
       filePath,
@@ -469,6 +478,7 @@ export function loadBoard(repoRoot, amqRoot) {
 
   const stageScanMap = [
     { dir: "backlog", stage: "backlog" },
+    { dir: "queued", stage: "queued" },
     { dir: "doing", stage: "in_progress" },
     { dir: "in_progress", stage: "in_progress" },
     { dir: "blocked", stage: "blocked" },
@@ -524,6 +534,7 @@ export function loadBoard(repoRoot, amqRoot) {
 
   const columns = {
     backlog: [],
+    queued: [],
     in_progress: [],
     blocked: [],
     done: [],
@@ -669,7 +680,7 @@ export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
 export function addBoardTask(
   repoRoot,
   amqRoot,
-  { title, owner = "coordinator", status = "backlog", priority = "normal", description = "", depends_on = [], next_actor, notify, from } = {},
+  { title, owner = "coordinator", status = "backlog", priority = "normal", description = "", depends_on = [], next_actor, notify, from, queue_sequence } = {},
   opts = {}
 ) {
   if (!title || !title.trim()) {
@@ -680,11 +691,15 @@ export function addBoardTask(
   ensureBusDirectories(busDir);
 
   const cleanOwner = canonicalizeOwner(owner);
-  const cleanStatus = ["backlog", "in_progress", "doing", "blocked", "done"].includes(status)
+  const cleanStatus = TASK_STATUSES.includes(status)
     ? (status === "doing" ? "in_progress" : status)
     : "backlog";
   const id = `task_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
   const now = opts.now instanceof Date ? opts.now.toISOString() : new Date().toISOString();
+  // Same atomic-validation rule as updateBoardTask: an order that cannot be compared is
+  // not an order, and a silently-stored "later" makes a queue look sorted when it is not.
+  const seqCheck = validateQueueSequence(queue_sequence);
+  if (!seqCheck.ok) return seqCheck;
 
   const newTask = {
     schema_version: TASK_SCHEMA_VERSION,
@@ -693,6 +708,7 @@ export function addBoardTask(
     owner: cleanOwner,
     status: cleanStatus,
     priority: priority || "normal",
+    queue_sequence: seqCheck.value === undefined ? null : seqCheck.value,
     description: description.trim(),
     created: now,
     updated: now,
@@ -789,10 +805,31 @@ export function getBoardTask(repoRoot, amqRoot, taskId) {
 }
 
 /** The statuses a card may legally hold. `doing` is an accepted alias of `in_progress`. */
-export const TASK_STATUSES = ["backlog", "in_progress", "doing", "blocked", "done"];
+export const TASK_STATUSES = ["backlog", "queued", "in_progress", "doing", "blocked", "done"];
 
 function normalizeTaskStatus(status) {
   return status === "doing" ? "in_progress" : status;
+}
+
+// `queued` means SCHEDULED: in a recorded order, waiting its turn. `backlog` means UNSCHEDULED:
+// nobody has picked it up. Collapsing the two is what made a deliberately parked card
+// indistinguishable from an abandoned one, so a queue working as designed read as a queue
+// that had stopped - a 4-of-4 false-positive rate, measured on live data.
+//
+// It carries a SEQUENCE, not a date. A queue is an order, not a schedule: a card is not
+// "parked until Thursday", it is parked behind another card. A date would be wrong the
+// first time someone used it literally, and the order is what actually exists.
+function validateQueueSequence(value) {
+  if (value === undefined || value === null || value === "") return { ok: true };
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    return {
+      ok: false,
+      error: `queue_sequence must be a non-negative integer, got ${JSON.stringify(value)}. Nothing was written.`,
+      rejected: ["queue_sequence"],
+    };
+  }
+  return { ok: true, value: n };
 }
 
 export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = {}) {
@@ -830,7 +867,7 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   const writableFields = new Set([
     ...Object.keys(existingTask),
     "title", "status", "owner", "priority", "description", "next_actor", "reason",
-    "block_reason", "proof", "notes", "depends_on", "notify", "from",
+    "block_reason", "proof", "notes", "depends_on", "notify", "from", "queue_sequence",
   ]);
   const unknownFields = Object.keys(updates || {}).filter((key) => !writableFields.has(key));
   if (unknownFields.length) {
@@ -850,6 +887,15 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
       accepted: [...TASK_STATUSES],
       hint: '"doing" is accepted as an alias of "in_progress".',
     };
+  }
+
+  // Reject a non-numeric or negative sequence rather than storing it: an order that
+  // cannot be compared is not an order, and a silently-stored "later" would make the
+  // queue look sorted when it is not. Fails atomically with the rest of the validation.
+  const sequenceCheck = validateQueueSequence(updates.queue_sequence);
+  if (!sequenceCheck.ok) return sequenceCheck;
+  if (updates.queue_sequence !== undefined && sequenceCheck.value !== undefined) {
+    updates = { ...updates, queue_sequence: sequenceCheck.value };
   }
 
   const oldTask = { ...existingTask };

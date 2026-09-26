@@ -508,7 +508,11 @@ test("blocked_oldest reports a TRIAGED blocker, which no other alert covers by a
   // queue_age must not quietly absorb it either; its scope is stated in the payload.
   assert.equal(result.queue.activeCards, 0);
   assert.equal(result.blockedOldest.cards, 1);
-  assert.equal(result.queue.scope, "backlog, doing, review");
+  // CHANGED: queue scope now also names `queued`. A scheduled card waiting its turn is
+  // real work that has not moved yet, so queue_age ages it - it is only stalled_work that
+  // must not read it as inactivity. The scope is stated in the payload precisely so a
+  // consumer can tell which of the two signals a card participates in.
+  assert.equal(result.queue.scope, "backlog, queued, doing, review");
 
   // The same blocker with its owner removed must go report-only AND stay visible. If it
   // simply vanished, the hole this test was written to close would reopen for owned-less
