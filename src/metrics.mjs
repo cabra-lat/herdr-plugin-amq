@@ -516,27 +516,42 @@ export function buildCoordinatorMetrics({
       });
     }
     if (owned.length > 0 && owned.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0) >= limits.blockedWarnMs) {
+    // EVERYTHING THIS ALERT SAYS MUST COME FROM `owned`, not from blockedWork.
+    // The gate above correctly pages only on cards someone can move, but the headline,
+    // the quoted age, the severity, the fingerprint and the triage counts were all still
+    // derived from every blocked card - including the unowned ones the split just decided
+    // not to page about. The result was an alert that fired because of an owned card and
+    // then quoted the unowned one, and worse: severity was computed from the unowned age,
+    // so a card waiting on a person was escalating a real 12-minute warning to CRITICAL
+    // because it had been waiting 33 minutes. An unowned card must not be able to change
+    // the severity of a page a human owns. Unowned information surfaces only in
+    // unownedBlocked, which is a report and not a page.
+    const ownedOldestAgeMs = owned.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0);
+    const ownedOldestCard = owned.reduce(
+      (oldestCard, task) => (task.ageMs !== null && (!oldestCard || task.ageMs > oldestCard.ageMs) ? task : oldestCard),
+      null,
+    );
     // Deliberately independent of blocked_cards, which only counts UNTRIAGED
     // cards. A triaged blocker is still a blocker: recording a reason stops the
     // "you did not say why" alert, but it must not silence the "this has been
     // blocked for five hours" one. Reuses the existing blockedWarnMs /
     // blockedCriticalMs thresholds rather than introducing new knobs.
-    const severity = blockedOldestAgeMs >= limits.blockedCriticalMs ? "critical" : "warning";
-    const triaged = blockedWork.filter((task) => task.triaged).length;
+    const severity = ownedOldestAgeMs >= limits.blockedCriticalMs ? "critical" : "warning";
+    const triaged = owned.filter((task) => task.triaged).length;
     alerts.push({
       id: "blocked_oldest",
       severity,
       fingerprint: conditionFingerprint({
         id: "blocked_oldest",
         severity,
-        cards: cardCondition(blockedWork),
+        cards: cardCondition(owned),
       }),
-      message: `Oldest blocked card has been blocked for ${blockedOldestAgeMs}ms (${blockedOldestCard?.id || "unknown"}). ${triaged} of ${blockedWork.length} carry a triage reason, which stops the untriaged alert but not this one.`,
+      message: `Oldest blocked card has been blocked for ${ownedOldestAgeMs}ms (${ownedOldestCard?.id || "unknown"}). ${triaged} of ${owned.length} carry a triage reason, which stops the untriaged alert but not this one.${unowned.length > 0 ? ` ${unowned.length} further blocked card(s) have no next actor and are reported, not paged: they are blocked on nobody.` : ""}`,
       recommendedAction: "Resolve it, re-scope it, or record why it is still blocked; a triage reason alone does not close an old blocker.",
-      oldestCardId: blockedOldestCard?.id || null,
-      oldestAgeMs: blockedOldestAgeMs,
+      oldestCardId: ownedOldestCard?.id || null,
+      oldestAgeMs: ownedOldestAgeMs,
       triagedCount: triaged,
-      untriagedCount: blockedWork.length - triaged,
+      untriagedCount: owned.length - triaged,
       cardCount: owned.length,
       cards: owned,
       unownedBlockedCount: unowned.length,
