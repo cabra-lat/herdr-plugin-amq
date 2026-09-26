@@ -619,28 +619,86 @@ export function replyMaildirMessage(amqRoot, options = {}) {
 /**
  * Drain all new messages for an agent (atomic Maildir new/ -> cur/ transition).
  */
-export function drainMaildir(amqRoot, handle) {
+// PHASE 1: read what is waiting, WITHOUT consuming it.
+//
+// Promotion used to be inseparable from reading, which made this a silent consumer of
+// every message it touched. The old drain moved new -> cur and only then returned the
+// content for the caller to print, so anything that stopped the output - a closed pipe
+// from an ordinary `| head -3`, a throw, a caller that ignored the result - left the
+// message marked consumed with nothing shown and no record it had ever been read.
+export function readMaildirMessages(amqRoot, handle) {
   if (!amqRoot || !isSafeMailIdentifier(handle, 128)) return [];
   const agentDir = resolveAgentDirectory(amqRoot, handle, true);
   const newDir = ensureContainedDirectory(agentDir, ["inbox", "new"]);
-  const files = listMaildirMessageFiles(newDir).filter((file) => file.endsWith(".md"));
-  const drained = [];
+  const files = listMaildirMessageFiles(newDir).filter((f) => f.endsWith(".md"));
+  const waiting = [];
 
   for (const file of files) {
     try {
       const content = readMaildirMessageFile(path.join(newDir, file));
       if (content === null) continue;
       const { header, body } = parseMessage(content);
-      const filePath = moveMaildirMessage(amqRoot, handle, "new", "cur", file);
-      if (!filePath) continue;
-      drained.push({
-        id: file.replace(/\.md$/, ""),
-        header,
-        body,
-        filePath,
-      });
+      waiting.push({ id: file.replace(/\.md$/, ""), file, header, body });
     } catch {}
   }
+  return waiting;
+}
 
-  return drained;
+/**
+ * Record that a message was consumed, so "present in cur/" stops being ambiguous.
+ *
+ * A message sitting in cur/ with no receipt could mean it was read, or that whatever
+ * read it never got as far as showing anyone - indistinguishable without this file. The
+ * schema matches the standalone amq binary's receipt so the two drain implementations
+ * produce one comparable audit trail rather than two.
+ */
+export function writeDrainReceipt(amqRoot, handle, message, { stage = "drained", now = new Date() } = {}) {
+  try {
+    if (!amqRoot || !isSafeMailIdentifier(handle, 128)) return null;
+    const agentDir = resolveAgentDirectory(amqRoot, handle, true);
+    const receiptsDir = ensureContainedDirectory(agentDir, ["receipts"]);
+    const id = message.id || message.file?.replace(/\.md$/, "");
+    if (!isSafeMailIdentifier(id, 256)) return null;
+    const receipt = {
+      schema: 1,
+      msg_id: id,
+      thread: message.header?.thread || null,
+      sender: message.header?.from || null,
+      consumer: handle,
+      stage,
+      emitted_at: (now instanceof Date ? now : new Date(now)).toISOString(),
+    };
+    writeBoundedFileAtomic(path.join(receiptsDir, `${id}__${handle}__${stage}.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    return true;
+  } catch {
+    // A receipt that cannot be written must not cost the caller its promotion: the
+    // content has already been shown, and failing here would strand the message in new/
+    // where it would be shown a second time.
+    return null;
+  }
+}
+
+// PHASE 2: consume, only after the caller has successfully surfaced the content.
+export function commitMaildirMessages(amqRoot, handle, waiting, { now = new Date() } = {}) {
+  const committed = [];
+  for (const message of waiting || []) {
+    try {
+      const filePath = moveMaildirMessage(amqRoot, handle, "new", "cur", message.file);
+      if (!filePath) continue;
+      writeDrainReceipt(amqRoot, handle, message, { now });
+      committed.push({ ...message, filePath });
+    } catch {}
+  }
+  return committed;
+}
+
+/**
+ * Drain an agent inbox in one step.
+ *
+ * Prefer readMaildirMessages + commitMaildirMessages wherever the content is going to be
+ * shown to somebody: this wrapper commits BEFORE the caller has printed anything, which
+ * is the ordering that let `mail drain | head` consume messages nobody ever saw.
+ */
+export function drainMaildir(amqRoot, handle) {
+  return commitMaildirMessages(amqRoot, handle, readMaildirMessages(amqRoot, handle));
 }

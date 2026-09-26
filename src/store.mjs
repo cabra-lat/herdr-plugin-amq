@@ -936,7 +936,7 @@ function withAgentRegistrationLock(agentDir, operation) {
 }
 
 function defaultWelcomeBody(handle, name) {
-  return `Welcome to AMQ.\nAgent data: name=${JSON.stringify(name)}; handle=${JSON.stringify(handle)}.\nRun herdr-amq mail drain --me ${handle} --include-body to read messages. No reply is required.`.slice(0, 2048);
+  return `Welcome to AMQ.\nAgent data: name=${JSON.stringify(name)}; handle=${JSON.stringify(handle)}.\nRun herdr-amq mail drain --me ${handle} --include-body --consume to read and mark messages. No reply is required.`.slice(0, 2048);
 }
 
 function selectProfileFields(profile) {

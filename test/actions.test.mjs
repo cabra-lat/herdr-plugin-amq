@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
 import {
   handleStatus,
   handleTaskCommand,
@@ -12,8 +13,21 @@ import {
   handleAgentStatusChanged,
 } from "../src/actions.mjs";
 
+// Captured at module load: the suite chdirs into a temp root, so a path resolved inside
+// the test body would point at /tmp.
+const MAIL_BIN = path.resolve("bin/herdr-amq.mjs");
+
 describe("actions.mjs CLI integration", () => {
   let tempRoot;
+  // The mail drain writes to fd 1 rather than through console.log, so anything that
+  // needs to read what a drain printed has to run the real binary.
+  const runMail = (...args) => {
+    const r = spawnSync(process.execPath, [MAIL_BIN, "mail", ...args], {
+      cwd: process.cwd(), encoding: "utf8", env: process.env,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout;
+  };
   let oldAmRoot;
   let oldStateDir;
   let oldDisablePrompt;
@@ -177,9 +191,13 @@ describe("actions.mjs CLI integration", () => {
         "--body", "Testing mail commands",
       ]);
 
-      // Bob drains
-      output = "";
-      handleMailCommand("drain", ["--me", "bob", "--include-body"]);
+      // Bob drains.
+      //
+      // Spawned, not called in-process: the mail drain writes synchronously to file
+      // descriptor 1 (process.stdout.write to a pipe is asynchronous, so it cannot tell
+      // you whether the content was actually delivered), which a console.log stub can no
+      // longer capture. --consume, because Bob is acting on this message.
+      output = runMail("drain", "--me", "bob", "--include-body", "--consume");
       assert.ok(output.includes("Hello Bob"));
       assert.ok(output.includes("Testing mail commands"));
 
@@ -195,9 +213,8 @@ describe("actions.mjs CLI integration", () => {
         "--body", "Got your message, Alice!",
       ]);
 
-      // Alice drains
-      output = "";
-      handleMailCommand("drain", ["--me", "alice", "--include-body"]);
+      // Alice drains. A plain peek: nothing is consumed, so a later run sees it again.
+      output = runMail("drain", "--me", "alice", "--include-body");
       assert.ok(output.includes("Got your message, Alice!"));
     } finally {
       console.log = origLog;

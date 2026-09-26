@@ -32,6 +32,8 @@ import {
   sendMaildirMessage,
   replyMaildirMessage,
   drainMaildir,
+  readMaildirMessages,
+  commitMaildirMessages,
 } from "./protocol.mjs";
 import { migrateMessageAttachments } from "./migration.mjs";
 import {
@@ -769,6 +771,30 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
   }
 }
 
+/**
+ * Write everything to stdout synchronously, reporting whether all of it landed.
+ *
+ * Returns false on a failed or partial write. A short write means the reader went away,
+ * which means the content was NOT fully shown - and an unshown message must not be
+ * marked consumed. Node's process.stdout.write cannot answer this question: to a pipe
+ * it is asynchronous, so EPIPE arrives as a later stream event rather than a throw, and
+ * a try/catch around it never fires.
+ */
+function writeAllToStdout(text) {
+  const buffer = Buffer.from(text, "utf8");
+  let offset = 0;
+  try {
+    while (offset < buffer.length) {
+      offset += fs.writeSync(process.stdout.fd, buffer, offset, buffer.length - offset);
+    }
+    return true;
+  } catch (error) {
+    if (error && error.code === "EPIPE") return false;
+    if (error && (error.code === "EAGAIN" || error.code === "EINTR")) return true;
+    throw error;
+  }
+}
+
 export function handleMailCommand(subcmd, args = []) {
   const action = subcmd || "help";
 
@@ -884,26 +910,56 @@ export function handleMailCommand(subcmd, args = []) {
       }
 
       const includeBody = args.includes("--include-body");
-      const drained = drainMaildir(amqRoot, me);
-      if (!drained.length) {
+      // NOT CONSUMED UNLESS ASKED. Two fixes were tried before this one, and both were
+      // wrong in instructive ways.
+      //
+      // First: promote only after a successful write. It still consumed everything
+      // under `| head -3`, because a successful write to a pipe proves the READER
+      // accepted the bytes, not that anyone saw them - head accepts all 118KB and then
+      // discards it. No error occurs, so no write check can detect it.
+      //
+      // Second: detect EPIPE with fs.writeSync instead of process.stdout.write. That
+      // made a full drain silently consume NOTHING (the helper was not even defined,
+      // because a patch script reported success while half its edits failed to match).
+      //
+      // So the hazard is not a write failure at all: a pipe cannot report that its
+      // consumer threw the data away. The only sound rule is that consuming is a
+      // deliberate act by the owner, never a side effect of looking.
+      const consume = args.includes("--consume");
+      const waiting = readMaildirMessages(amqRoot, me);
+      if (!waiting.length) {
         return;
       }
 
-      console.log(`[AMQ] ${drained.length} new message(s) for ${me}:`);
-      for (const m of drained) {
+      const out = [];
+      out.push(`[AMQ] ${waiting.length} new message(s) for ${me}:`);
+      for (const m of waiting) {
         const h = m.header || {};
-        console.log(`\n- From: ${h.from}`);
-        console.log(`  Thread: ${h.thread || ""}`);
-        console.log(`  ID: ${m.id}`);
-        console.log(`  Subject: ${h.subject || ""}`);
-        console.log(`  Priority: ${h.priority || "normal"}`);
-        if (h.kind) console.log(`  Kind: ${h.kind}`);
-        console.log(`  Created: ${h.created || ""}`);
+        out.push(`\n- From: ${h.from}`);
+        out.push(`  Thread: ${h.thread || ""}`);
+        out.push(`  ID: ${m.id}`);
+        out.push(`  Subject: ${h.subject || ""}`);
+        out.push(`  Priority: ${h.priority || "normal"}`);
+        if (h.kind) out.push(`  Kind: ${h.kind}`);
+        out.push(`  Created: ${h.created || ""}`);
         if (includeBody && m.body) {
-          console.log(`  Body:\n${m.body.trim()}`);
+          out.push(`  Body:\n${m.body.trim()}`);
         }
       }
-      console.log("");
+      out.push("");
+
+      if (!writeAllToStdout(out.join("\n"))) {
+        console.error("❌ Could not write drained messages; nothing was consumed. Re-run to read them.");
+        process.exit(1);
+      }
+      if (consume) {
+        commitMaildirMessages(amqRoot, me, waiting);
+      } else {
+        // Say so plainly, so a reader knows the inbox still holds what they just saw and
+        // that re-running is free and lossless.
+        out.push(`  (not consumed: ${waiting.length} message(s) still in new/. Re-run with --consume to mark them read.)\n`);
+        writeAllToStdout(out.join("\n"));
+      }
       break;
     }
 

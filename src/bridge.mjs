@@ -503,7 +503,10 @@ function buildDoorbellContext(handle, msgs, stats) {
 function buildRequiredDoorbellActions(handle, context) {
   const actions = [];
   if (context.mail.count > 0) {
-    actions.push(`Run: herdr-amq mail drain --me ${handle} --include-body.`);
+    // --consume is required: the drain is a non-destructive peek by default, and the
+    // doorbell is driven by inbox/new, so telling the agent to run a bare drain would
+    // leave the message in new/ and re-alert on every cooldown forever.
+    actions.push(`Run: herdr-amq mail drain --me ${handle} --include-body --consume.`);
   }
   if (context.board.backlog > 0) {
     actions.push(`Run: herdr-amq task drain --me ${handle}; claim with herdr-amq task next --me ${handle}.`);
