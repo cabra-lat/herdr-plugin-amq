@@ -199,6 +199,10 @@ const REPO_A = process.cwd();
 const REPO_B = path.join(REPO_A, "..", "godot", "fps-basegame");
 
 test("a citation from ANOTHER repository does not poison the ones that do resolve", async () => {
+  // Both repositories must be real: a scratch copy has no .git, and a guard on only one
+  // of them turns an environmental skip into a false failure that has nothing to do with
+  // the break under test.
+  if (!fs.existsSync(path.join(REPO_A, ".git"))) return;
   if (!fs.existsSync(path.join(REPO_B, ".git"))) return; // sibling checkout absent
   const { execFileSync } = await import("node:child_process");
   const headA = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: REPO_A }).toString().trim();
@@ -234,4 +238,42 @@ test("a repository that is not a repository yields no dates and no throw", async
   const resolve = makeGitDateResolver({ repos: ["/nonexistent/repo/path", REPO_A] });
   const work = await buildWorkAge({ proof: "landed in 22d476d" }, new Date(), { resolveDate: resolve });
   assert.ok(["dated", "undated"].includes(work.state));
+});
+
+// ── Two more found on the LIVE payload, not by a fixture ───────────────────────
+test("a numeric `now` (Date.now(), which is what the metrics builder passes) yields a real age", async () => {
+  // buildCoordinatorMetrics defaults now to Date.now() - a number. Only Date and string
+  // were handled, so Date.parse(number) was NaN and every ageMs serialised as null:
+  // a live payload showed `latestAt` correctly with `ageMs: null` beside it. Every
+  // earlier fixture passed a Date, which is precisely how it stayed invisible.
+  // `proof` rather than `description`: each break must move exactly one thing, and
+  // reusing the description field would couple this test to the field-scanning change.
+  const work = await buildWorkAge(
+    { proof: "landed in e8e9f35" },
+    Date.parse("2026-09-24T17:00:00.000Z"),
+    { resolveDate: resolverFor({ e8e9f35: older("e8e9f35") }) },
+  );
+  assert.equal(work.latestAt, "2026-09-24T10:00:00.000Z");
+  assert.equal(work.ageMs, 7 * 60 * 60 * 1000, "a numeric timestamp must give a real age, not null");
+  assert.ok(Number.isFinite(work.ageMs), "ageMs must never be NaN, which serialises as null");
+});
+
+test("citations in the description are found, which is where the live board keeps them", async () => {
+  // Live measurement: cards carried 6, 2 and 1 cited commits in their description and
+  // ZERO in their notes. A notes-only scanner reported "no claims" on precisely the cards
+  // doing the most work - the worst possible direction for this signal to fail in.
+  const work = await buildWorkAge(
+    { description: "blocked on e8e9f35 and ab12cd3", notes: [] },
+    Date.parse("2026-09-24T17:00:00.000Z"),
+    { resolveDate: resolverFor({ e8e9f35: older("e8e9f35"), ab12cd3: older("ab12cd3") }) },
+  );
+  assert.equal(work.citationCount, 2);
+  assert.equal(work.latestSha, "ab12cd3");
+  assert.ok(work.citations.every((c) => c.where === "description"), "the source is reported");
+});
+
+test("an uncomputable age is null and never NaN", async () => {
+  const work = await buildWorkAge({ proof: "landed in e8e9f35" }, NaN, { resolveDate: resolverFor({ e8e9f35: older("e8e9f35") }) });
+  assert.equal(work.ageMs, null);
+  assert.ok(!Number.isNaN(work.ageMs));
 });

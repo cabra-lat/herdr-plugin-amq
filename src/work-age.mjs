@@ -55,6 +55,11 @@ export function extractClaimedArtifacts(task = {}) {
   }
   if (task.proof) sources.push({ where: "proof", text: String(task.proof) });
   if (task.block_reason) sources.push({ where: "block_reason", text: String(task.block_reason) });
+  if (task.reason) sources.push({ where: "reason", text: String(task.reason) });
+  // `description` is where the real evidence lives: on the live board, cards carried 6, 2
+  // and 1 cited commits in their description and zero in their notes, so a scanner that
+  // read only notes reported "no claims" on precisely the cards doing the most work.
+  if (task.description) sources.push({ where: "description", text: String(task.description) });
 
   const shas = [];
   const runIds = [];
@@ -172,7 +177,14 @@ export const nullDateResolver = async () => new Map();
  */
 export async function buildWorkAge(task, now, { resolveDate = nullDateResolver, thresholdMs = null } = {}) {
   const { shas, runIds, citations } = extractClaimedArtifacts(task);
-  const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+  // `buildCoordinatorMetrics` defaults `now` to Date.now(), a NUMBER. Only a Date and a
+  // string were handled, so Date.parse(number) returned NaN and every ageMs became NaN,
+  // which serialises as null - a live payload showing `latestAt` correctly and `ageMs: null`
+  // beside it. The fixtures all passed a Date, which is exactly how it stayed hidden.
+  const nowMs = now instanceof Date
+    ? now.getTime()
+    : (typeof now === "number" ? now : Date.parse(now));
+  const nowValid = Number.isFinite(nowMs);
   const base = {
     shas,
     runIds,
@@ -242,7 +254,8 @@ export async function buildWorkAge(task, now, { resolveDate = nullDateResolver, 
     undatedRunIds: runIds,
     latestSha,
     latestAt,
-    ageMs: Math.max(0, nowMs - latestMs),
+    // Never NaN: a null age means "not computable" and is distinguishable from 0.
+    ageMs: nowValid ? Math.max(0, nowMs - latestMs) : null,
     state: "dated",
   };
 }
