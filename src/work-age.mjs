@@ -336,14 +336,27 @@ const OBSERVATION_NOTES = Object.freeze({
  * Classify one card by the pair of clocks. Pure, and deliberately total: any input
  * produces a label, because a card that cannot be classified must SAY so rather than
  * defaulting to the stale reading - defaulting would invent evidence of inactivity.
+ *
+ * The two axes get SEPARATE thresholds, and that is not a tuning nicety. The state
+ * clock is a live signal measured in minutes; whether a commit exists is a slower one
+ * measured in hours. Sharing one threshold made `work-recent` unreachable - measured on
+ * the live board, 0 of 6 cards with dated work were work-recent under a 10-minute bar, so
+ * two of the five labels could never fire and the classification collapsed to three. The
+ * label also carries both raw ages and both thresholds, so a reader who disagrees with
+ * the thresholds can re-derive the observation without the label at all.
  */
-export function classifyTwoClocks({ stateAgeMs, work = null, staleAfterMs }) {
+export function classifyTwoClocks({ stateAgeMs, work = null, stateStaleAfterMs, workStaleAfterMs }) {
   const base = {
-    thresholdMs: staleAfterMs,
+    stateThresholdMs: stateStaleAfterMs,
+    workThresholdMs: workStaleAfterMs,
     stateAgeMs: Number.isFinite(stateAgeMs) ? stateAgeMs : null,
     workAgeMs: work && Number.isFinite(work.ageMs) ? work.ageMs : null,
     workState: work?.state || "no-claims",
     latestSha: work?.latestSha || null,
+    // The label is derived, and derived from a threshold somebody chose. Both ages and
+    // both thresholds travel with it so the reader can re-derive the observation rather
+    // than take the label on trust.
+    labelDependsOnThreshold: true,
     // Report-only, exactly like the signal it is derived from. If this ever needs to
     // page someone, that is a separate decision taken deliberately, not a threshold
     // added here.
@@ -362,8 +375,8 @@ export function classifyTwoClocks({ stateAgeMs, work = null, staleAfterMs }) {
     return { ...base, label: CLOCK_OBSERVATIONS.WORK_UNKNOWN, ...OBSERVATION_NOTES[CLOCK_OBSERVATIONS.WORK_UNKNOWN] };
   }
 
-  const stateStale = stateAgeMs > staleAfterMs;
-  const workStale = work.ageMs > staleAfterMs;
+  const stateStale = stateAgeMs > stateStaleAfterMs;
+  const workStale = work.ageMs > workStaleAfterMs;
   const label = stateStale && workStale
     ? CLOCK_OBSERVATIONS.BOTH_STALE
     : (workStale ? CLOCK_OBSERVATIONS.STATE_RECENT_WORK_STALE : CLOCK_OBSERVATIONS.WORK_RECENT_STATE_STALE);

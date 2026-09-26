@@ -524,3 +524,23 @@ no `severity` field.
 | drop the `alsoConsistentWith` alternatives | 9 pass, **2 fail** |
 | default undated work to `both-stale` | 10 pass, **1 fail** |
 | make the classification alert-capable | 10 pass, **1 fail** |
+| couple the axes to one threshold again | 13 pass, **2 fail** |
+| drop the raw ages and thresholds from the label | 14 pass, **1 fail** |
+
+**One defect of my own, found by reading the deployed numbers rather than the tests.** The first
+version used `stalledWorkMs` — 10 minutes — as the threshold for *both* axes. Measured on the live
+board: **0 of 6** cards with dated work qualified as work-recent, so `both-recent` and
+`work-recent-state-stale` could never fire and the classification silently collapsed from five
+labels to three. All 15 tests were green. A label that is unreachable is worse than no label,
+because it looks like coverage.
+
+The two axes are different questions on different timescales: a card should be touched as the work
+happens, so the state clock is measured in minutes; whether a commit exists is measured in hours.
+They now have separate thresholds (`workStaleAfterMs`, default 24h) and the label travels with both
+raw ages and both thresholds, so a reader who disagrees can re-derive the observation and ignore the
+label entirely. That escape hatch is what stops a chosen threshold from quietly becoming a verdict.
+
+The 24h default is a default, not a finding, and I did **not** tune it to reproduce the two example
+cards in the request — that would have been fitting a threshold to two data points, which is the same
+error as writing a reason to move a clock. It is arguable and the ages are published so it can be
+argued with.

@@ -17,6 +17,12 @@ export function activeBoardTasks(board) {
 }
 
 const DEFAULT_THRESHOLDS = Object.freeze({
+  // The work axis is deliberately on a different timescale from the state axis. A card
+  // should be touched as the work happens, so the state clock is measured in minutes;
+  // whether a commit exists is a slower question measured in hours. Sharing one
+  // threshold made `work-recent` unreachable on the live board - 0 of 6 cards with
+  // dated work qualified - which silently disabled two of the five labels.
+  workStaleAfterMs: 24 * 60 * 60 * 1000,
   queueWarnMs: 300 * 1000,
   queueCriticalMs: 900 * 1000,
   queuePageMs: 1800 * 1000,
@@ -592,6 +598,10 @@ export function buildCoordinatorMetrics({
         reportOnly: true,
         alerts: false,
         thresholdsPage: false,
+        // The two thresholds are separate, and both are reported, so a reader who
+        // disagrees with either can re-derive the observation from the raw ages.
+        stateThresholdMs: limits.stalledWorkMs,
+        workThresholdMs: limits.workStaleAfterMs,
         note: "Labels describe the two clocks, not the owner. Each label carries what it is ALSO consistent with, because the clocks cannot separate those cases - fresh work with a still card is equally an implemented-but-forgotten card and work that does not address this card.",
       },
       cards: workAgeById ? Object.fromEntries(workAgeById) : {},
@@ -640,7 +650,8 @@ export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...option
         observation: classifyTwoClocks({
           stateAgeMs: stateAt === null ? null : Math.max(0, nowMsOf(now) - stateAt),
           work,
-          staleAfterMs: limitsOf(options).stalledWorkMs,
+          stateStaleAfterMs: limitsOf(options).stalledWorkMs,
+          workStaleAfterMs: limitsOf(options).workStaleAfterMs,
         }),
       });
     } catch {
