@@ -4,7 +4,16 @@ import { buildWorkAge, makeGitDateResolver, classifyTwoClocks } from "./work-age
 // The columns the queue/stall/work-age signals consider "active". One list, so the
 // async work-age wrapper and the sync builder cannot drift into covering different
 // cards - which is how two health metrics ended up disagreeing about the same card.
-const ACTIVE_STAGES = Object.freeze(["backlog", "doing", "review"]);
+// `queued` is in here because a scheduled card waiting its turn is REAL work that has
+// not moved yet, and queue_age should keep ageing it. It is deliberately NOT eligible
+// for stalled_work: waiting its turn is not inactivity. Admitting it to one and not the
+// other is the whole point - a queue that is working as designed must not read as a lane
+// that has stopped.
+const ACTIVE_STAGES = Object.freeze(["backlog", "queued", "doing", "review"]);
+
+// Stages that represent work which SHOULD have moved and has not. A card parked in a
+// recorded order is not in here: it is correctly not moving.
+const STALL_ELIGIBLE_STAGES = Object.freeze(["backlog", "doing", "review"]);
 
 /**
  * Project one card's stall state. THE single definition of "stalled", used by the
@@ -43,6 +52,14 @@ export function projectCardStall(task, now, limits = DEFAULT_THRESHOLDS, workAge
       id: task.id,
       title: task.title,
       owner: task.owner || null,
+      // The stage, on the STALLED projection as well as the fresh one. It was present on
+      // one and absent on the other, so every card a consumer actually cares about - the
+      // stalled ones - reported stage=undefined while the board showed the column. That
+      // is a correctness bug wearing a styling costume: a reader checking whether a card
+      // is parked or abandoned gets `undefined` and concludes neither, which is the same
+      // unexpressible difference the `queued` stage exists to fix, reappearing as a
+      // missing field instead of a missing concept.
+      stage: task.stage || task.status || null,
       // Projected because the coordinator prompt reads `card.reason`; omitting it made
       // every prompted card print reason=unspecified even when one was recorded. The
       // board writes `block_reason`, so both spellings are accepted.
@@ -84,11 +101,15 @@ export function stalledCardsForOwner(board, owner, { now = Date.now(), threshold
   return out;
 }
 
-export function activeBoardTasks(board) {
+export function activeBoardTasks(board, opts = {}) {
+  // stallEligible: restrict to stages where the absence of movement is a real signal.
+  // Used by stalled_work so a scheduled queue is never reported as a stalled lane, and NOT
+  // used by queue_age, which ages the whole queue including what is waiting its turn.
+  const stages = opts.stallEligible ? STALL_ELIGIBLE_STAGES : ACTIVE_STAGES;
   const out = [];
   for (const [columnName, columnTasks] of Object.entries(board?.columns || {})) {
     const stage = columnName === "in_progress" ? "doing" : columnName;
-    if (!ACTIVE_STAGES.includes(stage)) continue;
+    if (!stages.includes(stage)) continue;
     for (const task of (Array.isArray(columnTasks) ? columnTasks : []).filter(Boolean)) out.push(task);
   }
   return out;
@@ -334,7 +355,16 @@ export function buildCoordinatorMetrics({
       if (Object.hasOwn(cardsByStage, stage)) cardsByStage[stage] += 1;
     }
   }
-  const activeCards = activeBoardTasks(board);
+  // TWO SETS, DELIBERATELY. `queueCards` is the whole queue including scheduled cards
+  // waiting their turn - waiting is real work that has not moved yet, and queue_age must
+  // keep ageing it. `stallableCards` excludes `queued`, because a card parked in a
+  // recorded order is correctly not moving and its stillness is not a stall. Filtering
+  // once and sharing the result, which is what I did first, silences BOTH: it made the
+  // queue stop reporting work that is real, and it is why the first run of this test
+  // showed queue_age at 0 for a card that was genuinely 126 minutes old.
+  const queueCards = activeBoardTasks(board);
+  const activeCards = activeBoardTasks(board, { stallEligible: true });
+  const queueAgeCards = queueCards;
   // The queue age answers the same question as stalled_work, so it ages the same
   // clock: the card's own state clock. It previously read `updated` only while
   // stalled_work read the liveness clock, so the two disagreed about one card at one
@@ -344,7 +374,7 @@ export function buildCoordinatorMetrics({
   let queueAgeMs = 0;
   let queueOldest = null;
   let queueUnknown = 0;
-  for (const task of activeCards) {
+  for (const task of queueAgeCards) {
     const liveness = cardLivenessState(task, now, limits.stalledWorkMs);
     if (liveness.state === LIVENESS_STATES.UNKNOWN) {
       queueUnknown += 1;
@@ -650,12 +680,12 @@ export function buildCoordinatorMetrics({
     agents: { total: handles.length, byStatus: statusCounts, statuses, staleHeartbeats },
     cards: { total: allCards.length, byStage: cardsByStage },
     queue: {
-      activeCards: activeCards.length,
+      activeCards: queueAgeCards.length,
       oldestAgeMs: queueAgeMs,
       oldestCardId: queueOldest?.id || null,
       oldestCardLiveness: queueOldest ? cardLivenessState(queueOldest, now, limits.stalledWorkMs).state : null,
       unattributedExcluded: queueUnknown,
-      scope: "backlog, doing, review",
+      scope: "backlog, queued, doing, review",
       clock: "card state clock (updated/created); heartbeats do not move it",
     },
     blockedOldest: {
@@ -736,7 +766,7 @@ export function buildCoordinatorMetrics({
  */
 export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...options } = {}) {
   const { board = { columns: {} }, now = Date.now() } = options;
-  const activeCards = activeBoardTasks(board);
+  const activeCards = activeBoardTasks(board, { stallEligible: true });
   const resolveDate = makeGitDateResolver({ repos });
   const workAgeById = new Map();
   await Promise.all(activeCards.map(async (task) => {
