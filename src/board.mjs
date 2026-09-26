@@ -505,7 +505,19 @@ export function loadBoard(repoRoot, amqRoot) {
         const parsed = parseTaskFile(fullPath, stage);
         if (parsed && !seenIds.has(parsed.id)) {
           seenIds.add(parsed.id);
-          busTasks.push(parsed);
+          // `heartbeatAgeMs` is DERIVED here rather than left to each consumer to subtract,
+          // because the subtraction is where the defect came from. A reader that wanted an
+          // age had to write `card.heartbeat || card.heartbeatAt || 0`, and when both keys
+          // were absent the fallback produced a NUMBER: Date.parse(0) is 946692000000, which
+          // rendered as an age of 14062699 minutes and was then reported as a measurement.
+          // An absent key wearing a zero is worse than a wrong value, because a wrong value
+          // is checkable. So the age travels with the timestamp, and an absent heartbeat
+          // stays absent instead of becoming 0.
+          const hb = Date.parse(parsed.last_heartbeat_at || "");
+          busTasks.push({
+            ...parsed,
+            heartbeatAgeMs: Number.isFinite(hb) ? Math.max(0, Date.now() - hb) : null,
+          });
         }
       }
     } catch {}
