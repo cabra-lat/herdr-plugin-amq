@@ -2688,7 +2688,11 @@
 
   async function fetchBoard() {
     try {
-      const res = await fetch("/api/board");
+      // The done column is an archive that grows forever; it is bounded server-side and
+      // the limit is raised on demand rather than shipping every completed card on
+      // every refresh.
+      const limit = state.doneLimit ?? 25;
+      const res = await fetch(`/api/board?doneLimit=${encodeURIComponent(limit)}`);
       const data = await res.json();
       if (data.ok) {
          state.board = data;
@@ -2957,7 +2961,10 @@
     if (colCountBacklog) colCountBacklog.textContent = columns.backlog.length;
     if (colCountInProgress) colCountInProgress.textContent = columns.in_progress.length;
     if (colCountBlocked) colCountBlocked.textContent = columns.blocked.length;
-    if (colCountDone) colCountDone.textContent = columns.done.length;
+    // Show the TRUE total, not what was returned. A header reading "25" on a board with
+    // 325 completed cards would be a lie told by a lazy load.
+    const doneMeta = state.board?.columnsMeta?.done;
+    if (colCountDone) colCountDone.textContent = doneMeta?.total ?? columns.done.length;
 
     // Render Agent Filter Chips
     if (boardAgentFilterBar) {
@@ -3028,7 +3035,6 @@
         containerEl.innerHTML = `<div class="kanban-empty">${emptyMessages[colName]}</div>`;
         continue;
       }
-
       let cardsHtml = "";
       for (const card of filtered) {
         const agentObj = state.agents.find((a) => a.handle === card.owner);
@@ -3085,10 +3091,29 @@
         `;
       }
 
+      // The archive is bounded; without this the older completed cards are simply
+      // unreachable, and a lazy load that hides data behind no affordance is a bug
+      // wearing a performance costume.
+      const doneMeta = state.board?.columnsMeta?.done;
+      if (colName === "done" && doneMeta?.truncated) {
+        const hidden = doneMeta.total - doneMeta.returned;
+        cardsHtml += `<button type="button" class="kanban-load-more" data-load-more-done>
+          ${t("board.loadMoreDone").replace("{n}", String(hidden))}
+        </button>`;
+      }
+
       containerEl.innerHTML = cardsHtml;
     }
 
     attachKanbanListeners();
+    const loadMoreBtn = document.querySelector("[data-load-more-done]");
+    if (loadMoreBtn) {
+      loadMoreBtn.addEventListener("click", async () => {
+        loadMoreBtn.disabled = true;
+        state.doneLimit = (state.doneLimit ?? 25) + 100;
+        await fetchBoard();
+      });
+    }
   }
 
   function attachKanbanListeners() {

@@ -160,6 +160,62 @@ export function classifyPaneRead({ err, stdout, stderr } = {}) {
   return { ok: true, error: null };
 }
 
+// The board grows without bound and nothing was trimming it: `done` had reached 325
+// cards, so every poll of /api/board shipped 853 KB of archive to render a column most
+// people scroll past once. The cost was not hypothetical - it is paid on every refresh,
+// every SSE-triggered re-render, and every second browser tab.
+//
+// The archive is bounded by default, but the TOTAL is always reported, so the UI can
+// say "325 done, showing 25" instead of silently pretending the board has 25.
+// Active columns are never trimmed: a card you can act on must never be the one hidden.
+//
+// doneLimit:
+//   absent  -> defaultDoneLimit (25)
+//   0       -> no done cards at all
+//   n       -> the n most recently updated
+//   -1/"all" -> everything (the escape hatch, and the old behaviour)
+export function applyColumnLimits(columns, params, { defaultDoneLimit = 25 } = {}) {
+  const source = columns || {};
+  const done = Array.isArray(source.done) ? source.done : [];
+  const raw = params && typeof params.get === "function" ? params.get("doneLimit") : null;
+
+  let limit = defaultDoneLimit;
+  if (raw !== null && raw !== undefined && String(raw).trim() !== "") {
+    const text = String(raw).trim().toLowerCase();
+    if (text === "all") {
+      limit = Infinity;
+    } else {
+      const n = Number(text);
+      // An unparseable value must not become NaN and silently yield an empty column,
+      // which would read as "the board is empty" rather than "you typed nonsense".
+      if (!Number.isFinite(n)) {
+        limit = defaultDoneLimit;
+      } else {
+        limit = n < 0 ? Infinity : Math.floor(n);
+      }
+    }
+  }
+
+  // Sort explicitly instead of inheriting loadBoard's incidental order: "most recent N"
+  // has to mean most recent, not "whichever 25 happened to be in this order".
+  const byRecency = (a, b) =>
+    String(b.updated || b.created || "").localeCompare(String(a.updated || a.created || ""));
+  const sorted = [...done].sort(byRecency);
+  const kept = limit === Infinity ? sorted : sorted.slice(0, limit);
+
+  return {
+    columns: { ...source, done: kept },
+    columnsMeta: {
+      done: {
+        total: done.length,
+        returned: kept.length,
+        truncated: kept.length < done.length,
+        limit: limit === Infinity ? "all" : limit,
+      },
+    },
+  };
+}
+
 export function startWebServer({
   port = 8505,
   host = process.env.AGMAIL_HOST || "127.0.0.1",
@@ -766,8 +822,11 @@ export function startWebServer({
         repos: [repoRoot, path.join(repoRoot, "..", "herdr-plugin-amq")],
       });
       const history = recordMetricsSample(metricsHistoryFile, coordinator);
+      const { columns, columnsMeta } = applyColumnLimits(board.columns, url.searchParams);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, ...board, coordinator, coordinatorHistory: history }));
+      res.end(
+        JSON.stringify({ ok: true, ...board, columns, columnsMeta, coordinator, coordinatorHistory: history })
+      );
       return;
     }
 
