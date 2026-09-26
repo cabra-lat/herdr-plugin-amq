@@ -920,9 +920,26 @@ export function handleMailCommand(subcmd, args = []) {
     return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
   }
 
+  // A REPEATED flag used to be silently truncated to its first occurrence, because this
+  // called getArg(), which does findIndex and takes one value. `send --attach a --attach b
+  // --attach c` therefore delivered ONE file, reported success and exited 0, and `--to` had
+  // the same defect, which is worse: a silently dropped RECIPIENT. Both forms are accepted
+  // now: repeated flags, and the pre-existing comma-separated form.
   function getMultiArg(flag, alias) {
-    const val = getArg(flag, alias);
-    return val ? val.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    const values = [];
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] !== flag && !(alias && args[i] === alias)) continue;
+      const value = args[i + 1];
+      // A flag with nothing after it is a caller error, not an empty list entry. Skipping
+      // it silently would repeat the defect this function exists to remove.
+      if (value === undefined || value.startsWith("--")) {
+        console.error(`❌ ${flag} was given with no value. Nothing was sent.`);
+        process.exit(1);
+      }
+      values.push(...value.split(",").map((s) => s.trim()).filter(Boolean));
+      i++; // consume the value so it is not re-read as a flag
+    }
+    return values;
   }
 
   switch (action) {
