@@ -769,6 +769,13 @@ export function getBoardTask(repoRoot, amqRoot, taskId) {
   return null;
 }
 
+/** The statuses a card may legally hold. `doing` is an accepted alias of `in_progress`. */
+export const TASK_STATUSES = ["backlog", "in_progress", "doing", "blocked", "done"];
+
+function normalizeTaskStatus(status) {
+  return status === "doing" ? "in_progress" : status;
+}
+
 export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = {}) {
   if (!taskId) return { ok: false, error: "taskId is required" };
 
@@ -784,13 +791,53 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     return { ok: false, error: "Task not found" };
   }
 
+  // REJECT WHAT WE CANNOT HONOUR, BY NAME.
+  //
+  // A write that reports ok:true and quietly does nothing is worse than one that fails:
+  // it turns a caller error into a silent divergence between what was asked for and what
+  // the board now says, and the caller has no way to find out. Two ways that happened
+  // here, both reported by the coordinator against a PATCH of {"status":"review"}:
+  //
+  //   1. An unrecognised status fell through to the card's existing status. The response
+  //      said ok:true, the field simply did not appear in the updates, and the enum had
+  //      to be discovered by grepping the source because there was no error to read.
+  //   2. Worse, and found while fixing (1): `...updates` spreads into the card, so an
+  //      unrecognised FIELD was not ignored at all - it was written into the card file
+  //      as a new, meaningless key. The same caller error was corrupting the record
+  //      rather than merely losing an assignment.
+  //
+  // Both are refused now, and the error names what was wrong and what is accepted, so a
+  // caller never has to read the source to discover the rules.
+  const writableFields = new Set([
+    ...Object.keys(existingTask),
+    "title", "status", "owner", "priority", "description", "next_actor", "reason",
+    "block_reason", "proof", "notes", "depends_on", "notify", "from",
+  ]);
+  const unknownFields = Object.keys(updates || {}).filter((key) => !writableFields.has(key));
+  if (unknownFields.length) {
+    return {
+      ok: false,
+      error: `Unrecognised field(s): ${unknownFields.join(", ")}. Nothing was written.`,
+      rejected: unknownFields,
+      hint: "A misspelled field would be stored as a meaningless key rather than ignored.",
+    };
+  }
+
+  if (updates.status !== undefined && !TASK_STATUSES.includes(normalizeTaskStatus(updates.status))) {
+    return {
+      ok: false,
+      error: `Unrecognised status: ${JSON.stringify(updates.status)}. Nothing was written.`,
+      rejected: ["status"],
+      accepted: [...TASK_STATUSES],
+      hint: '"doing" is accepted as an alias of "in_progress".',
+    };
+  }
+
   const oldTask = { ...existingTask };
   const requestedStatus = updates.status
-    ? (updates.status === "doing" ? "in_progress" : updates.status)
+    ? normalizeTaskStatus(updates.status)
     : existingTask.status;
-  const targetStatus = ["backlog", "in_progress", "blocked", "done"].includes(requestedStatus)
-    ? requestedStatus
-    : existingTask.status;
+  const targetStatus = TASK_STATUSES.includes(requestedStatus) ? requestedStatus : existingTask.status;
   const now = opts.now instanceof Date ? opts.now.toISOString() : new Date().toISOString();
   const nowMs = Date.parse(now);
   const wasBlocked = existingTask.status === "blocked";
