@@ -955,10 +955,15 @@ export function handleMailCommand(subcmd, args = []) {
       if (consume) {
         commitMaildirMessages(amqRoot, me, waiting);
       } else {
-        // Say so plainly, so a reader knows the inbox still holds what they just saw and
-        // that re-running is free and lossless.
-        out.push(`  (not consumed: ${waiting.length} message(s) still in new/. Re-run with --consume to mark them read.)\n`);
-        writeAllToStdout(out.join("\n"));
+        // The notice ALONE. The first version pushed it onto `out` and wrote that buffer
+        // again, which reprinted every message in full: one file on disk, printed twice
+        // in a single pass. That is worse than a cosmetic slip, because a message
+        // appearing twice in a drain is indistinguishable from a message delivered
+        // twice - exactly the ambiguity that made a mis-diagnosis look confirmed for an
+        // hour.
+        writeAllToStdout(
+          `  (not consumed: ${waiting.length} message(s) still in new/. Re-run with --consume to mark them read.)\n`,
+        );
       }
       break;
     }

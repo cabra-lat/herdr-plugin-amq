@@ -17,7 +17,7 @@ function fixture(count = 3) {
     }
   }
   for (let i = 0; i < count; i += 1) {
-    sendMaildirMessage(amqRoot, { from: "coordinator", to: ["worker"], subject: `Message ${i}`, body: "y".repeat(300) });
+    sendMaildirMessage(amqRoot, { from: "coordinator", to: ["worker"], subject: `Message ${i}`, body: `Testing ${i} ` + "y".repeat(300) });
   }
   return { root, amqRoot };
 }
@@ -38,6 +38,49 @@ const run = (root, args) => spawnSync(process.execPath, [BIN, ...args], {
 // 118KB and shows three lines, and NO error is raised anywhere - a successful write
 // proves the reader accepted the data, not that a human saw it. Two earlier fixes failed
 // on exactly this, so the rule is that consuming is never a side effect of looking.
+// A message appearing twice in one drain is indistinguishable from a message delivered
+// twice. That ambiguity is not cosmetic: it is what let a mis-diagnosis look confirmed,
+// because a reader could not tell one message from two.
+test("each message is printed exactly once, on a single file on disk", () => {
+  const { root, amqRoot } = fixture(1);
+  try {
+    const out = run(root, ["mail", "drain", "--me", "worker", "--include-body"]);
+    assert.equal(out.status, 0, out.stderr);
+    const onDisk = fs.readdirSync(path.join(amqRoot, "agents", "worker", "inbox", "new"))
+      .filter((f) => f.endsWith(".md"));
+    assert.equal(onDisk.length, 1, "the fixture must really contain a single message");
+    const id = onDisk[0].replace(/\.md$/, "");
+    const occurrences = (out.stdout.match(new RegExp(`ID: ${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "g")) || []).length;
+    assert.equal(occurrences, 1, "the one message must be printed exactly once, not twice");
+    assert.equal((out.stdout.match(/Testing/g) || []).length, 1, "and its body must appear once");
+    assert.equal((out.stdout.match(/^\[AMQ\]/gm) || []).length, 1, "one header, not two");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the same holds for a multi-message drain", () => {
+  const { root, amqRoot } = fixture(6);
+  try {
+    const out = run(root, ["mail", "drain", "--me", "worker"]);
+    assert.equal(out.status, 0, out.stderr);
+    assert.equal((out.stdout.match(/^\[AMQ\]/gm) || []).length, 1, "exactly one header line");
+    for (const f of fs.readdirSync(path.join(amqRoot, "agents", "worker", "inbox", "new")).filter((f) => f.endsWith(".md"))) {
+      const id = f.replace(/\.md$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      assert.equal((out.stdout.match(new RegExp(`ID: ${id}`, "g")) || []).length, 1, `${id} printed once`);
+    }
+    assert.equal((out.stdout.match(/^  Subject:/gm) || []).length, 6, "six subjects, not twelve");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("--consume prints each message once as well", () => {
+  const { root } = fixture(3);
+  try {
+    const out = run(root, ["mail", "drain", "--me", "worker", "--consume"]);
+    assert.equal(out.status, 0, out.stderr);
+    assert.equal((out.stdout.match(/^\[AMQ\]/gm) || []).length, 1);
+    assert.equal((out.stdout.match(/^  Subject:/gm) || []).length, 3);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("drain does NOT consume by default, so a truncated read cannot lose mail", () => {
   const { root, amqRoot } = fixture(40);
   try {
