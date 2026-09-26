@@ -479,6 +479,13 @@ test("blocked_oldest reports a TRIAGED blocker, which no other alert covers by a
     blocked_at: "2026-09-24T12:00:00.000Z",  // 5 hours
     blocked_ms: 300 * 60 * 1000,
     block_reason: "waiting on an upstream decision",
+    // CHANGED: this card previously had no next_actor and the test asserted it alerted.
+    // That contradicts the owner rule now in force - a blocked card nobody can move is
+    // report-only, because its recommended actions are all false. Its INTENT is kept and
+    // is still covered: an owned triaged blocker must never be invisible to an age
+    // signal. The unowned counterpart, which must be reported rather than alerted, is
+    // asserted below and in test/blocked-owner-split.test.mjs.
+    next_actor: "worker",
   };
   const result = buildCoordinatorMetrics({
     handles: ["worker"],
@@ -502,6 +509,21 @@ test("blocked_oldest reports a TRIAGED blocker, which no other alert covers by a
   assert.equal(result.queue.activeCards, 0);
   assert.equal(result.blockedOldest.cards, 1);
   assert.equal(result.queue.scope, "backlog, doing, review");
+
+  // The same blocker with its owner removed must go report-only AND stay visible. If it
+  // simply vanished, the hole this test was written to close would reopen for owned-less
+  // cards: invisible to every age signal.
+  const unowned = { ...triagedOldBlocker, id: "unowned-blocker", next_actor: null };
+  const unownedResult = buildCoordinatorMetrics({
+    handles: ["worker"],
+    agentStatuses: { worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [], blocked: [unowned], done: [] } },
+    now,
+    thresholds: { blockedWarnMs: 10 * 60 * 1000, blockedCriticalMs: 30 * 60 * 1000 },
+  });
+  assert.equal(unownedResult.alerts.find((a) => a.id === "blocked_oldest"), undefined, "nobody can move it");
+  assert.equal(unownedResult.unownedBlockedCount, 1, "but it must still be reported, not dropped");
+  assert.equal(unownedResult.unownedBlocked[0].oldestId, "unowned-blocker");
 });
 
 test("blocked age is measured live from blocked_at, not from the stored blocked_ms snapshot", () => {

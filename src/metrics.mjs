@@ -364,6 +364,8 @@ export function buildCoordinatorMetrics({
   // computed once `blockedWork` has been built.
   let blockedOldestAgeMs = 0;
   let blockedOldestCard = null;
+  // Blocked cards nobody can move. Reported, never alerted - see below.
+  const unownedBlocked = [];
   // A card is stale when neither an explicit heartbeat nor a state change has
   // happened within the threshold. Previously this read only `updated`, so an
   // actively worked card was indistinguishable from an ignored one.
@@ -494,6 +496,26 @@ export function buildCoordinatorMetrics({
   );
 
   if (blockedWork.length > 0 && blockedOldestAgeMs >= limits.blockedWarnMs) {
+    // A blocked card with NO next actor is blocked on nobody - a decision that belongs to
+    // a human, not to a lane. Its age measures how long someone has been waiting, which
+    // is not the board's business to page about, and there is no honest write that
+    // satisfies it: resolving is false, re-scoping is false, and recording a reason is
+    // exactly what has already been done. Such cards are REPORTED and never alerted on.
+    //
+    // A blocked card WITH a next actor has an owner who can move it, so its age is a
+    // real warning and it keeps alerting. This is the same actor-or-owner distinction
+    // the notification path already draws; it is not a new state, and it deliberately
+    // does not exempt any card by name.
+    const owned = blockedWork.filter((task) => task.nextActor);
+    const unowned = blockedWork.filter((task) => !task.nextActor);
+    if (unowned.length > 0) {
+      unownedBlocked.push({
+        count: unowned.length,
+        oldestId: unowned.reduce((a, b) => ((a?.ageMs ?? 0) > (b?.ageMs ?? 0) ? a : b), null)?.id || null,
+        oldestAgeMs: unowned.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0),
+      });
+    }
+    if (owned.length > 0 && owned.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0) >= limits.blockedWarnMs) {
     // Deliberately independent of blocked_cards, which only counts UNTRIAGED
     // cards. A triaged blocker is still a blocker: recording a reason stops the
     // "you did not say why" alert, but it must not silence the "this has been
@@ -515,9 +537,11 @@ export function buildCoordinatorMetrics({
       oldestAgeMs: blockedOldestAgeMs,
       triagedCount: triaged,
       untriagedCount: blockedWork.length - triaged,
-      cardCount: blockedWork.length,
-      cards: blockedWork,
+      cardCount: owned.length,
+      cards: owned,
+      unownedBlockedCount: unowned.length,
     });
+    }
   }
 
   if (cardsByStage.backlog > 0 && statusCounts.working === 0) {
@@ -665,6 +689,11 @@ export function buildCoordinatorMetrics({
     },
     unattributedLiveness,
     unattributedLivenessCount: unattributedLiveness.length,
+    // Blocked cards with no next actor: reported, never alerted. Exposed so the silence
+    // is readable rather than merely absent - a card that stopped alerting and a card
+    // that was never evaluated must not look the same.
+    unownedBlocked,
+    unownedBlockedCount: unownedBlocked.reduce((n, g) => n + (g.count || 0), 0),
     resources: {
       ...resource,
       heavyJobCap: limits.heavyJobCap,
