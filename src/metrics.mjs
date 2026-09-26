@@ -6,6 +6,84 @@ import { buildWorkAge, makeGitDateResolver, classifyTwoClocks } from "./work-age
 // cards - which is how two health metrics ended up disagreeing about the same card.
 const ACTIVE_STAGES = Object.freeze(["backlog", "doing", "review"]);
 
+/**
+ * Project one card's stall state. THE single definition of "stalled", used by the
+ * `stalled_work` alert and by the per-agent doorbell prompt.
+ *
+ * It was duplicated the moment the doorbell wanted to name a stalled card, and a second
+ * copy of this logic is how two metrics came to disagree about the same card at the same
+ * instant before. Anything that needs to know whether a card is stalled calls this.
+ */
+export function projectCardStall(task, now, limits = DEFAULT_THRESHOLDS, workAgeById = null) {
+  const liveness = cardLivenessState(task, now, limits.stalledWorkMs);
+  const note = noteSummary(task, now);
+  if (liveness.state === LIVENESS_STATES.UNKNOWN) {
+    return {
+      kind: "unknown",
+      liveness,
+      unknown: {
+        id: task.id,
+        title: task.title,
+        owner: task.owner || null,
+        stage: task.stage || task.status || null,
+        liveness: liveness.state,
+        via: liveness.via,
+        lastActivityAt: liveness.at === null ? null : new Date(liveness.at).toISOString(),
+        ...note,
+      },
+    };
+  }
+  const progressAt = cardProgressClock(task);
+  const progressAgeMs = progressAt === null ? null : Math.max(0, now - progressAt);
+  if (progressAgeMs === null || progressAgeMs <= limits.stalledWorkMs) return { kind: "fresh", liveness };
+  return {
+    kind: "stalled",
+    liveness,
+    stalled: {
+      id: task.id,
+      title: task.title,
+      owner: task.owner || null,
+      // Projected because the coordinator prompt reads `card.reason`; omitting it made
+      // every prompted card print reason=unspecified even when one was recorded. The
+      // board writes `block_reason`, so both spellings are accepted.
+      reason: task.block_reason || task.reason || null,
+      ageMs: progressAgeMs,
+      lastActivityAt: new Date(progressAt).toISOString(),
+      heartbeatAt: timestamp(task?.last_heartbeat_at) === null ? null : new Date(timestamp(task.last_heartbeat_at)).toISOString(),
+      heartbeatAgeMs: ageMs(task?.last_heartbeat_at, now),
+      heartbeatBy: task?.last_heartbeat_by || null,
+      heartbeatByNonOwner: Boolean(task?.last_heartbeat_by && task.owner && task.last_heartbeat_by !== task.owner),
+      liveness: liveness.state,
+      livenessBy: liveness.by,
+      livenessVia: liveness.via,
+      // Report only. There is no work-age alert and no work-age threshold: a card whose
+      // implementation is finished and is waiting on QA or a reviewer has no new
+      // commits, so any alert here would page on exactly those cards.
+      work: workAgeById?.get(task.id) || null,
+      ...note,
+    },
+  };
+}
+
+/**
+ * Stalled and unknown-liveness cards belonging to one owner.
+ *
+ * This is what lets a lane be told which of ITS cards have stopped moving. It reuses
+ * projectCardStall, so the doorbell and the coordinator alert cannot disagree about
+ * whether a card is stalled - the same reason queue_age follows stalled_work's clock.
+ */
+export function stalledCardsForOwner(board, owner, { now = Date.now(), thresholds = {}, workAgeById = null } = {}) {
+  const limits = { ...DEFAULT_THRESHOLDS, ...thresholds };
+  const out = { stalled: [], unknown: [] };
+  for (const task of activeBoardTasks(board)) {
+    if ((task.owner || "") !== owner) continue;
+    const projected = projectCardStall(task, now, limits, workAgeById);
+    if (projected.kind === "stalled") out.stalled.push(projected.stalled);
+    if (projected.kind === "unknown") out.unknown.push(projected.unknown);
+  }
+  return out;
+}
+
 export function activeBoardTasks(board) {
   const out = [];
   for (const [columnName, columnTasks] of Object.entries(board?.columns || {})) {
@@ -278,8 +356,8 @@ export function buildCoordinatorMetrics({
   const unattributedLiveness = [];
   const livenessLease = [];
   for (const task of activeCards) {
-    const liveness = cardLivenessState(task, now, limits.stalledWorkMs);
-    const note = noteSummary(task, now);
+    const projected = projectCardStall(task, now, limits, workAgeById);
+    const liveness = projected.liveness;
     // The lease is reported, never alerted on. Alerting on it would recreate the
     // loop this change exists to remove: the remedy for "your lease expired" is to
     // renew the lease, so the alert would return one window later by construction.
@@ -291,51 +369,15 @@ export function buildCoordinatorMetrics({
       by: liveness.by,
       lastActivityAt: liveness.at === null ? null : new Date(liveness.at).toISOString(),
     });
-    if (liveness.state === LIVENESS_STATES.UNKNOWN) {
+    if (projected.kind === "unknown") {
       // Reported, never alerted: visible to a reader who asks, silent in the list.
-      unattributedLiveness.push({
-        id: task.id,
-        title: task.title,
-        owner: task.owner || null,
-        // The stage is carried so a reader can actually FIND the card. The count was
-        // reported for nine alerts with no id and no stage, which is what made two
-        // real backlog cards look like a constant in the alerting code: nobody could
-        // locate them without re-deriving the active-column set by hand.
-        stage: task.stage || task.status || null,
-        liveness: liveness.state,
-        via: liveness.via,
-        lastActivityAt: liveness.at === null ? null : new Date(liveness.at).toISOString(),
-        ...note,
-      });
+      // The stage is carried so a reader can actually FIND the card - a count with no
+      // id and no stage is what made two real backlog cards look like a constant.
+      unattributedLiveness.push(projected.unknown);
       continue;
     }
-    const progressAt = cardProgressClock(task);
-    const progressAgeMs = progressAt === null ? null : Math.max(0, now - progressAt);
-    if (progressAgeMs !== null && progressAgeMs > limits.stalledWorkMs) {      // `reason` is projected here because the coordinator prompt reads
-      // `card.reason`; omitting it made every prompted card print
-      // reason=unspecified even when the card carried a block reason, which is a
-      // read failure rather than a missing value. The board writes
-      // `block_reason`, so both spellings are accepted.
-      stalledCards.push({
-        id: task.id,
-        title: task.title,
-        owner: task.owner || null,
-        reason: task.block_reason || task.reason || null,
-        ageMs: progressAgeMs,
-        lastActivityAt: new Date(progressAt).toISOString(),
-        heartbeatAt: timestamp(task?.last_heartbeat_at) === null ? null : new Date(timestamp(task.last_heartbeat_at)).toISOString(),
-        heartbeatAgeMs: ageMs(task?.last_heartbeat_at, now),
-        heartbeatBy: task?.last_heartbeat_by || null,
-        heartbeatByNonOwner: Boolean(task?.last_heartbeat_by && task.owner && task.last_heartbeat_by !== task.owner),
-        liveness: liveness.state,
-        livenessBy: liveness.by,
-        livenessVia: liveness.via,
-        // Report only. There is no work-age alert and no work-age threshold: a card
-        // whose implementation is finished and is waiting on QA or a reviewer has no
-        // new commits, so any alert here would page on exactly those cards.
-        work: workAgeById?.get(task.id) || null,
-        ...note,
-      });
+    if (projected.kind === "stalled") {
+      stalledCards.push(projected.stalled);
     }
   }
   const blockedWork = [];

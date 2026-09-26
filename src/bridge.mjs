@@ -12,7 +12,7 @@ import {
   execCmd,
 } from "./config.mjs";
 import { listBacklogTasks, getAgentTaskStats, loadBoard } from "./board.mjs";
-import { buildCoordinatorMetrics } from "./metrics.mjs";
+import { buildCoordinatorMetrics, stalledCardsForOwner } from "./metrics.mjs";
 import { loadLocalTemplate, renderTemplate } from "./templates.mjs";
 import { isSafeMailIdentifier, listMaildirMessageFiles, readMaildirMessageFile, writeBoundedFileAtomic } from "./protocol.mjs";
 
@@ -486,6 +486,12 @@ function normalizeDoorbellStats(taskStatsOrBacklog) {
     done: safeCount(raw.done),
   };
   stats.total = safeCount(raw.total ?? Object.values(stats).reduce((sum, value) => sum + value, 0));
+  // Stalled cards are carried through as DATA, not recomputed here. The doorbell and the
+  // coordinator alert must agree about whether a card is stalled; a second copy of the
+  // clock is how queue_age and stalled_work came to disagree about one card at one
+  // instant, and that regression is not worth repeating for a prompt.
+  stats.stalledCards = Array.isArray(raw.stalledCards) ? raw.stalledCards : [];
+  stats.unknownLivenessCards = Array.isArray(raw.unknownLivenessCards) ? raw.unknownLivenessCards : [];
   return stats;
 }
 
@@ -511,14 +517,32 @@ function buildRequiredDoorbellActions(handle, context) {
   if (context.board.backlog > 0) {
     actions.push(`Run: herdr-amq task drain --me ${handle}; claim with herdr-amq task next --me ${handle}.`);
   }
-  if (context.board.doing > 0) {
+  // Only when a card of THIS agent's has actually stopped moving. This line used to
+  // fire for every in-progress card regardless of state, which taught agents to read
+  // "stalled" as boilerplate: the same sentence appeared for a card claimed thirty
+  // seconds ago and for one dead for an hour, so neither was actionable.
+  const stalled = context.board.stalledCards || [];
+  if (stalled.length > 0) {
+    const named = stalled.slice(0, 4).map((card) =>
+      `${card.id} ("${String(card.title || "").slice(0, 60)}", ${Math.round((card.ageMs || 0) / 60000)}m, clock=${card.livenessVia || "state"})`
+    ).join("; ");
+    const more = stalled.length > 4 ? ` and ${stalled.length - 4} more` : "";
+    actions.push(`STALLED: ${stalled.length} of your card(s) have not CHANGED STATE: ${named}${more}. Move the card - claim it, re-scope it, block it with a reason, or close it. This is measured on the card's own state clock, so a heartbeat will NOT clear it: \`herdr-amq task heartbeat <id> --me ${handle}\` declares you are present (a lease, not progress) and cannot move the number. Notes are narration, never liveness.`);
+  }
+  const unknownLiveness = context.board.unknownLivenessCards || [];
+  if (unknownLiveness.length > 0) {
+    // Reported, never treated as stalled: a clock that names no author is UNKNOWN, not
+    // live and not stale, and guessing either way would invent a fact about the owner.
+    actions.push(`${unknownLiveness.length} of your card(s) carry a liveness clock that names no author, so their liveness is UNKNOWN and they are counted as neither live nor stalled: ${unknownLiveness.map((c) => c.id).join(", ")}. Re-claim or heartbeat them to attribute the clock.`);
+  }
+  if (context.board.doing > 0 && stalled.length === 0) {
     // A heartbeat is still worth recording - it is the honest declaration that the
     // owner is present, and it is read as a lease - but it is no longer what the stall
     // detector ages. The detector reads the card's STATE clock, so the instruction
     // that told agents to heartbeat in order to clear the alert was a loop: obeying it
     // could not move the number. Telling agents to move the card is the remedy that
     // actually works, and the heartbeat is offered as what it is.
-    actions.push(`You own ${context.board.doing} in-progress card(s). A card is reported as stalled when it has not CHANGED STATE within the threshold, so a heartbeat will not clear it - move the card (claim, re-scope, block with a reason, or close). Record liveness with \`herdr-amq task heartbeat <id> --me ${handle}\` when you are still working: it is the honest declaration that you are present, and it is read as a lease, not as progress. Notes are narration, never liveness.`);
+    actions.push(`You own ${context.board.doing} in-progress card(s), none currently stalled. Record liveness with \`herdr-amq task heartbeat <id> --me ${handle}\` when you are still working: it is the honest declaration that you are present, and it is read as a lease, not as progress. Notes are narration, never liveness.`);
   }
   if (context.mail.count > 0) {
     actions.push("Reply only when a message explicitly requests action or asks a question; do not send an acknowledgement-only reply. After replying, continue the assigned work.");
@@ -670,6 +694,9 @@ export function runDoorbellPass({
   let doorbelledTasksCount = 0;
   const results = [];
 
+  // Loaded once for the whole pass: the doorbell needs per-card stall state, and
+  // re-reading the bus per agent would be a board read per lane on every tick.
+  const doorbellBoard = loadBoard(repoRoot, amqRoot);
   for (const handle of agentList) {
     if (typeof handle !== "string" || !/^[a-z0-9_-]{1,128}$/.test(handle)) {
       results.push({ handle: String(handle), status: "invalid", count: 0, tasksCount: 0, action: "invalid_handle" });
@@ -698,6 +725,12 @@ export function runDoorbellPass({
 
     const taskStats = getAgentTaskStats(repoRoot, amqRoot, handle);
     taskStats.backlog = undeliveredTasks.length > 0 ? undeliveredTasks.length : backlogTasks.length;
+    // Real stalled cards for THIS owner, from the same projection the coordinator alert
+    // uses, so the lane is told which of its own cards stopped moving rather than being
+    // handed a generic sentence about the concept.
+    const ownerStall = stalledCardsForOwner(doorbellBoard, handle);
+    taskStats.stalledCards = ownerStall.stalled;
+    taskStats.unknownLivenessCards = ownerStall.unknown;
 
     if (status === "idle" || status === "done") {
       const text = buildDoorbellPrompt(handle, undeliveredMsgs, taskStats, doorbellTemplate?.source || null);

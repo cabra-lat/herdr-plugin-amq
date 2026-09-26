@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { addBoardTask, appendBoardTaskNote, loadBoard, updateBoardTask } from "../src/board.mjs";
+import { addBoardTask, appendBoardTaskNote, loadBoard, updateBoardTask, getBoardTask } from "../src/board.mjs";
 import { buildCoordinatorMetrics } from "../src/metrics.mjs";
 import { runDoorbellPass, runManualCoordinatorDoorbell, sanitizeDeliveredState } from "../src/bridge.mjs";
 import { sendMaildirMessage } from "../src/protocol.mjs";
@@ -400,10 +400,59 @@ test("an owner with in-progress cards is told to MOVE the card, not to heartbeat
     assert.match(line, /herdr-amq task heartbeat <id> --me worker/);
     assert.match(line, /Notes are narration, never liveness/);
 
-    // And it must NOT tell them a heartbeat clears the alert, because it does not.
-    assert.match(line, /heartbeat will not clear it/);
+    // This card was claimed seconds ago and has NOT stalled, so the prompt says so. The
+    // stall wording used to appear for every in-progress card, which is what trained
+    // agents to read "stalled" as boilerplate: the same sentence for a card thirty
+    // seconds old and for one dead an hour, so neither was actionable.
+    assert.match(line, /none currently stalled/i);
+    assert.doesNotMatch(prompts[0].text, /STALLED:/,
+      "a fresh card must not be announced as stalled");
     assert.doesNotMatch(line, /The stall detector reads that clock/,
       "the prompt must not claim the detector reads the heartbeat clock; it reads the state clock");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an owner with a genuinely stalled card is told WHICH card, and to move it", () => {
+  const { root, amqRoot } = makeFixture();
+  try {
+    const task = addBoardTask(root, amqRoot, { title: "Work that stopped", owner: "worker", description: "Claimed and then abandoned." }, { notify: false });
+    assert.ok(task.ok);
+    updateBoardTask(root, amqRoot, task.task.id, { status: "in_progress", owner: "worker" }, { notify: false });
+    // Backdate the card's state clock past the stall threshold. Same clock the alert
+    // ages, so the prompt and the alert cannot disagree.
+    const cardFile = getBoardTask(root, amqRoot, task.task.id).filePath;
+    // The progress clock is max(updated, created), so BOTH must be backdated or the
+    // fresh `created` keeps the card looking brand new.
+    const old45 = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+    const raw = fs.readFileSync(cardFile, "utf8")
+      .replace(/^updated: .*$/m, `updated: ${old45}`)
+      .replace(/^created: .*$/m, `created: ${old45}`)
+      .replace(/^last_heartbeat_at: .*$/m, `last_heartbeat_at: ${old45}`);
+    fs.writeFileSync(cardFile, raw, "utf8");
+    sendMaildirMessage(amqRoot, { from: "coordinator", to: ["worker"], subject: "Check in", body: "Status please." });
+
+    const prompts = [];
+    runDoorbellPass({
+      amqRoot,
+      handles: ["worker"],
+      state: { delivered: {}, deliveredTasks: {} },
+      getStatus: () => "idle",
+      prompt: (handle, text) => { prompts.push({ handle, text }); return true; },
+      allowPrompt: true,
+      persistState: true,
+    });
+
+    assert.equal(prompts.length, 1);
+    const text = prompts[0].text;
+    assert.match(text, /STALLED:/, "a genuinely stalled card must be announced");
+    // A count with no id is unfalsifiable: the agent cannot act on "1 of your cards".
+    assert.ok(text.includes(task.task.id), `the prompt must name the card: ${text}`);
+    assert.match(text, /Move the card/i, "and say what to do about it");
+    assert.match(text, /heartbeat will NOT clear it/i,
+      "heartbeat is still declared a lease, not a remedy");
+    assert.match(text, /herdr-amq task heartbeat <id> --me worker/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
