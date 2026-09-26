@@ -427,6 +427,22 @@ and "built something just now" must not look alike.
 Neither could be found by a fixture with one synthetic repository, which is the argument for
 running new resolution code against real data before believing it.
 
+**Two more, from the deployed payload.**
+
+3. `buildCoordinatorMetrics` defaults `now` to `Date.now()` — a **number**. `buildWorkAge` handled
+   only a `Date` and a string, so `Date.parse(number)` was `NaN` and every `ageMs` serialised as
+   `null`. The live board showed `latestAt` correctly with `ageMs: null` beside it, which is the
+   shape of a bug that reads like missing data. Every fixture passed a `Date`, which is exactly how
+   it stayed hidden.
+4. Citations were read from notes only. Measured on the live board, cards carried 6, 2 and 1 cited
+   commits in their **description** and **zero** in their notes — so the scanner reported "no
+   claims" on precisely the cards doing the most work, the worst direction for this signal to fail
+   in.
+
+Each break below moves exactly one thing. The first draft of the numeric-`now` test reused the
+`description` field, so the notes-only break also broke it: two breaks, one variable. The fixture
+was corrected to use `proof` before the numbers were believed.
+
 | break | result |
 | --- | --- |
 | none (control) | 17 pass, 0 fail |
@@ -434,6 +450,8 @@ running new resolution code against real data before believing it.
 | cache keyed by the full hash only | 16 pass, **1 fail** |
 | accept pure digits as SHAs | 14 pass, **3 fail** |
 | make work-age alerting-capable | 14 pass, **3 fail** |
+| remove the numeric-`now` handling (age becomes NaN) | 18 pass, **2 fail** |
+| scan notes only, dropping the description | 19 pass, **1 fail** |
 
 Pure digits are excluded on purpose: 7+ digit decimals are hex-shaped, and without the rule every
 run id in a note reads as a commit. Run ids are counted as claims and reported **undated**, because
