@@ -22,6 +22,16 @@ function getPidFile() {
   return path.join(getStateDir(), "bridge.pid");
 }
 
+/**
+ * The singleton lock file. The daemon holds an exclusive `flock` on it for its
+ * whole lifetime, so the kernel releases it even if the daemon is SIGKILLed and
+ * it can never go stale. Its contents are the pid of the process holding it,
+ * which makes the lock holder discoverable even when the pid file is lost.
+ */
+function getLockFile() {
+  return path.join(getStateDir(), "bridge.lock");
+}
+
 function getStateFile() {
   return path.join(getStateDir(), "bridge-state.json");
 }
@@ -63,6 +73,58 @@ export function isDaemonRunning() {
   }
 }
 
+/**
+ * The pid recorded in the singleton lock file, when that process is still alive.
+ * The lock file is the authority; the pid file is only a registration that a
+ * superseded daemon's cleanup could previously delete.
+ */
+export function getLockHolder() {
+  const lockFile = getLockFile();
+  if (!fs.existsSync(lockFile)) return null;
+  try {
+    const pid = parseInt(fs.readFileSync(lockFile, "utf8").trim(), 10);
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Describe a daemon that holds the singleton lock but is not the registered one.
+ * This is the state that used to be invisible: an unkillable-by-CLI duplicate
+ * quietly overwriting the delivery map of the daemon that was registered.
+ */
+export function getUnregisteredDaemon() {
+  const holder = getLockHolder();
+  if (!holder) return null;
+  const registered = isDaemonRunning();
+  return registered === holder ? null : { lockHolder: holder, registeredPid: registered };
+}
+
+/**
+ * Remove this process's daemon registration, and only this process's.
+ *
+ * An unconditional unlink here is what let a superseded daemon's cleanup delete
+ * the LIVE daemon's pid file; the next `herdr-amq start` then spawned a second
+ * daemon that nothing could stop. The lock file is truncated rather than removed
+ * because flock is held on the inode.
+ */
+export function clearOwnedDaemonRegistration(pid = process.pid) {
+  let pidFileCleared = false;
+  let lockFileCleared = false;
+  try {
+    const current = parseInt(fs.readFileSync(getPidFile(), "utf8").trim(), 10);
+    if (current === pid) { fs.unlinkSync(getPidFile()); pidFileCleared = true; }
+  } catch {}
+  try {
+    const current = parseInt(fs.readFileSync(getLockFile(), "utf8").trim(), 10);
+    if (current === pid) { fs.writeFileSync(getLockFile(), "", "utf8"); lockFileCleared = true; }
+  } catch {}
+  return { pidFileCleared, lockFileCleared };
+}
+
 export function stopDaemon() {
   const pid = isDaemonRunning();
   if (!pid) {
@@ -89,8 +151,19 @@ export function startDaemonBackground() {
     return { ok: true, pid: existingPid, alreadyRunning: true };
   }
 
+  // The pid file is only a registration and any daemon can delete it, so it is
+  // not sufficient to prevent a second daemon. Refuse when the singleton lock is
+  // already held by a live process, and say which process holds it.
+  const holder = getLockHolder();
+  if (holder) {
+    return { ok: false, pid: holder, error: `another bridge daemon holds the singleton lock (PID ${holder})` };
+  }
+
   const scriptPath = path.resolve(import.meta.dirname, "../bin/herdr-amq.mjs");
-  const child = spawn(process.execPath, [scriptPath, "bridge-daemon"], {
+  // Launch under flock: the kernel drops the lock when the process exits, so the
+  // lock cannot go stale, and a refused acquisition exits non-zero instead of
+  // running a second daemon.
+  const child = spawn("flock", ["-n", getLockFile(), process.execPath, scriptPath, "bridge-daemon"], {
     detached: true,
     stdio: "ignore",
     env: { ...process.env },
@@ -99,6 +172,22 @@ export function startDaemonBackground() {
   child.unref();
 
   const pid = child.pid;
+  if (!pid || typeof pid !== "number") {
+    return { ok: false, error: "failed to spawn bridge daemon" };
+  }
+  // A refused flock exits almost immediately. Without this short wait, "Started"
+  // would be printed for a daemon that is already gone — a success line for
+  // nothing. Only the liveness of the child is checked here.
+  const deadline = Date.now() + 400;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return { ok: false, pid, error: "bridge daemon exited immediately (singleton lock already held?)" };
+    }
+    break;
+  }
+
   fs.writeFileSync(getPidFile(), String(pid), "utf8");
   return { ok: true, pid, alreadyRunning: false };
 }
@@ -761,11 +850,14 @@ export function startDaemonLoop({ interval = 3000, dryRun = false } = {}) {
   }
 
   const pid = process.pid;
+  // Record ownership so `status` can find this daemon even if the pid file is
+  // lost, and so a later `stop` knows which process to signal.
+  try { fs.writeFileSync(getLockFile(), String(pid), "utf8"); } catch {}
   fs.writeFileSync(getPidFile(), String(pid), "utf8");
 
   const cleanup = () => {
     console.log(`[bridge] Stopping bridge daemon (PID ${pid})...`);
-    try { fs.unlinkSync(getPidFile()); } catch {}
+    clearOwnedDaemonRegistration(pid);
     process.exit(0);
   };
 

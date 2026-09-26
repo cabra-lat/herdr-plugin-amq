@@ -10,6 +10,7 @@ import {
   getPluginVersion,
 } from "./config.mjs";
 import {
+  getUnregisteredDaemon,
   isDaemonRunning,
   startDaemonBackground,
   stopDaemon,
@@ -50,6 +51,14 @@ export function handleStatus() {
   console.log("──────────────────────────────────────────────");
   console.log(`Version:   v${version}`);
   console.log(`Daemon:    ${pid ? `\x1b[32m● Running\x1b[0m (PID ${pid})` : "\x1b[33m○ Stopped\x1b[0m"}`);
+  // A daemon holding the singleton lock without being the registered one is the
+  // state that used to be invisible: a duplicate overwriting the delivery map of
+  // the registered daemon, unreachable by `herdr-amq stop`.
+  const unregistered = getUnregisteredDaemon();
+  if (unregistered) {
+    console.log(`\x1b[31m⚠ WARNING: a bridge daemon holds the singleton lock (PID ${unregistered.lockHolder}) but the registered daemon is ${unregistered.registeredPid ?? "none"}\x1b[0m`);
+    console.log(`  Two daemons overwrite the same delivery state. Stop PID ${unregistered.lockHolder} before starting another.`);
+  }
   console.log(`AMQ Root:  ${amqRoot ? `\x1b[36m${amqRoot}\x1b[0m` : "\x1b[31mNot found\x1b[0m"}`);
   console.log(`State Dir: ${getStateDir()}`);
   console.log(`Config:    ${getConfigDir()}`);
@@ -95,7 +104,7 @@ export function handleStart() {
   } else if (res.ok) {
     console.log(`🚀 Started bridge daemon in background (PID ${res.pid}).`);
   } else {
-    console.error(`❌ Failed to start bridge daemon.`);
+    console.error(`❌ Failed to start bridge daemon: ${res.error || "unknown error"}`);
     process.exit(1);
   }
 }
