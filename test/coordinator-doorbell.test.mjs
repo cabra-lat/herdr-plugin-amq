@@ -423,13 +423,19 @@ test("an owner with a genuinely stalled card is told WHICH card, and to move it"
     // Backdate the card's state clock past the stall threshold. Same clock the alert
     // ages, so the prompt and the alert cannot disagree.
     const cardFile = getBoardTask(root, amqRoot, task.task.id).filePath;
-    // The progress clock is max(updated, created), so BOTH must be backdated or the
-    // fresh `created` keeps the card looking brand new.
+    // The progress clock is max(updated, created, and the transition stamps), so EVERY
+    // clock it reads must be backdated or the fresh ones keep the card looking new.
+    // When the transition stamps were added this test went red for exactly that reason
+    // - it controlled three of the four clocks, which is the same defect as a fixture
+    // narrower than the thing it polices.
     const old45 = new Date(Date.now() - 45 * 60 * 1000).toISOString();
     const raw = fs.readFileSync(cardFile, "utf8")
       .replace(/^updated: .*$/m, `updated: ${old45}`)
       .replace(/^created: .*$/m, `created: ${old45}`)
-      .replace(/^last_heartbeat_at: .*$/m, `last_heartbeat_at: ${old45}`);
+      .replace(/^last_heartbeat_at: .*$/m, `last_heartbeat_at: ${old45}`)
+      .replace(/^status_at: .*$/m, `status_at: ${old45}`)
+      .replace(/^owner_at: .*$/m, `owner_at: ${old45}`)
+      .replace(/^next_actor_at: .*$/m, `next_actor_at: ${old45}`);
     fs.writeFileSync(cardFile, raw, "utf8");
     sendMaildirMessage(amqRoot, { from: "coordinator", to: ["worker"], subject: "Check in", body: "Status please." });
 

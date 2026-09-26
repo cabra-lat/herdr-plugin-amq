@@ -116,6 +116,11 @@ export function serializeTaskFile(task) {
     `updated: ${JSON.stringify(task.updated || now)}`,
     `claimed_at: ${JSON.stringify(task.claimed_at || null)}`,
     `blocked_at: ${JSON.stringify(task.blocked_at || null)}`,
+    // Transition stamps: what the stall metric reads as progress. Persisted explicitly
+    // because the serializer writes a fixed key list.
+    `status_at: ${JSON.stringify(task.status_at || task.updated || now)}`,
+    `owner_at: ${JSON.stringify(task.owner_at || task.updated || now)}`,
+    `next_actor_at: ${JSON.stringify(task.next_actor_at || task.updated || now)}`,
     `done_at: ${JSON.stringify(task.done_at || null)}`,
     `last_heartbeat_at: ${JSON.stringify(task.last_heartbeat_at || null)}`,
     `last_heartbeat_by: ${JSON.stringify(task.last_heartbeat_by || null)}`,
@@ -198,6 +203,12 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
       updated: meta.updated || null,
       claimed_at: meta.claimed_at || null,
       blocked_at: meta.blocked_at || null,
+      // Transition stamps must be read back, or they are written and then silently
+      // dropped on the next parse - the card would look unstamped and the progress
+      // clock would fall back to `updated`, restoring the defect invisibly.
+      status_at: meta.status_at || null,
+      owner_at: meta.owner_at || null,
+      next_actor_at: meta.next_actor_at || null,
       done_at: meta.done_at || null,
       last_heartbeat_at: meta.last_heartbeat_at || null,
       last_heartbeat_by: meta.last_heartbeat_by || null,
@@ -696,6 +707,12 @@ export function addBoardTask(
     depends_on: Array.isArray(depends_on) ? depends_on : [],
     // Never invent a next actor for a blocked card: absent beats confidently wrong.
     next_actor: next_actor === undefined ? (cleanStatus === "blocked" ? null : cleanOwner) : next_actor,
+    // Stamped at creation. If these are left unset, the FIRST write to the card sets
+    // them - so a reason edit on a fresh card would stamp it as progress, which is the
+    // exact defect being removed, just relocated to the first write.
+    status_at: now,
+    owner_at: now,
+    next_actor_at: now,
     thread: `agboard/${id}`,
     source: "bus",
   };
@@ -910,6 +927,16 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
         targetStatus === "done" ? null
           : (targetStatus === "blocked" ? (existingTask.next_actor ?? null) : owner)
       )),
+    // Transition stamps. These are what the stall metric reads as PROGRESS, as distinct
+    // from `updated`, which only records that something was written. Without them a
+    // reason edit and a status change are the same event, so the alert can be silenced
+    // by writing prose on the card - which pays the observer to touch the thing being
+    // measured.
+    status_at: targetStatus !== existingTask.status ? now : (existingTask.status_at || now),
+    owner_at: owner !== existingTask.owner ? now : (existingTask.owner_at || now),
+    next_actor_at: Object.hasOwn(updates, "next_actor") && updates.next_actor !== existingTask.next_actor
+      ? now
+      : (existingTask.next_actor_at || now),
     source: "bus",
   };
 

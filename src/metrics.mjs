@@ -194,7 +194,22 @@ function cardLivenessState(task, now, stalledWorkMs) {
 // about whether anyone was working. An assertion cannot be both the remedy and the
 // trigger. Stall now means "this card has not moved", whose remedy is moving it, and
 // the liveness lease is reported separately in the payload rather than alerted on.
-function cardProgressClock(task) {
+// Fields whose change means the card actually MOVED. A write that touches only
+// bookkeeping - a reason, a note, a proof - is not progress, and advancing the progress
+// clock on one makes the stall alert's membership a function of prose.
+//
+// The incentive this removes: if writing to a card silences the alert, the cheapest way
+// to quiet it is to write to the card, and the observer starts editing instead of
+// working. That is a counter the observer can move by touching the thing measured.
+export const TRANSITION_FIELDS = Object.freeze(["status", "owner", "next_actor"]);
+
+// `updated` is a general write timestamp and is read as a progress clock, so the two
+// meanings have to be separated. cardProgressClock prefers a real transition when the
+// card records one, and only falls back to `updated` for cards that predate this.
+export function cardProgressClock(task) {
+  const transitions = (TRANSITION_FIELDS || []).map((f) => timestamp(task?.[f === "next_actor" ? "next_actor_at" : `${f}_at`]));
+  const transitionAt = transitions.filter((v) => v !== null);
+  if (transitionAt.length > 0) return Math.max(...transitionAt);
   const updatedAt = timestamp(task?.updated);
   const createdAt = timestamp(task?.created);
   const candidates = [updatedAt, createdAt].filter((value) => value !== null);
