@@ -155,3 +155,46 @@ describe("blocked_oldest: an unowned card cannot speak for the alert", () => {
     assert.equal(m.unownedBlockedCount, 1, "and the unowned one is still reported");
   });
 });
+
+// The coordinator's proposed acceptance, adopted as written: ONE assertion over the whole
+// emitted alert. A change that silences the metric while a render still lies, or a render
+// that tells the truth while the metric still pages on the wrong card, is half a fix in
+// either direction - and that is exactly how the render/headline bug pair survived a
+// first fix. This one assertion covers the gate, the headline and the render at once, and
+// it fails if any of the three diverges from the others.
+describe("one assertion over the whole emitted alert", () => {
+  test("the alert names the OWNED card, quotes the OWNED age, and carries the OWNED severity", async () => {
+    const { buildCoordinatorAlertPrompt } = await import("../src/bridge.mjs");
+    const t = Date.parse("2026-09-26T19:00:00.000Z");
+    const mk = (id, owner, next, age) => ({
+      id, title: id, owner, status: "blocked", next_actor: next,
+      created: new Date(t - age).toISOString(),
+      updated: new Date(t - age).toISOString(),
+      blocked_at: new Date(t - age).toISOString(),
+    });
+    const OWNED_MS = 14 * 60 * 1000;   // past warn (10m), short of critical (30m)
+    const UNOWNED_MS = 50 * 60 * 1000; // past critical, and must change nothing
+    const m = buildCoordinatorMetrics({
+      handles: ["qa", "user"],
+      agentStatuses: { qa: "working", user: "idle" },
+      board: { columns: { backlog: [], doing: [],
+        blocked: [mk("owned-card", "qa", "qa", OWNED_MS), mk("unowned-card", "user", null, UNOWNED_MS)],
+        done: [] } },
+      now: t,
+      thresholds: { blockedWarnMs: 10 * 60 * 1000, blockedCriticalMs: 30 * 60 * 1000 },
+    });
+
+    const a = m.alerts.find((x) => x.id === "blocked_oldest");
+    assert.ok(a, "the owned card is past the warn threshold, so this must alert");
+    assert.equal(a.oldestCardId, "owned-card", "gate+headline: names the owned card");
+    assert.equal(a.oldestAgeMs, OWNED_MS, "gate+headline: quotes the owned age");
+    assert.equal(a.severity, "warning", "gate+headline: severity is the OWNED severity, not the unowned one");
+    assert.deepEqual(a.cards.map((c) => c.id), ["owned-card"], "gate: only the owned card is paged");
+
+    const line = buildCoordinatorAlertPrompt(a).split("\n").find((l) => l.includes("- owned-card:"));
+    assert.ok(line, "render: the paged card must appear in the triage snapshot");
+    assert.match(line, /next-actor=qa/, "render: agrees with the next actor that made it paged");
+    assert.ok(!/unowned-card/.test(line), "render: the unowned card must not appear in the page at all");
+    assert.ok(!/next-actor=user/.test(line), "render: must not invent an actor from the owner");
+  });
+});
