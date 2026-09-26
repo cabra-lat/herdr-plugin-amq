@@ -13,6 +13,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { sendAmqMessage } from "./store.mjs";
+import { getStateDir } from "./config.mjs";
+import { recordCardWrite } from "./card-writes.mjs";
 
 export function findStatusFile(repoRoot) {
   if (!repoRoot) return null;
@@ -950,6 +952,19 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   // the hole beside it - found by a live probe whose empty PATCH reset a real card's
   // `updated` to the probe's own timestamp.
   updatedTask.updated = cardStateChanged(existingTask, updatedTask) ? now : (existingTask.updated || now);
+
+  // Record the write as an EVENT. A card keeps only its latest `updated`, so the history
+  // of how it moves is destroyed on the first write - which is why the interval the
+  // stall threshold depends on has never been measurable. This is the instrument that
+  // makes it measurable; without it any threshold is read off a proxy.
+  try {
+    recordCardWrite(getStateDir(), taskId, existingTask, updatedTask, {
+      actor: String(updates.from || opts.from || "") || null,
+      at: now,
+    });
+  } catch {
+    // Never let instrumentation fail a board write.
+  }
 
   fs.writeFileSync(newFilePath, serializeTaskFile(updatedTask), "utf8");
   updatedTask.filePath = newFilePath;
