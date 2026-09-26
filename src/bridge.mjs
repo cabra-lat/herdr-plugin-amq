@@ -623,7 +623,7 @@ function formatAge(value) {
   return seconds < 60 ? `${seconds}s` : `${Math.round(seconds / 60)}m`;
 }
 
-function buildCoordinatorAlertPrompt(alert) {
+export function buildCoordinatorAlertPrompt(alert) {
   const lines = [
     "Coordinator review required: inspect the alert and take ownership of the next decision.",
     `Alert: ${alert.id} — ${alert.message}`,
@@ -636,7 +636,14 @@ function buildCoordinatorAlertPrompt(alert) {
         `- ${card.id}:`,
         `age=${formatAge(card.ageMs)}`,
         `owner=${card.owner || "unknown"}`,
-        `next-actor=${card.nextActor || card.owner || "unassigned"}`,
+        // DO NOT fall back to `owner` here. Owner and next actor are different facts, and
+        // rendering the owner as the next actor asserts something the state does not
+        // contain: a card with next_actor null printed as `next-actor=player-rig` read as
+        // assigned to a lane that had not been assigned anything. It also hid the
+        // next_actor split entirely - the whole point of that rule is that an unowned
+        // blocked card has no actor, and the render was manufacturing one. The owner is
+        // already printed on the line above, so nothing is lost by telling the truth here.
+        `next-actor=${card.nextActor || "none (blocked on nobody)"}`,
         `dependency=${JSON.stringify(card.dependency || null)}`,
         `reason=${card.reason || "unspecified"}`,
         // Note recency is progress evidence, never liveness: notes do not move `updated`.
