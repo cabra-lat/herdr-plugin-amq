@@ -335,8 +335,34 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
     "create", "assign", "claim", "done", "complete", "unblock",
     "block", "heartbeat", "reassign", "comment", "note",
   ]);
-  if (!me && TASK_WRITE_SUBCOMMANDS.has(String(subcommand ?? "").trim())) {
-    console.error(`❌ task ${subcommand} needs an actor: pass --me <handle> or set AM_ME.`);
+  // Subcommands that take a task id as their first positional, and report a missing one
+  // themselves. The actor guard DEFERS to that check: an earlier version fired first and
+  // turned "task assign" with no id into "needs an actor", which masks the more useful
+  // diagnostic. A caller who omitted the id must be told about the id.
+  const TASK_ID_SUBCOMMANDS = new Set([
+    "claim", "done", "complete", "unblock", "block", "reassign", "comment", "note",
+  ]);
+  // The same rule applies to a subcommand's OWN required flags, and the first version of this
+  // guard got that wrong too: it deferred to the missing-task-id diagnostic but not to the
+  // missing-flag one, so `task unblock <id>` with no --reason and no --me reported "needs an
+  // actor" and masked "--reason is required". A caller who omitted the reason must be told
+  // about the reason. Keys are flag names as parseTaskArgs returns them, without the dashes.
+  const TASK_REQUIRED_FLAGS = {
+    unblock: ["stage", "reason"],
+    block: ["reason"],
+    reassign: ["to"],
+  };
+  const sub = String(subcommand ?? "").trim();
+  const missingRequiredFlag = (TASK_REQUIRED_FLAGS[sub] ?? []).some((f) => !flags[f]);
+  const argumentErrorWins =
+    (TASK_ID_SUBCOMMANDS.has(sub) && !positional[0]) || missingRequiredFlag;
+  if (!me && TASK_WRITE_SUBCOMMANDS.has(sub) && !argumentErrorWins) {
+    // Name the variable THIS command actually reads. `task` reads AMQ_ME and `mail send`
+    // reads AM_ME; an error message that names the wrong one sends the caller to fix an
+    // export that changes nothing, and it is the same absent-key class as the rest of this:
+    // a message that looks authoritative and does not describe the thing it is about.
+    const actorVar = "AMQ_ME";
+    console.error(`❌ task ${subcommand} needs an actor: pass --me <handle> or set ${actorVar}.`);
     console.error("   Refusing rather than recording a default lane: a wrong actor here is");
     console.error("   written into the card and read back by every other agent as fact.");
     process.exitCode = 1;
@@ -917,8 +943,12 @@ export function handleMailCommand(subcmd, args = []) {
     console.log(`\n✉️  \x1b[1mAMQ Maildir Native Engine CLI\x1b[0m`);
     console.log("────────────────────────────────────────────────────────────────────────────");
     console.log("Usage: herdr-amq mail <command> [options]");
-    console.log("       herdr-amq send --to <h> --subject <s> --body <b> [--attach <p>]");
-    console.log("       herdr-amq reply --id <id> --body <b> [--attach <p>]");
+    // The usage lines carry the SAME `[--attach <p>]...` as the command list below. They were
+    // left singular while the command list was corrected, so a reader who read only the top of
+    // the help still learned that repeats are dropped. A flag is documented in every place it
+    // appears or it is documented wrongly somewhere.
+    console.log("       herdr-amq send --to <h> --subject <s> --body <b> [--attach <p>]...");
+    console.log("       herdr-amq reply --id <id> --body <b> [--attach <p>]...");
     console.log("       herdr-amq drain --me <handle> [--include-body]");
     console.log("\nCommands:");
     // --attach REPEATS. The parser accumulates repeated flags and also accepts a

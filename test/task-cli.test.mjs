@@ -26,7 +26,7 @@ function makeFixture() {
 function run(root, args) {
   return spawnSync(process.execPath, [BIN, ...args], {
     cwd: root,
-    env: { ...process.env, AM_ROOT: path.join(root, ".agent-mail"), HERDR_DISABLE_PROMPT: "1" },
+    env: { ...process.env, AMQ_ME: "qa", AM_ROOT: path.join(root, ".agent-mail"), HERDR_DISABLE_PROMPT: "1" },
     encoding: "utf8",
   });
 }

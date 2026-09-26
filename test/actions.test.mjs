@@ -23,7 +23,7 @@ describe("actions.mjs CLI integration", () => {
   // needs to read what a drain printed has to run the real binary.
   const runMail = (...args) => {
     const r = spawnSync(process.execPath, [MAIL_BIN, "mail", ...args], {
-      cwd: process.cwd(), encoding: "utf8", env: process.env,
+      cwd: process.cwd(), encoding: "utf8", env: { ...process.env, AMQ_ME: "qa" },
     });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout;
@@ -134,13 +134,13 @@ describe("actions.mjs CLI integration", () => {
       assert.ok(fs.existsSync(path.join(tempRoot, ".opencode", "bus", "doing", "test-card-1.md")));
 
       // Block
-      handleTaskCommand("block", ["test-card-1", "--reason", "Waiting on review"]);
+      handleTaskCommand("block", ["test-card-1", "--reason", "Waiting on review", "--me", "alice"]);
       assert.ok(fs.existsSync(path.join(tempRoot, ".opencode", "bus", "blocked", "test-card-1.md")));
 
       // Done
       // --reason is required here because the card is coming OUT of blocked: every edge
       // touching blocked is narrated, and the core guard refuses the exit without it.
-      handleTaskCommand("done", ["test-card-1", "--proof", "All tests passed", "--reason", "review landed"]);
+      handleTaskCommand("done", ["test-card-1", "--proof", "All tests passed", "--reason", "review landed", "--me", "alice"]);
       assert.ok(fs.existsSync(path.join(tempRoot, ".opencode", "bus", "done", "test-card-1.md")));
     } finally {
       console.log = origLog;
