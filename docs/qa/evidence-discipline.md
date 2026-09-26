@@ -74,3 +74,53 @@ Everything else in the suite. Five invariants were sampled here and two of them 
 unproven, which is the best available estimate of what an unsampled test is worth: not zero, but
 not the number a green suggests. The list that remains is the honest state of the rest of the
 suite, and it is the thing that can be worked down.
+
+## Bridge daemon singleton (commit e3df4b1)
+
+**Production incident, 2026-09-25.** Two bridge daemons ran for hours. Both were alive, both
+`cwd` in the project root, both running the same script. Measured, not inferred:
+
+- `write_bytes` over a 30 s window: the older, **unregistered** process climbed by 40,960; the
+  registered one did not move. So the daemon nobody could stop was the one writing delivery
+  state, and the one `herdr-amq stop` could reach was not.
+- `/proc/<pid>/cmdline` was used for enumeration. A `pgrep -af amq-herdr-bridge` pattern matches
+  nothing, because that is not the argv; a shell running a command whose text contains
+  `herdr-amq.mjs bridge-daemon` matches, which is how a *shell* got counted as a second daemon
+  during this investigation.
+
+**Mechanism, from the source.** `startDaemonLoop`'s cleanup handler unlinked the pid file
+unconditionally, so stopping a superseded daemon deleted the *live* daemon's registration. With
+the pid file gone, `startDaemonBackground`'s only guard (`isDaemonRunning()`) returned null and it
+spawned a second daemon. Nothing held a lock, and the second daemon could never be reached by
+`herdr-amq stop`. Killing a pid therefore fixes the symptom for one cycle and leaves the cause.
+
+**Reproduction** (production condition, not synthetic): delete `bridge.pid` while a daemon is
+alive, then `herdr-amq start`. Before the fix: two daemons. After: refused, exit 1,
+`another bridge daemon holds the singleton lock (PID …)`.
+
+**Fix.** The daemon runs under `flock -n` on `bridge.lock` for its whole lifetime, so the kernel
+releases the lock even on SIGKILL and it cannot go stale. Its contents are the holder's pid, so
+the daemon stays discoverable when the pid file is lost. Cleanup removes only registrations that
+still name its own pid, and truncates rather than unlinks the lock file, because flock is held on
+the inode. `herdr-amq start` waits 400 ms and verifies the child is alive, so a refused lock can
+never be reported as "Started". `herdr-amq status` prints a warning when the lock holder and the
+registered pid differ.
+
+| break | result |
+| --- | --- |
+| none (control) | 8 pass, 0 fail |
+| remove the lock-holder refusal (pid-file-only guard) | 7 pass, **1 fail** |
+| revert cleanup to an unconditional unlink | 7 pass, **1 fail** |
+| unlink the lock file instead of truncating it | 7 pass, **1 fail** |
+
+The first version of the incident test deleted the pid file itself and so never exercised
+`cleanup()`; it stayed green against a reverted cleanup. The ownership rule was then extracted
+into `clearOwnedDaemonRegistration()` and tested directly with a foreign pid, which is the only
+way to assert "a foreign cleanup leaves the live registration alone" while a singleton lock makes
+two daemons impossible to construct through the CLI.
+
+**Unresolved observation, recorded rather than diagnosed.** Across this restart the on-disk
+delivery map went from 68 entries (32 with `attempts > 1`) to 1 entry. Two daemons interleaving on
+one file is a plausible cause and the retry metric's own windowing defect is a separate matter;
+neither was investigated here, because the retry-trend diagnosis belongs to the coordinator and
+this document does not claim a fix for it.
