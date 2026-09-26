@@ -762,6 +762,13 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
 
   const owner = updates.owner ? canonicalizeOwner(updates.owner) : existingTask.owner;
   const enteringProgress = targetStatus === "in_progress" && existingTask.status !== "in_progress";
+  // A liveness clock is only ever written together with the actor that produced it.
+  // A clock with no author is a liveness claim no reader can discount, and the stall
+  // detector still honours it, so a heartbeat that cannot name its author must not
+  // silently reset the clock. If there is no actor to name, the clock stays unset.
+  const heartbeatActor = String(opts.from || updates.owner || existingTask.owner || "").trim();
+  const nextHeartbeatAt = enteringProgress ? now : (existingTask.last_heartbeat_at || null);
+  const nextHeartbeatBy = existingTask.last_heartbeat_by || (enteringProgress ? heartbeatActor || null : null);
   const updatedTask = {
     ...existingTask,
     ...updates,
@@ -775,7 +782,8 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     done_at: targetStatus === "done" ? (existingTask.done_at || now) : existingTask.done_at,
     // A claim is a liveness signal, an in-progress update is not: only a fresh
     // claim (or an explicit `task heartbeat`) sets the liveness clock.
-    last_heartbeat_at: enteringProgress ? now : (existingTask.last_heartbeat_at || now),
+    last_heartbeat_at: nextHeartbeatAt,
+    last_heartbeat_by: nextHeartbeatBy,
     claims: enteringProgress ? (Number(existingTask.claims) || 0) + 1 : (Number(existingTask.claims) || 0),
     blocked_ms: blockedMs,
     block_reason: updates.reason ?? opts.reason ?? existingTask.block_reason ?? null,
@@ -857,12 +865,22 @@ export function heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor, now } = {
   if (!existingTask) return { ok: false, error: "Task not found" };
   if (existingTask.status === "done") return { ok: false, error: "Task is done; a heartbeat cannot revive it" };
 
+  // The author is mandatory. A heartbeat is an accountable claim that the card is
+  // alive, and the whole reason the board carries an author is that a liveness
+  // signal from someone other than the worker must be visible as such. Guessing an
+  // author (falling back to the owner, or to the literal string "unknown") produced
+  // liveness the detector honoured and no reader could discount, so an unnamed
+  // heartbeat now fails loudly and moves nothing.
+  const heartbeatActor = String(actor ?? "").trim();
+  if (!heartbeatActor) {
+    return { ok: false, error: "a heartbeat must name its actor: pass --me <handle>" };
+  }
+
   const timestamp = now instanceof Date ? now.toISOString() : new Date().toISOString();
-  // The author is recorded so a heartbeat from anyone other than the owner is
-  // visible as such. The verb is deliberately not restricted: a coordinator
-  // legitimately needs to signal "I am actively working this", but that signal must
-  // not be indistinguishable from the owner's.
-  const updatedTask = { ...existingTask, last_heartbeat_at: timestamp, last_heartbeat_by: String(actor || existingTask.owner || "unknown") };
+  // The verb is deliberately not restricted: a coordinator legitimately needs to
+  // signal "I am actively working this", but that signal must not be
+  // indistinguishable from the owner's.
+  const updatedTask = { ...existingTask, last_heartbeat_at: timestamp, last_heartbeat_by: heartbeatActor };
 
   try {
     fs.writeFileSync(existingPath, serializeTaskFile(updatedTask), "utf8");
@@ -870,7 +888,7 @@ export function heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor, now } = {
     return { ok: false, error: `failed to write heartbeat: ${error.message}` };
   }
 
-  return { ok: true, taskId, actor: actor || null, last_heartbeat_at: timestamp, last_heartbeat_by: updatedTask.last_heartbeat_by, task: { ...updatedTask, filePath: existingPath } };
+  return { ok: true, taskId, actor: heartbeatActor, last_heartbeat_at: timestamp, last_heartbeat_by: updatedTask.last_heartbeat_by, task: { ...updatedTask, filePath: existingPath } };
 }
 
 /**

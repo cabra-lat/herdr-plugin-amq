@@ -248,3 +248,94 @@ test("a heartbeat by a non-owner is recorded as such", async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A liveness clock without an attributable author is a claim no reader can
+// discount, and the stall detector honours the clock regardless. These tests
+// were written after the finding that 128 of 138 live cards carried a
+// last_heartbeat_at with last_heartbeat_by: null, so the clock that makes a
+// card look alive had no accountable source.
+test("a first claim records BOTH the liveness clock and the actor who set it", () => {
+  const { root, amqRoot } = fixture();
+  try {
+    const created = addBoardTask(root, amqRoot, { title: "Attributed claim", owner: "spotter" }, { notify: false });
+    assert.equal(created.task.last_heartbeat_at, null);
+
+    const claimed = updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress", owner: "spotter" }, {
+      from: "spotter",
+      notify: false,
+      now: new Date("2026-09-24T11:00:00.000Z"),
+    });
+    assert.equal(claimed.ok, true);
+    assert.equal(claimed.task.last_heartbeat_at, "2026-09-24T11:00:00.000Z");
+    // The whole defect: this was null, so the detector reported "by=unknown".
+    assert.equal(claimed.task.last_heartbeat_by, "spotter");
+
+    // A coordinator claiming on someone's behalf records the coordinator, not the owner.
+    const other = addBoardTask(root, amqRoot, { title: "Claimed by proxy", owner: "range" }, { notify: false });
+    const proxied = updateBoardTask(root, amqRoot, other.task.id, { status: "in_progress", owner: "range" }, {
+      from: "coordinator",
+      notify: false,
+    });
+    assert.equal(proxied.task.last_heartbeat_by, "coordinator");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an ordinary in-progress update does not invent a liveness clock", () => {
+  const { root, amqRoot } = fixture();
+  try {
+    const created = addBoardTask(root, amqRoot, { title: "No invented liveness", owner: "qa" }, { notify: false });
+    const claimed = updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress", owner: "qa" }, { from: "qa", notify: false });
+
+    // A later in-progress update by a different handle must not restamp the clock,
+    // which would make the card look alive to whoever last edited it.
+    const later = updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress" }, {
+      from: "coordinator",
+      notify: false,
+      now: new Date("2026-09-24T12:00:00.000Z"),
+    });
+    assert.equal(later.task.last_heartbeat_at, claimed.task.last_heartbeat_at);
+    assert.equal(later.task.last_heartbeat_by, "qa");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a heartbeat with no actor is refused and moves nothing", () => {
+  const { root, amqRoot } = fixture();
+  try {
+    const created = addBoardTask(root, amqRoot, { title: "Unnamed heartbeat", owner: "qa" }, { notify: false });
+    const claimed = updateBoardTask(root, amqRoot, created.task.id, { status: "in_progress", owner: "qa" }, { from: "qa", notify: false });
+
+    for (const missing of [undefined, null, "", "   "]) {
+      const res = heartbeatBoardTask(root, amqRoot, created.task.id, { actor: missing });
+      assert.equal(res.ok, false, `actor ${JSON.stringify(missing)} must be refused`);
+      assert.match(res.error, /must name its actor/);
+    }
+
+    // Refused means untouched: the clock is still the claim's, and the author is still qa.
+    const cardPath = path.join(root, ".agent-mail", "bus", "doing", `${created.task.id}.md`);
+    assert.ok(fs.existsSync(cardPath), `expected the card in doing/, found ${cardPath}`);
+    const after = parseTaskFile(cardPath, "in_progress");
+    assert.equal(after.last_heartbeat_at, claimed.task.last_heartbeat_at);
+    assert.equal(after.last_heartbeat_by, "qa");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a heartbeat never records the literal string 'unknown' as its author", () => {
+  // "unknown" reads as a name to a human reader and is truthy, so it survives the
+  // metrics `last_heartbeat_by || null` projection and is displayed as an author.
+  const { root, amqRoot } = fixture();
+  try {
+    const created = addBoardTask(root, amqRoot, { title: "No unknown authors", owner: "" }, { notify: false });
+    const res = heartbeatBoardTask(root, amqRoot, created.task.id, { actor: "coordinator" });
+    assert.equal(res.ok, true);
+    assert.equal(res.last_heartbeat_by, "coordinator");
+    assert.notEqual(res.last_heartbeat_by, "unknown");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

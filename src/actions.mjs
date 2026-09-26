@@ -208,8 +208,7 @@ const TASK_FLAGS = {
   done: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
   complete: new Set(["id", "proof", "evidence", "notify", "me", "from", "help"]),
   block: new Set(["id", "reason", "desc", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
-  heartbeat: new Set(["id", "me", "from", "help"]),
-  reassign: new Set(["id", "to", "owner", "next-actor", "depends-on", "clear-depends-on", "notify", "me", "from", "help"]),
+  heartbeat: new Set(["id", "me", "from", "help"]),  reassign: new Set(["id", "to", "owner", "next-actor", "depends-on", "clear-depends-on", "notify", "me", "from", "help"]),
   show: new Set(["id", "me", "from", "help"]),
   drain: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
   next: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
@@ -530,12 +529,22 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
     case "heartbeat": {
       const taskId = positional[0] || flags.id;
       if (!taskId) {
-        console.error("❌ Task ID is required: herdr-amq task heartbeat <taskId> [--me <handle>]");
+        console.error("❌ Task ID is required: herdr-amq task heartbeat <taskId> --me <handle>");
+        process.exit(1);
+      }
+      // Deliberately not the defaulted `me`: that falls back to "coordinator", which
+      // would attribute liveness to a handle that never sent it. A heartbeat without
+      // an explicit actor is an error, so the actor is taken from --me/--from or
+      // AMQ_ME and nothing else.
+      const heartbeatActor = String(flags.me || flags.from || process.env.AMQ_ME || "").trim();
+      if (!heartbeatActor) {
+        console.error("❌ A heartbeat must name its actor: herdr-amq task heartbeat <taskId> --me <handle>");
+        console.error("   A heartbeat is an accountable liveness claim; an unattributed one is rejected, not recorded as unknown.");
         process.exit(1);
       }
       let res;
       try {
-        res = heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor: me });
+        res = heartbeatBoardTask(repoRoot, amqRoot, taskId, { actor: heartbeatActor });
       } catch (error) {
         return failTask(`Failed to write task heartbeat: ${error.message}`);
       }
@@ -543,7 +552,7 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         console.error(`❌ Failed to record heartbeat: ${res.error}`);
         process.exit(1);
       }
-      console.log(`\n💓 Heartbeat recorded for task ${taskId} (liveness only; status, updated and claims unchanged).`);
+      console.log(`\n💓 Heartbeat recorded for task ${taskId} by ${res.actor} (liveness only; status, updated and claims unchanged).`);
       console.log(`Last heartbeat: ${res.last_heartbeat_at}`);
       console.log("──────────────────────────────────────────────");
       break;

@@ -145,6 +145,41 @@ immediately, which looks like the alert clearing, but it inverts the meaning —
 means "delivery has stopped failing", which is the good case. It is the reason the age is filtered
 to open incidents before it is measured.
 
+## Unattributed heartbeats (commit 2c9a1be)
+
+128 of the 138 live cards carried a `last_heartbeat_at` with `last_heartbeat_by: null`, so
+the field that makes a card look alive had no accountable source. The finding was reported as
+"a heartbeat whose ACTOR FIELD WAS NOT WRITTEN", and the mechanism is narrower and more
+interesting than the `heartbeat` verb: **the claim path** advanced the clock and never wrote
+the author. Two more paths did the same thing.
+
+- `heartbeatBoardTask` fell back `String(actor || owner || "unknown")`. `"unknown"` is
+  truthy, so it survived the metrics projection `last_heartbeat_by || null` and was displayed
+  as if it were a name.
+- `updateBoardTask` set `last_heartbeat_at: enteringProgress ? now : (existing || now)` — the
+  trailing `|| now` invented a clock for any in-progress update to a card that had none,
+  attributing liveness to nobody.
+
+The `task heartbeat` CLI was worse than the fallback: `me` defaults to `"coordinator"`
+(actions.mjs:299), so a heartbeat with no `--me` attributed liveness to a handle that never
+sent it. That default is correct for the other verbs and is now bypassed for `heartbeat`,
+where an absent actor is an error.
+
+An unattributed heartbeat is not cosmetic, because the stall detector honours the clock
+regardless of author. Fixing it means refusing unnamed heartbeats, recording the claimer on a
+claim, and not inventing a clock at all when there is no author. Legacy cards are **not**
+backfilled: 128 null authors are an honest record of what was not known.
+
+| break | result |
+| --- | --- |
+| none (control) | 9 pass, 0 fail |
+| restore the original claim path (clock set, author left null) | 6 pass, **3 fail** |
+| restore the original `actor \|\| owner \|\| "unknown"` fallback | 5 pass, **4 fail** |
+
+The first break is the production defect reproduced exactly; the tests fail on the claim
+assertion, on the invented clock, and on the untouched-after-refusal assertion, which is the
+combination the original code could not satisfy.
+
 **Unresolved observation, recorded rather than diagnosed.** Across this restart the on-disk
 delivery map went from 68 entries (32 with `attempts > 1`) to 1 entry. Two daemons interleaving on
 one file is a plausible cause and the retry metric's own windowing defect is a separate matter;
