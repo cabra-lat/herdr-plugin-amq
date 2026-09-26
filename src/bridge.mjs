@@ -18,7 +18,7 @@ import { isSafeMailIdentifier, listMaildirMessageFiles, readMaildirMessageFile, 
 
 const MAX_DOORBELL_PROMPT_BYTES = 64 * 1024;
 
-function getPidFile() {
+export function getPidFile() {
   return path.join(getStateDir(), "bridge.pid");
 }
 
@@ -28,7 +28,7 @@ function getPidFile() {
  * it can never go stale. Its contents are the pid of the process holding it,
  * which makes the lock holder discoverable even when the pid file is lost.
  */
-function getLockFile() {
+export function getLockFile() {
   return path.join(getStateDir(), "bridge.lock");
 }
 

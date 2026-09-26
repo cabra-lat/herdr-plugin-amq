@@ -34,6 +34,8 @@ import {
   isDaemonRunning,
   startDaemonBackground,
   stopDaemon,
+  getPidFile,
+  getLockFile,
   listInbox,
   getCoordinatorDoorbellLog,
   runManualCoordinatorDoorbell,
@@ -213,6 +215,54 @@ export function applyColumnLimits(columns, params, { defaultDoneLimit = 25 } = {
         limit: limit === Infinity ? "all" : limit,
       },
     },
+  };
+}
+
+// Is the running daemon supervised by something that will bring it back?
+//
+// The dashboard's stop button used to call stopDaemon() unconditionally. Under systemd
+// that is not a stop, it is a brief outage: the unit has Restart=always, so the daemon
+// returns seconds later and the button reports success for an effect that does not
+// last. Worse, it is one of only two code paths that send SIGTERM to the bridge, and
+// the bridge was observed being terminated every ~60-100s for no reason either of us
+// could attribute - so a button that fires SIGTERM on a supervised daemon is both a
+// lie and a suspect.
+//
+// Detection is by parentage, not by asking systemd: the daemon is exec'd under `flock`,
+// so a supervised daemon's parent is a flock process holding the lock file. An
+// unsupervised one (launched by a CLI or by this dashboard) has a different parent.
+export function isBridgeSupervised(pid) {
+  const target = pid || (() => {
+    try {
+      const raw = fs.readFileSync(getPidFile(), "utf8").trim();
+      return Number(raw) || null;
+    } catch {
+      return null;
+    }
+  })();
+  if (!target) return { supervised: false, reason: "no-pid" };
+  let stat;
+  try {
+    stat = fs.readFileSync(`/proc/${target}/stat`, "utf8");
+  } catch {
+    return { supervised: false, reason: "no-proc" };
+  }
+  // comm may contain spaces/parens; ppid is the field after the final ')'.
+  const after = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  const ppid = Number(after[1]);
+  if (!ppid) return { supervised: false, reason: "no-ppid" };
+  let cmd = "";
+  try {
+    cmd = fs.readFileSync(`/proc/${ppid}/cmdline`, "utf8").replace(/\0/g, " ");
+  } catch {
+    return { supervised: false, reason: "no-parent" };
+  }
+  const supervised = /flock/.test(cmd) && cmd.includes(getLockFile());
+  return {
+    supervised,
+    reason: supervised ? "flock-parent" : "standalone-parent",
+    pid: target,
+    ppid,
   };
 }
 
@@ -962,7 +1012,22 @@ export function startWebServer({
       const pid = isDaemonRunning();
       let result;
       if (pid) {
-        result = stopDaemon();
+        // Refuse to fire SIGTERM at a daemon something else owns. Reporting the truth
+        // here matters more than making the button do something: a button that cannot
+        // deliver what it claims is worse than a button that explains itself.
+        const owner = isBridgeSupervised(pid);
+        if (owner.supervised) {
+          result = {
+            ok: false,
+            supervised: true,
+            pid,
+            message:
+              "The bridge daemon is supervised (systemd) and will be restarted automatically. " +
+              "It cannot be stopped from here - use `systemctl --user stop herdr-amq-bridge.service`.",
+          };
+        } else {
+          result = stopDaemon();
+        }
       } else {
         result = startDaemonBackground();
       }
