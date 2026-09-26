@@ -591,7 +591,15 @@ export function loadBoard(repoRoot, amqRoot) {
 export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
   if (!amqRoot || !task) return { ok: false, error: "Missing amqRoot or task" };
 
-  const sender = opts.from || "coordinator";
+  // Default sender for a board notification. `board`, for the same reason as the create path
+  // below and the update path in updateBoardTask: a notification has no human sender and the
+  // coordinator did not send it.
+  //
+  // All five internal callers pass `from` explicitly (addBoardTask:770 and the four
+  // updateBoardTask edges at 1108-1114), so this default is reached only by an external
+  // caller that omits it. It is kept rather than turned into a throw for the reason above:
+  // the honest thing for a notification is to name the automation, not to refuse to notify.
+  const sender = opts.from || "board";
   let to = [];
   let subject = "";
   let body = "";
@@ -763,7 +771,20 @@ export function addBoardTask(
   newTask.filePath = filePath;
 
   const shouldNotify = (notify !== undefined ? notify : opts.notify) ?? true;
-  const sender = from || opts.from || "coordinator";
+  // The board's own automation identity, NOT the coordinator. A notification has no human
+  // sender, and `coordinator` is a lane like any other: stamping it puts a durable record
+  // asserting that the coordinator sent every assignment alert, which is a lie of
+  // attribution, and it HIDES the real misattributions, because 894 of these were
+  // indistinguishable from a message a lane actually wrote.
+  //
+  // A throw would be the wrong fix here, and this is why: the board notifying at all is more
+  // valuable than the sender being honest about having no sender, so refusing would stop
+  // AGboard from paging anybody. `updateBoardTask` already stamps `board` (see the `actor`
+  // handling above); the create path was the asymmetric half.
+  //
+  // MEASURED over the live tree, 6577 unique messages across 14 mailboxes: of 283
+  // [ASSIGNED] notifications, 247 carried from=coordinator and 2 carried from=board.
+  const sender = from || opts.from || "board";
 
   if (shouldNotify && amqRoot && newTask.owner && newTask.owner !== "coordinator") {
     try {

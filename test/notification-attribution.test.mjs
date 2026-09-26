@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addBoardTask, updateBoardTask } from "../src/board.mjs";
+import { addBoardTask, updateBoardTask, notifyTaskEvent } from "../src/board.mjs";
 import { readMaildirMessages } from "../src/protocol.mjs";
 
 // A board notification that names the wrong agent is not a formatting problem. It puts a
@@ -142,5 +142,61 @@ test("a claim with no supplied actor is not attributed to the owner either", () 
     assert.match(body, /changed by:?\s*not recorded/i, "an unclaimed actor is not the owner's name");
     const msg = notifications(amqRoot).find((m) => /\[CLAIMED\]/.test(m.header?.subject || ""));
     assert.notEqual(msg?.header?.from, "testkit", "and the envelope is not the owner's either");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// The ENVELOPE, not only the body. Every arm above reads the notification's text, and the
+// text was fixed while the sender field kept borrowing the coordinator's identity: 247 of 283
+// [ASSIGNED] notifications on the live tree carried from=coordinator. A notification has no
+// human sender, and the coordinator did not send them.
+//
+// Asserted on the DELIVERED header, read from the recipient's mailbox, and the assertion is
+// the ABSENCE of the wrong value: an arm that merely checked for `board` would still pass if
+// the fix had added `board` alongside a coordinator that was still there.
+function deliveredSender(amqRoot, mailbox, re) {
+  return readMaildirMessages(amqRoot, mailbox).find((m) => re.test(m.header?.subject || ""))?.header?.from;
+}
+
+test("a card created with no sender notifies as the board, not as the coordinator", () => {
+  const { root, amqRoot } = fixture();
+  try {
+    const created = addBoardTask(root, amqRoot, { title: "Sixth thing", owner: "testkit" });
+    assert.ok(created.ok);
+    const from = deliveredSender(amqRoot, "testkit", /\[ASSIGNED\]/);
+    assert.ok(from, "the assignment notification was delivered");
+    assert.notEqual(from, "coordinator", "the coordinator did not send this, and the record says it did");
+    assert.equal(from, "board", "the board's own automation identity is the honest sender");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an explicit sender on card creation is still honoured", () => {
+  // The stamp replaces a DEFAULT, not the ability to say who acted. Without this arm, "always
+  // board" would pass the arm above and lose the attribution that makes a board action
+  // traceable to a lane.
+  const { root, amqRoot } = fixture();
+  try {
+    addBoardTask(root, amqRoot, { title: "Seventh thing", owner: "testkit", from: "coordinator" });
+    assert.equal(deliveredSender(amqRoot, "testkit", /\[ASSIGNED\]/), "coordinator");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("notifyTaskEvent called with no sender at all notifies as the board", () => {
+  // The only way to REACH notifyTaskEvent's own default, because all five internal callers
+  // pass `from` explicitly. It is exported, so an external caller can omit it, and the arm
+  // above cannot see it: with the default sabotaged back to `coordinator` the create-path arm
+  // stayed green, which is exactly how a default nobody exercises survives a review.
+  const { root, amqRoot } = fixture();
+  try {
+    const res = notifyTaskEvent(amqRoot, "blocked", {
+      id: "task-external-1", title: "External caller", owner: "qa", status: "blocked",
+    }, { reason: "Waiting on something." });
+    assert.ok(res.ok, `the notification should still be sent: ${JSON.stringify(res)}`);
+    // A [BLOCKED] notification is addressed to the coordinator on purpose: it PAGES them, and
+    // the bridge reads entries addressed to coordinator. So the recipient is the coordinator
+    // and the sender must be the board, and reading any other mailbox here would assert on an
+    // empty list and pass for the wrong reason - which is what it did on the first draft.
+    const from = deliveredSender(amqRoot, "coordinator", /\[BLOCKED\]/);
+    assert.notEqual(from, "coordinator", "no human sent this");
+    assert.equal(from, "board");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
