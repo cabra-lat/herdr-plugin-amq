@@ -546,6 +546,35 @@ Test body`
     assert.equal(board.coordinator.jobs.outcomes.succeeded, 1);
   });
 
+  // PATCH and DELETE existed without a read, so "GET returns Not Found" was
+  // indistinguishable from "this card does not exist" for a card that plainly did -
+  // a caller could mutate a card it had no way to read back.
+  test("GET /api/board/tasks/:id reads a card that PATCH can update", async () => {
+    const postRes = await fetch(`${baseUrl}/api/board/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Readable card", owner: "worker", description: "d" }),
+    });
+    assert.equal(postRes.status, 200);
+    const { task } = await postRes.json();
+    const taskId = task.id;
+    assert.ok(taskId);
+
+    const getRes = await fetch(`${baseUrl}/api/board/tasks/${encodeURIComponent(taskId)}`);
+    assert.equal(getRes.status, 200, "a card the write path accepts must be readable");
+    assert.match(getRes.headers.get("content-type") || "", /application\/json/);
+    const body = await getRes.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.task.id, taskId);
+    assert.equal(body.task.title, "Readable card");
+    // The stage must be reported, so a reader knows where the card lives.
+    assert.ok(body.stage);
+
+    // And a card that does not exist is a 404, distinct from the above.
+    const missing = await fetch(`${baseUrl}/api/board/tasks/task_definitely_not_here`);
+    assert.equal(missing.status, 404);
+  });
+
   test("POST, PATCH, and DELETE /api/board/tasks manages custom tasks", async () => {
     // 1. Create task
     const postRes = await fetch(`${baseUrl}/api/board/tasks`, {

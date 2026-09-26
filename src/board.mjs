@@ -705,39 +705,64 @@ export function addBoardTask(
  * Update a task's status / stage or attributes.
  * Atomically moves the task file between stage directories (backlog, doing, blocked, done).
  */
+// Fields that are bookkeeping about the write rather than state of the card: they
+// must not, on their own, make a no-op look like progress.
+const WRITE_METADATA = new Set(["filePath", "file_path"]);
+
+// True when `next` differs from `previous` in any field that describes the card.
+// `updated` is excluded on both sides because it is the field being decided here.
+export function cardStateChanged(previous, next) {
+  if (!previous || !next) return true;
+  const keys = new Set([...Object.keys(previous || {}), ...Object.keys(next || {})]);
+  for (const key of keys) {
+    if (key === "updated" || WRITE_METADATA.has(key)) continue;
+    const before = previous[key];
+    const after = next[key];
+    if (before === after) continue;
+    // Distinguish absent from null so clearing a field counts as a change.
+    if (before === undefined || after === undefined) return true;
+    if (before === null || after === null) return true;
+    if (typeof before === "object" || typeof after === "object") {
+      if (JSON.stringify(before) !== JSON.stringify(after)) return true;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+// The single task lookup. Extracted so the read path and the write path resolve a card
+// the same way; when only the write path existed, "GET returns Not Found" was
+// indistinguishable from "this card does not exist" for a card that plainly did.
+export function getBoardTask(repoRoot, amqRoot, taskId) {
+  if (!taskId) return null;
+  const busDir = getBusDirectory(repoRoot, amqRoot);
+  const stageDirs = ["backlog", "doing", "in_progress", "blocked", "done"];
+  for (const s of stageDirs) {
+    const candidate = path.join(busDir, s, `${taskId}.md`);
+    if (fs.existsSync(candidate)) {
+      const stage = s === "doing" ? "in_progress" : s;
+      return { task: parseTaskFile(candidate, stage), filePath: candidate, stage };
+    }
+  }
+  const board = loadBoard(repoRoot, amqRoot);
+  for (const [col, list] of Object.entries(board.columns)) {
+    const match = (list || []).find((t) => t.id === taskId);
+    if (match) return { task: match, filePath: match.filePath || null, stage: col };
+  }
+  return null;
+}
+
 export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = {}) {
   if (!taskId) return { ok: false, error: "taskId is required" };
 
   const busDir = getBusDirectory(repoRoot, amqRoot);
   ensureBusDirectories(busDir);
 
-  const stageDirs = ["backlog", "doing", "in_progress", "blocked", "done"];
-  let existingPath = null;
-  let currentStage = "backlog";
-  let existingTask = null;
-
-  for (const s of stageDirs) {
-    const candidate = path.join(busDir, s, `${taskId}.md`);
-    if (fs.existsSync(candidate)) {
-      existingPath = candidate;
-      currentStage = s === "doing" ? "in_progress" : s;
-      existingTask = parseTaskFile(candidate, currentStage);
-      break;
-    }
-  }
-
-  if (!existingTask) {
-    const board = loadBoard(repoRoot, amqRoot);
-    for (const [col, list] of Object.entries(board.columns)) {
-      const match = list.find((t) => t.id === taskId);
-      if (match) {
-        existingTask = match;
-        currentStage = col;
-        existingPath = match.filePath || null;
-        break;
-      }
-    }
-  }
+  const located = getBoardTask(repoRoot, amqRoot, taskId);
+  const existingTask = located?.task || null;
+  const existingPath = located?.filePath || null;
+  const currentStage = located?.stage || "backlog";
 
   if (!existingTask) {
     return { ok: false, error: "Task not found" };
@@ -776,7 +801,6 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     owner,
     status: targetStatus,
     priority: updates.priority || existingTask.priority || "normal",
-    updated: now,
     claimed_at: enteringProgress ? now : (existingTask.claimed_at || null),
     blocked_at: isBlocked ? (wasBlocked ? existingTask.blocked_at : now) : existingTask.blocked_at,
     done_at: targetStatus === "done" ? (existingTask.done_at || now) : existingTask.done_at,
@@ -805,6 +829,14 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
 
   const destStageDir = resolveStageDir(busDir, targetStatus);
   const newFilePath = path.join(busDir, destStageDir, `${taskId}.md`);
+
+  // `updated` is the card's state clock, and the stall detector ages exactly that
+  // clock. It is therefore moved only when the card actually changed: an update that
+  // rewrites identical values, or an empty PATCH, is a no-op and must not look like
+  // progress. `heartbeatBoardTask` was built to avoid exactly this, and this path was
+  // the hole beside it - found by a live probe whose empty PATCH reset a real card's
+  // `updated` to the probe's own timestamp.
+  updatedTask.updated = cardStateChanged(existingTask, updatedTask) ? now : (existingTask.updated || now);
 
   fs.writeFileSync(newFilePath, serializeTaskFile(updatedTask), "utf8");
   updatedTask.filePath = newFilePath;

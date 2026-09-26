@@ -337,3 +337,56 @@ outright, which is what a first implementation would actually have done.
 
 No further contention test was run on the shared host. Breaking other lanes to produce a number is
 a bad trade, and the arithmetic above is labelled as arithmetic rather than as a measurement.
+
+## A count a reader cannot act on looks exactly like a constant
+
+The `stalled_work` alert reported "2 more active card(s) have a liveness clock that names no
+author" for nine consecutive alerts, with no id and no stage. Two people then spent real effort
+trying to find two cards that plainly existed, and one concluded the number was a hardcoded
+artifact. It was not: `task_1790366734903_8d1fe8` and `task_1790367326671_ae199e`, both owned by
+testkit, both in **backlog**. `activeCards` spans backlog/doing/review, so they are counted; a
+search restricted to the in_progress set cannot find them. The count was stable because the *set*
+was stable — two legacy cards with null-author heartbeats nobody had touched.
+
+The number was true and unfalsifiable from the alert itself, which is the actual defect: a metric
+that reports a count without the identities cannot be checked by the person reading it, so an
+honest number gets disbelieved and a fabricated one would have looked identical. The alert now
+names each card with id, owner, stage and clock source, and `unattributedLiveness` carries `stage`
+so the card can be found without re-deriving the active-column set by hand.
+
+## An empty PATCH moved the state clock, and a live probe found it
+
+Investigating the half-wired read path (below) meant issuing a `PATCH /api/board/tasks/{id}` with
+an empty body against the **running** server. It returned 200 and reset that card's `updated` to
+the probe's own timestamp.
+
+That is a defect, and the probe caused it rather than merely revealing it. `updateBoardTask` set
+`updated: now` unconditionally, so any write that changed nothing still looked like progress.
+`updated` is the card's state clock, and the stall detector now ages exactly that clock — so the
+no-op write path was a hole in the invariant `heartbeatBoardTask` had been carefully built to
+protect, sitting in the path beside it. `cardStateChanged()` now decides it: `updated` moves only
+when a field describing the card actually differs, with `filePath` excluded as write bookkeeping
+and `updated` itself excluded because it is the field being decided. Nulling a field counts as a
+change, so a card is not frozen.
+
+Disclosure: `task_1790366734903_8d1fe8`'s prior `updated` is not recoverable (`.agent-mail` is
+gitignored and no metrics history retains per-card values), so the card's clock now reads my
+probe's time. Its practical effect is nil — that card is `unknown` liveness, so it is excluded
+from `stalledWork` and from `queue_age` regardless — but the prior value is lost and the card
+belongs to another lane.
+
+## PATCH and DELETE existed on /api/board/tasks/{id}; GET did not
+
+Verified live rather than inferred: `PATCH` returned 200 with the task, `GET` returned 404
+`Not Found` for a card that demonstrably existed. "Not Found" for a missing card and "Not Found"
+for an unreadable one were the same response, so a caller could mutate a card it had no way to
+read back. `getBoardTask()` is now the single lookup shared by the read and write paths — the
+write path had its own inline copy of the stage-directory walk — and `GET` returns 200 with the
+task and its stage, or 404 for a card that does not exist.
+
+| break | result |
+| --- | --- |
+| none (control) | 38 pass, 0 fail |
+| restore unconditional `updated = now` | 37 pass, **1 fail** |
+| remove the `GET` route | 37 pass, **1 fail** |
+| drop the ids/stage from the alert text | 37 pass, **1 fail** |

@@ -271,6 +271,11 @@ export function buildCoordinatorMetrics({
         id: task.id,
         title: task.title,
         owner: task.owner || null,
+        // The stage is carried so a reader can actually FIND the card. The count was
+        // reported for nine alerts with no id and no stage, which is what made two
+        // real backlog cards look like a constant in the alerting code: nobody could
+        // locate them without re-deriving the active-column set by hand.
+        stage: task.stage || task.status || null,
         liveness: liveness.state,
         via: liveness.via,
         lastActivityAt: liveness.at === null ? null : new Date(liveness.at).toISOString(),
@@ -445,7 +450,7 @@ export function buildCoordinatorMetrics({
     alerts.push({
       id: "stalled_work",
       severity: stalledCards.some((task) => task.ageMs > limits.queueCriticalMs) ? "critical" : "warning",
-      message: `${stalledCards.length} active card(s) have not changed state within the stall threshold. This is measured on the card's own state clock, NOT on heartbeats: a heartbeat declares that an owner is present but does not move the card, so heartbeating is not a remedy for this alert and following it cannot make the number go down.${noteSummary}${unattributedLiveness.length > 0 ? ` ${unattributedLiveness.length} more active card(s) have a liveness clock that names no author, so their liveness is unknown and they are counted neither as live nor as stalled.` : ""}`,
+      message: `${stalledCards.length} active card(s) have not changed state within the stall threshold. This is measured on the card's own state clock, NOT on heartbeats: a heartbeat declares that an owner is present but does not move the card, so heartbeating is not a remedy for this alert and following it cannot make the number go down.${noteSummary}${unattributedLiveness.length > 0 ? ` ${unattributedLiveness.length} more active card(s) have a liveness clock that names no author, so their liveness is unknown and they are counted neither as live nor as stalled: ${unattributedLiveness.map((c) => `${c.id} (owner=${c.owner || "none"}, stage=${c.stage}, via=${c.via})`).join(", ")}.` : ""}`,
       recommendedAction: "Move the card: record a state change (claim, re-scope, block with a reason, or close). A status request is not the remedy - nothing about asking changes the clock this alert ages.",
       stalledCount: stalledCards.length,
       cardsWithNotes: withNotes.length,

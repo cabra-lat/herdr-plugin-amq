@@ -49,6 +49,7 @@ import {
 import {
   findStatusFile,
   loadBoard,
+  getBoardTask,
   addBoardTask,
   updateBoardTask,
   deleteBoardTask,
@@ -733,6 +734,24 @@ export function startWebServer({
       }
       res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
+      return;
+    }
+
+    // The read half of the task resource. PATCH and DELETE existed without it, which
+    // is the half-wired shape: a caller could mutate a card it had no way to read
+    // back, and "Not Found" for a card that demonstrably exists is indistinguishable
+    // from "Not Found" for one that does not.
+    if (pathname.startsWith("/api/board/tasks/") && req.method === "GET") {
+      const taskId = decodeURIComponent(pathname.slice("/api/board/tasks/".length));
+      const repoRoot = path.resolve(path.dirname(amqRoot));
+      const located = getBoardTask(repoRoot, amqRoot, taskId);
+      if (!located?.task) {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Not Found");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, taskId, task: located.task, stage: located.stage }));
       return;
     }
 
