@@ -522,6 +522,14 @@ export function markMaildirMessageRead(amqRoot, handle, msgId) {
 
     const filePath = moveMaildirMessage(amqRoot, handle, "new", "cur", found.fileName);
     if (!filePath) return { ok: false, error: "Message could not be marked read" };
+    // Marking read is the OTHER way a message leaves new/, and it used to leave no
+    // record at all - so a message promoted this way was indistinguishable, in the
+    // filesystem, from one that had been displayed and drained. That is the same gap
+    // the drain had. Stage "read" keeps the two separable in one audit trail.
+    writeDrainReceipt(amqRoot, handle, {
+      id: found.fileName.replace(/\.md$/, ""),
+      header: found.header || null,
+    }, { stage: "read" });
     return { ok: true, alreadyRead: false, id: msgId, filePath: logicalCurPath };
   } catch (error) {
     return { ok: false, error: error.message };

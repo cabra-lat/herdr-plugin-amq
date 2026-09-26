@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { sendMaildirMessage, readMaildirMessages, commitMaildirMessages, writeDrainReceipt } from "../src/protocol.mjs";
+import { sendMaildirMessage, readMaildirMessages, commitMaildirMessages, writeDrainReceipt, markMaildirMessageRead } from "../src/protocol.mjs";
 
 const BIN = path.resolve("bin/herdr-amq.mjs");
 
@@ -79,6 +79,43 @@ test("--consume prints each message once as well", () => {
     assert.equal((out.stdout.match(/^\[AMQ\]/gm) || []).length, 1);
     assert.equal((out.stdout.match(/^  Subject:/gm) || []).length, 3);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+
+// Marking a single message read is the OTHER way mail leaves new/, and it used to write
+// no receipt - so a message promoted this way was indistinguishable, in the filesystem,
+// from one that had actually been displayed. Same gap the drain had.
+test("marking a single message read records a receipt with stage 'read'", () => {
+  const { amqRoot } = fixture(1);
+  try {
+    const waiting = readMaildirMessages(amqRoot, "worker");
+    assert.equal(waiting.length, 1);
+    const res = markMaildirMessageRead(amqRoot, "worker", waiting[0].id);
+    assert.equal(res.ok, true, res.error);
+    assert.equal(countIn(amqRoot, "worker", "cur"), 1, "the message is promoted");
+    const files = fs.readdirSync(path.join(amqRoot, "agents", "worker", "receipts"));
+    assert.equal(files.length, 1, "and the promotion left a record");
+    const receipt = JSON.parse(fs.readFileSync(path.join(amqRoot, "agents", "worker", "receipts", files[0]), "utf8"));
+    assert.equal(receipt.stage, "read");
+    assert.equal(receipt.consumer, "worker");
+    assert.equal(receipt.sender, "coordinator");
+    assert.equal(receipt.msg_id, waiting[0].id);
+    // A read receipt must not be mistakable for a drain receipt.
+    assert.ok(files[0].endsWith("__read.json"));
+  } finally { fs.rmSync(amqRoot, { recursive: true, force: true }); }
+});
+
+test("re-marking an already-read message does not fabricate a second receipt", () => {
+  const { amqRoot } = fixture(1);
+  try {
+    const waiting = readMaildirMessages(amqRoot, "worker");
+    assert.equal(markMaildirMessageRead(amqRoot, "worker", waiting[0].id).ok, true);
+    assert.equal(countReceipts(amqRoot, "worker"), 1);
+    const again = markMaildirMessageRead(amqRoot, "worker", waiting[0].id);
+    assert.equal(again.ok, true);
+    assert.equal(again.alreadyRead, true, "it was already in cur/");
+    assert.equal(countReceipts(amqRoot, "worker"), 1, "no second, invented consumption");
+  } finally { fs.rmSync(amqRoot, { recursive: true, force: true }); }
 });
 
 test("drain does NOT consume by default, so a truncated read cannot lose mail", () => {
