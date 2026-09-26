@@ -643,7 +643,13 @@ export function buildCoordinatorAlertPrompt(alert) {
         // next_actor split entirely - the whole point of that rule is that an unowned
         // blocked card has no actor, and the render was manufacturing one. The owner is
         // already printed on the line above, so nothing is lost by telling the truth here.
-        `next-actor=${card.nextActor || "none (blocked on nobody)"}`,
+        // Stage-aware wording. "blocked on nobody" is a claim about a BLOCKED card, and
+        // this line also renders stalled cards - where no next actor means nobody has
+        // been named to move it, which is a different fact from being blocked on a
+        // person. Printing the blocked wording on a stalled card is the same error as
+        // printing an owner as the next actor: a confident assertion the state does not
+        // support, in the same field.
+        `next-actor=${card.nextActor || (card.stage === "blocked" ? "none (blocked on nobody)" : "none (no next actor)")}`,
         `dependency=${JSON.stringify(card.dependency || null)}`,
         `reason=${card.reason || "unspecified"}`,
         // Note recency is progress evidence, never liveness: notes do not move `updated`.

@@ -60,6 +60,19 @@ export function projectCardStall(task, now, limits = DEFAULT_THRESHOLDS, workAge
       // unexpressible difference the `queued` stage exists to fix, reappearing as a
       // missing field instead of a missing concept.
       stage: task.stage || task.status || null,
+      // The next actor, populated here for the same reason as `stage`: the BLOCKED
+      // projection carried it and this one did not, so the two alerts disagreed about the
+      // same underlying field and only one of them read it. The visible consequence is
+      // worse than a missing field - the triage render prints "next-actor=none (blocked
+      // on nobody)" for every stalled card, so seven cards were asserting something false
+      // about themselves, three of them with a live actor recorded on the task.
+      //
+      // `null` here is a REAL, reportable state - the card genuinely has no next actor -
+      // and it is deliberately different from the key being absent, which every consumer
+      // had to read as "nobody" because there was nothing else to read. The renderer is
+      // not being asked to infer this from `owner` again; that was the original defect,
+      // and a missing field should print as unknown rather than as a person.
+      nextActor: task.next_actor ?? task.nextActor ?? null,
       // Projected because the coordinator prompt reads `card.reason`; omitting it made
       // every prompted card print reason=unspecified even when one was recorded. The
       // board writes `block_reason`, so both spellings are accepted.
