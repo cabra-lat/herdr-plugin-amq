@@ -208,6 +208,43 @@ columns, and the stall detector only ever considered `backlog`/`doing`/`review`.
 real board the change moves 0 alerts. The design is still correct — a single claim in an
 active column would have flooded — but the number worth remembering is 0, not 128.
 
+## Two health metrics, two different questions (commit 6b2d7e1)
+
+`queue_age` read `ageMs(task.updated || task.created)` while `stalled_work` — directly above it,
+under the comment "Previously this read only `updated`, so an actively worked card was
+indistinguishable from an ignored one" — read the liveness clock. A card heartbeated every
+minute and never edited therefore read as **live to one metric and ancient to the other, at
+the same instant**. Fixing one and not the other is the regression, so both now call
+`cardLivenessState`.
+
+The second half was worse than a disagreement. `blocked_cards` only fires on cards with **no**
+triage reason, and `queue_age` never scanned the blocked column, so a card blocked for five
+hours *with* a reason was covered by no age signal at all. On the real board all 17 blocked
+cards are triaged, so the entire blocked column was invisible to every age alert. A third
+metric, `blocked_oldest`, now covers every blocked card regardless of triage, reusing the
+existing `blockedWarnMs`/`blockedCriticalMs` thresholds.
+
+A third defect surfaced while building it: `blocked_ms` is a **snapshot** written at the moment
+of blocking, so preferring it understated the oldest blocker by hours (6.89M ms stored vs
+17.7M ms actual). `blockedWork` now prefers the live age from `blocked_at`.
+
+| break | result |
+| --- | --- |
+| none (control) | 13 pass, 0 fail |
+| restore the original `queue_age` (`updated` only) | 12 pass, **1 fail** |
+| gate `blocked_oldest` on being untriaged | 12 pass, **1 fail** |
+| restore the stale `blocked_ms` snapshot | 12 pass, **1 fail** |
+
+Each break fails the test that names its own claim, which is the property that matters: no
+break here is caught by an unrelated assertion, and no test here passes for a reason other
+than the one it states.
+
+**A near-miss worth recording.** `node --check` passed on a version that threw
+`ReferenceError: Cannot access 'blockedWork' before initialization` at runtime. A syntax check
+cannot see a temporal dead zone; only calling the function did. Three relocations were needed
+before the ordering was right. Anything that runs at import time or on a real board must be
+executed, not just parsed.
+
 **Unresolved observation, recorded rather than diagnosed.** Across this restart the on-disk
 delivery map went from 68 entries (32 with `attempts > 1`) to 1 entry. Two daemons interleaving on
 one file is a plausible cause and the retry metric's own windowing defect is a separate matter;

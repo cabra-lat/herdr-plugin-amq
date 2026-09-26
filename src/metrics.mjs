@@ -200,10 +200,32 @@ export function buildCoordinatorMetrics({
       if (["backlog", "doing", "review"].includes(stage)) activeCards.push(task);
     }
   }
-  const queueAgeMs = activeCards.reduce((oldest, task) => {
-    const age = ageMs(task.updated || task.created, now);
-    return age === null ? oldest : Math.max(oldest, age);
-  }, 0);
+  // The queue age answers the same liveness question as stalled_work, so it asks
+  // the same function. It previously read `updated` only, so a card heartbeated
+  // every minute read as live to stalled_work and as ancient to queue_age on the
+  // same card at the same moment. An `unknown` card is no evidence of queue age
+  // either, so it is excluded and counted rather than silently folded in.
+  let queueAgeMs = 0;
+  let queueOldest = null;
+  let queueUnknown = 0;
+  for (const task of activeCards) {
+    const liveness = cardLivenessState(task, now, limits.stalledWorkMs);
+    if (liveness.state === LIVENESS_STATES.UNKNOWN) {
+      queueUnknown += 1;
+      continue;
+    }
+    if (liveness.ageMs !== null && liveness.ageMs > queueAgeMs) {
+      queueAgeMs = liveness.ageMs;
+      queueOldest = task;
+    }
+  }
+  // Blocked cards are not waiting in a queue, so they do not belong to the queue
+  // age. Before this existed they belonged to NO age signal at all: blocked_cards
+  // only fires on UNTRIAGED cards, so a triaged card could sit forever unnoticed.
+  // They are therefore reported by their own metric with their own thresholds,
+  // computed once `blockedWork` has been built.
+  let blockedOldestAgeMs = 0;
+  let blockedOldestCard = null;
   // A card is stale when neither an explicit heartbeat nor a state change has
   // happened within the threshold. Previously this read only `updated`, so an
   // actively worked card was indistinguishable from an ignored one.
@@ -247,9 +269,16 @@ export function buildCoordinatorMetrics({
   for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
     if (columnName !== "blocked") continue;
     for (const task of (Array.isArray(columnTasks) ? columnTasks : []).filter(Boolean)) {
-      const ageMsValue = Number.isFinite(Number(task.blocked_ms))
-        ? Number(task.blocked_ms)
-        : ageMs(task.blocked_at || task.updated || task.created, now);
+      // `blocked_ms` is a snapshot written when the card was blocked, so it stops
+      // counting the moment the card is written and understates by the time since.
+      // The live age from `blocked_at` is preferred wherever it exists; the stored
+      // figure is only a fallback for a card that has no parseable blocked_at.
+      const blockedAtMs = Date.parse(task.blocked_at);
+      const ageMsValue = Number.isFinite(blockedAtMs)
+        ? Math.max(0, now - blockedAtMs)
+        : (Number.isFinite(Number(task.blocked_ms)) && task.blocked_ms !== null && task.blocked_ms !== undefined
+          ? Number(task.blocked_ms)
+          : ageMs(task.updated || task.created, now));
       blockedWork.push({
         id: task.id,
         title: task.title,
@@ -324,6 +353,43 @@ export function buildCoordinatorMetrics({
   }
 
   const alerts = [];
+  // Blocked age, measured over every blocked card regardless of triage.
+  blockedOldestAgeMs = blockedWork.reduce(
+    (oldest, task) => (task.ageMs !== null && task.ageMs > oldest ? task.ageMs : oldest),
+    0,
+  );
+  blockedOldestCard = blockedWork.reduce(
+    (oldestCard, task) => (task.ageMs !== null && (!oldestCard || task.ageMs > oldestCard.ageMs) ? task : oldestCard),
+    null,
+  );
+
+  if (blockedWork.length > 0 && blockedOldestAgeMs >= limits.blockedWarnMs) {
+    // Deliberately independent of blocked_cards, which only counts UNTRIAGED
+    // cards. A triaged blocker is still a blocker: recording a reason stops the
+    // "you did not say why" alert, but it must not silence the "this has been
+    // blocked for five hours" one. Reuses the existing blockedWarnMs /
+    // blockedCriticalMs thresholds rather than introducing new knobs.
+    const severity = blockedOldestAgeMs >= limits.blockedCriticalMs ? "critical" : "warning";
+    const triaged = blockedWork.filter((task) => task.triaged).length;
+    alerts.push({
+      id: "blocked_oldest",
+      severity,
+      fingerprint: conditionFingerprint({
+        id: "blocked_oldest",
+        severity,
+        cards: cardCondition(blockedWork),
+      }),
+      message: `Oldest blocked card has been blocked for ${blockedOldestAgeMs}ms (${blockedOldestCard?.id || "unknown"}). ${triaged} of ${blockedWork.length} carry a triage reason, which stops the untriaged alert but not this one.`,
+      recommendedAction: "Resolve it, re-scope it, or record why it is still blocked; a triage reason alone does not close an old blocker.",
+      oldestCardId: blockedOldestCard?.id || null,
+      oldestAgeMs: blockedOldestAgeMs,
+      triagedCount: triaged,
+      untriagedCount: blockedWork.length - triaged,
+      cardCount: blockedWork.length,
+      cards: blockedWork,
+    });
+  }
+
   if (cardsByStage.backlog > 0 && statusCounts.working === 0) {
     alerts.push({
       id: "backlog_idle",
@@ -351,7 +417,7 @@ export function buildCoordinatorMetrics({
     alerts.push({
       id: "queue_age",
       severity: queueAgeMs >= limits.queuePageMs ? "page" : (queueAgeMs >= limits.queueCriticalMs ? "critical" : "warning"),
-      message: `Oldest active queue age is ${queueAgeMs}ms.`,
+      message: `Oldest active queue age is ${queueAgeMs}ms (backlog/doing/review only; blocked cards are reported by blocked_oldest).${queueUnknown > 0 ? ` ${queueUnknown} active card(s) have an unattributable liveness clock and are excluded from this figure.` : ""}`,
       recommendedAction: "Assign or re-sequence the oldest ready card; page only after the critical threshold persists.",
     });
   }
@@ -414,7 +480,21 @@ export function buildCoordinatorMetrics({
     thresholds: limits,
     agents: { total: handles.length, byStatus: statusCounts, statuses, staleHeartbeats },
     cards: { total: allCards.length, byStage: cardsByStage },
-    queue: { activeCards: activeCards.length, oldestAgeMs: queueAgeMs },
+    queue: {
+      activeCards: activeCards.length,
+      oldestAgeMs: queueAgeMs,
+      oldestCardId: queueOldest?.id || null,
+      oldestCardLiveness: queueOldest ? cardLivenessState(queueOldest, now, limits.stalledWorkMs).state : null,
+      unattributedExcluded: queueUnknown,
+      scope: "backlog, doing, review",
+    },
+    blockedOldest: {
+      cards: blockedWork.length,
+      oldestAgeMs: blockedOldestAgeMs,
+      oldestCardId: blockedOldestCard?.id || null,
+      triaged: blockedWork.filter((task) => task.triaged).length,
+      untriaged: blockedWork.filter((task) => !task.triaged).length,
+    },
     // `count` and `maxDeliveryAgeMs` are windowed and drive the alert; the
     // `lifetime` figures are monotonic context and are never compared to a threshold.
     retries: {

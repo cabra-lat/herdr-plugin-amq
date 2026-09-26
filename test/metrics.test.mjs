@@ -405,3 +405,107 @@ test("a split state directory is reported instead of silently reading a stale fi
 
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+test("queue_age and stalled_work answer the same liveness question about the same card", () => {
+  // The regression: cardLivenessState was applied to stalled_work and queue_age
+  // kept reading `updated` only, so a card heartbeated every minute and never
+  // touched read as live to one metric and as ancient to the other, simultaneously.
+  const now = Date.parse("2026-09-24T17:00:00.000Z");
+  const heartbeated = {
+    id: "worked",
+    title: "Heartbeated, never edited",
+    owner: "worker",
+    updated: "2026-09-24T10:00:00.000Z",       // 7 hours old
+    last_heartbeat_at: "2026-09-24T16:59:00.000Z", // 1 minute old
+    last_heartbeat_by: "worker",
+  };
+  const result = buildCoordinatorMetrics({
+    handles: ["worker"],
+    agentStatuses: { worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [heartbeated], blocked: [], done: [] } },
+    now,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000, queueWarnMs: 5 * 60 * 1000 },
+  });
+
+  // Both metrics must agree: alive, one minute old.
+  assert.equal(result.stalledWork.length, 0, "stalled_work must not call a heartbeated card stale");
+  assert.equal(result.queue.oldestAgeMs, 60 * 1000, "queue_age must use the same liveness clock");
+
+  // And the disagreement is what the alert message must not hide.
+  const stale = buildCoordinatorMetrics({
+    handles: ["worker"],
+    agentStatuses: { worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [{ ...heartbeated, last_heartbeat_at: "2026-09-24T16:30:00.000Z" }], blocked: [], done: [] } },
+    now,
+    thresholds: { stalledWorkMs: 5 * 60 * 1000, queueWarnMs: 5 * 60 * 1000 },
+  });
+  assert.equal(stale.stalledWork.length, 1, "an attributed but old clock is stale");
+  assert.equal(stale.queue.oldestAgeMs, 30 * 60 * 1000, "queue_age must agree that it is old");
+});
+
+test("blocked_oldest reports a TRIAGED blocker, which no other alert covers by age", () => {
+  // blocked_cards only fires on cards with no reason, so a card blocked for five
+  // hours WITH a triage reason was invisible to every age signal: not queue_age
+  // (wrong column) and not blocked_cards (correctly triaged). That is the hole.
+  const now = Date.parse("2026-09-24T17:00:00.000Z");
+  const triagedOldBlocker = {
+    id: "old-blocker",
+    title: "Triaged and still stuck",
+    owner: "worker",
+    status: "blocked",
+    updated: "2026-09-24T12:00:00.000Z",
+    blocked_at: "2026-09-24T12:00:00.000Z",  // 5 hours
+    blocked_ms: 300 * 60 * 1000,
+    block_reason: "waiting on an upstream decision",
+  };
+  const result = buildCoordinatorMetrics({
+    handles: ["worker"],
+    agentStatuses: { worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [], blocked: [triagedOldBlocker], done: [] } },
+    now,
+    thresholds: { blockedWarnMs: 10 * 60 * 1000, blockedCriticalMs: 30 * 60 * 1000 },
+  });
+
+  const alert = result.alerts.find((a) => a.id === "blocked_oldest");
+  assert.ok(alert, "a five-hour-old blocker must raise blocked_oldest even though it is triaged");
+  assert.equal(alert.severity, "critical");
+  assert.equal(alert.oldestCardId, "old-blocker");
+  assert.equal(alert.oldestAgeMs, 5 * 60 * 60 * 1000);
+  assert.equal(alert.triagedCount, 1);
+  assert.equal(alert.untriagedCount, 0);
+  // The untriaged alert must stay quiet, so this is genuinely additional signal.
+  assert.equal(result.alerts.find((a) => a.id === "blocked_cards"), undefined);
+
+  // queue_age must not quietly absorb it either; its scope is stated in the payload.
+  assert.equal(result.queue.activeCards, 0);
+  assert.equal(result.blockedOldest.cards, 1);
+  assert.equal(result.queue.scope, "backlog, doing, review");
+});
+
+test("blocked age is measured live from blocked_at, not from the stored blocked_ms snapshot", () => {
+  // blocked_ms is written when the card is blocked and then stops counting, so
+  // preferring it understates an old blocker by the time since it was written.
+  const now = Date.parse("2026-09-24T17:00:00.000Z");
+  const card = {
+    id: "snapshot",
+    title: "Blocked long ago",
+    owner: "worker",
+    status: "blocked",
+    updated: "2026-09-24T12:00:00.000Z",
+    blocked_at: "2026-09-24T12:00:00.000Z",
+    blocked_ms: 60 * 1000, // written at the moment of blocking, 5 hours stale
+    block_reason: "triaged",
+  };
+  const result = buildCoordinatorMetrics({
+    handles: ["worker"],
+    agentStatuses: { worker: "idle" },
+    board: { columns: { backlog: [], in_progress: [], blocked: [card], done: [] } },
+    now,
+    thresholds: { blockedWarnMs: 10 * 60 * 1000, blockedCriticalMs: 30 * 60 * 1000 },
+  });
+  assert.equal(
+    result.blockedOldest.oldestAgeMs,
+    5 * 60 * 60 * 1000,
+    "the live age from blocked_at is the honest figure; the stored snapshot is not",
+  );
+});
