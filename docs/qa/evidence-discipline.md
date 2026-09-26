@@ -289,3 +289,51 @@ delivery map went from 68 entries (32 with `attempts > 1`) to 1 entry. Two daemo
 one file is a plausible cause and the retry metric's own windowing defect is a separate matter;
 neither was investigated here, because the retry-trend diagnosis belongs to the coordinator and
 this document does not claim a fix for it.
+
+## Gate reliability is per gate, and contention is classified from a loadavg PAIR
+
+Measured on the 4-core host: the full gate ran 366s (exit 0, PASS), the quick gate 33s, the
+slowest Godot harness 16s against a 600s budget, and the other thirteen Godot harnesses 7–14s —
+37× to 80× headroom. `qa_audit` (`node tools/qa/audit.mjs --check`, **not** Godot) ran 211.8s wall
+against a 900s budget: 204.5s user, 5.8s system, ~99.3% CPU-bound and single-threaded. Under 12 CPU
+burners on 4 cores it exceeded 900s, exiting 124 having used only 3m24s of CPU — starved to roughly
+23% of a core. A timeout there is `WARN`, not a hard fail.
+
+So a blanket "a timeout on the contended host is not evidence" rule protects gates that cannot
+plausibly time out, and invalidates sound results to defend an unsound one. It narrowed to
+`qa_audit` alone. For the fourteen Godot gates a timeout is a hang — stale `.godot`, a scene that
+never boots — which is environment evidence and needs no code change. No Godot serialisation was
+implemented: it would defend the wrong gate, since `qa_audit` is Node and never takes the Godot
+lock, and it would cost every lane its throughput.
+
+**The one change to the proposal, and it is the right one.** Recording loadavg *at start* would
+have been wrong: loadavg is a damped 1/5/15-minute average, so it describes the box *before* the
+work. A host that was quiet at start and loaded by the gate itself would be recorded healthy —
+precisely the case the rule exists to catch. `readLoadavg()` therefore samples at start **and** at
+exit, including on the timeout path, and `classifyContention()` reads the pair:
+
+| start | exit | classification | meaning |
+| --- | --- | --- | --- |
+| low | low | `uncontended` | a timeout is a hang, and a hang is a finding |
+| high | high | `contention-limited` | the host is a fact about the host, not the job |
+| low | high | `contention-limited` | the job loaded the box; invisible to a start-only reading |
+| high | low | `started-contended` | reported, never quietly read as clean |
+
+Read per-core, because a 1.0 one-minute average is a saturated 4-core box and an idle 64-core one.
+The classification is recorded on the failure reason and on success; it never sets a pass/fail
+field, which is the whole point of the rule that superseded the blanket one.
+
+| break | result |
+| --- | --- |
+| none (control) | 8 pass, 0 fail |
+| genuinely start-only (exit reading discarded) | 6 pass, **2 fail** |
+| raw 1-minute loadavg instead of per-core | 7 pass, **1 fail** |
+| let contention carry a verdict field | 6 pass, **2 fail** |
+
+The first attempt at the start-only break was **green**: the sabotage only covered the *missing*
+exit case, so a start-only implementation still passed. A break that does not reproduce the defect
+is worse than no break, because it reports safety. It was redone to discard the exit reading
+outright, which is what a first implementation would actually have done.
+
+No further contention test was run on the shared host. Breaking other lanes to produce a number is
+a bad trade, and the arithmetic above is labelled as arithmetic rather than as a measurement.

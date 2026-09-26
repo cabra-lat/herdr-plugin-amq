@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
+import os from "node:os";
 
 const STATES = new Set(["queued", "running", "succeeded", "failed", "cancelled"]);
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
@@ -315,7 +316,14 @@ export class JobQueue {
       return this.complete(job.id, owner, result);
     } catch (error) {
       if (this.get(job.id)?.status === "cancelled") return { ...job, status: "cancelled" };
-      return this.fail(job.id, owner, error?.message || String(error));
+      // The loadavg pair rides along with the failure so a timeout can be read as a
+      // hang or as contention without re-running anything. It is reported, never
+      // scored: a job that failed on a busy host failed, and a job that timed out on
+      // a busy host is a fact about the host, not a pass.
+      const detail = error?.contention
+        ? ` [${error.contention.classification || "unknown"}: ${error.contention.reason}${error.contention.timedOut ? " (timeout)" : ""}]`
+        : "";
+      return this.fail(job.id, owner, `${error?.message || String(error)}${detail}`);
     }
   }
 
@@ -362,14 +370,80 @@ export class JobQueue {
   }
 }
 
+// loadavg is a damped 1/5/15-minute average, so a single reading describes the box
+// BEFORE the work rather than during it: a host that was quiet at start and loaded by
+// the job itself would be recorded as healthy, which is the case the pair exists to
+// catch. Reading at both ends lets a timeout be classified instead of guessed:
+//   both low            -> the timeout is a hang, and a hang is a finding
+//   pair high, or
+//     start low/exit high -> contention-limited, and not a finding about the job
+export function readLoadavg() {
+  try {
+    const raw = fs.readFileSync("/proc/loadavg", "utf8");
+    const [one, five, fifteen] = raw.trim().split(/\s+/);
+    const cores = os.cpus().length || 1;
+    return {
+      one: Number(one),
+      five: Number(five),
+      fifteen: Number(fifteen),
+      cores,
+      // Per-core load is the comparable number: a 1.0 one-minute average means a
+      // different thing on 4 cores than on 64, and the whole question is whether
+      // other work was competing for the ones this job needed.
+      perCore: Number((Number(one) / cores).toFixed(3)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Contention is a judgement about the host, not about the job, so it is classified
+// from the pair and kept out of the pass/fail verdict. `classification` is null when
+// the job finished on its own, because a healthy job on a loaded host is still a
+// healthy job.
+// Exported for direct test: the classification is a decision about the host, and it
+// is the part that has to be right on a box nobody can load on demand.
+export function classifyContention(start, exit) {
+  if (!start || !exit) return { classification: null, reason: "loadavg unavailable" };
+  const busy = (sample) => sample.perCore >= 0.5;
+  if (busy(start) && busy(exit)) {
+    return { classification: "contention-limited", reason: `loadavg per-core high at both ends (start ${start.perCore}, exit ${exit.perCore})` };
+  }
+  if (!busy(start) && busy(exit)) {
+    return { classification: "contention-limited", reason: `host was quiet at start (${start.perCore}) and busy at exit (${exit.perCore}): the job loaded the box` };
+  }
+  if (busy(start) && !busy(exit)) {
+    return { classification: "started-contended", reason: `host was busy at start (${start.perCore}) and quiet at exit (${exit.perCore})` };
+  }
+  return { classification: "uncontended", reason: `loadavg per-core low at both ends (start ${start.perCore}, exit ${exit.perCore})` };
+}
+
 function defaultRunner(job) {
   return new Promise((resolve, reject) => {
     const [executable, ...args] = job.kind === "godot"
       ? [job.lockWrapper, ...job.command]
       : job.command;
+    const loadavgAtStart = readLoadavg();
     execFile(executable, args, { cwd: process.cwd(), timeout: 15 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`${error.message}${stderr ? `: ${safeString(stderr, 512)}` : ""}`));
-      else resolve({ stdout: safeString(stdout, 4096), stderr: safeString(stderr, 4096) });
+      // Read at exit on every path, including the timeout path, which is the one
+      // that needs it: a timeout is only a hang if the host was not the reason.
+      const loadavgAtExit = readLoadavg();
+      const contention = classifyContention(loadavgAtStart, loadavgAtExit);
+      const timedOut = Boolean(error && (error.killed || error.signal === "SIGTERM"));
+      if (error) {
+        const detail = {
+          ...contention,
+          loadavgAtStart,
+          loadavgAtExit,
+          timedOut,
+          // The pair is reported for a timeout because that is the one verdict that
+          // cannot be made without it.
+          ...(timedOut ? { note: "A timeout is only a hang if the host was not the reason; compare the loadavg pair above." } : {}),
+        };
+        reject(Object.assign(new Error(`${error.message}${stderr ? `: ${safeString(stderr, 512)}` : ""}`), { contention: detail }));
+      } else {
+        resolve({ stdout: safeString(stdout, 4096), stderr: safeString(stderr, 4096), contention: { ...contention, loadavgAtStart, loadavgAtExit } });
+      }
     });
   });
 }
