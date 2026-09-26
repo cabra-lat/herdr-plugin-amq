@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findAmqRoot, getAgentHandles, getHerdrBin, getCoordinatorDoorbellConfig, saveCoordinatorDoorbellConfig } from "./config.mjs";
-import { markMaildirMessageRead } from "./protocol.mjs";
+import { markMaildirMessageRead, readRawMaildirMessage } from "./protocol.mjs";
 import {
   loadAllMessages,
   loadThreads,
@@ -1007,6 +1007,44 @@ export function startWebServer({
       return;
     }
 
+
+    // The raw markdown a sender actually wrote, byte for byte.
+    //
+    // A rendered message and its source are two different things, and a reader who cannot
+    // see the source cannot tell which one they are looking at. That confusion is not
+    // hypothetical: a 42-byte probe attachment was read as a broken deliverable because
+    // nothing on the surface let the reader open the file and see it was deliberate.
+    //
+    // Served as text/plain so a browser renders the bytes rather than re-interpreting them,
+    // and as a JSON envelope with the same text when `?format=json` is asked for, so the
+    // client can offer a copy action without scraping HTML.
+    if (pathname.startsWith("/api/messages/") && pathname.endsWith("/raw") && req.method === "GET") {
+      const messageId = decodeURIComponent(pathname.slice("/api/messages/".length, -"/raw".length));
+      const account = url.searchParams.get("account") || "user";
+      if (account === "all" || !/^[A-Za-z0-9_-]{1,128}$/.test(account)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "A concrete mailbox account is required" }));
+        return;
+      }
+      const found = readRawMaildirMessage(amqRoot, account, messageId);
+      if (!found.ok) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: found.error || "not found" }));
+        return;
+      }
+      if (url.searchParams.get("format") === "json") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, id: found.id, from: found.from, to: found.to, subject: found.subject, raw: found.raw }));
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": `inline; filename="${messageId.replace(/[^A-Za-z0-9_.-]/g, "_")}.md"`,
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(found.raw);
+      return;
+    }
 
     if (pathname.startsWith("/api/messages/") && pathname.endsWith("/read") && req.method === "POST") {
       const messageId = decodeURIComponent(pathname.slice("/api/messages/".length, -"/read".length));

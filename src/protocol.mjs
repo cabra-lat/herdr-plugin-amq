@@ -497,6 +497,34 @@ function findMessageInDirectory(dir, msgId) {
   return null;
 }
 
+// The EXACT markdown a sender wrote, byte for byte.
+//
+// findMessageInDirectory returns the parsed header; the body is everything after the closing
+// --- of the JSON frontmatter. It is returned UNTRIMMED and UNESCAPED, because a raw view
+// that tidies the source is a second lossy rendering wearing the first ones name.
+export function readRawMaildirMessage(amqRoot, handle, msgId) {
+  if (!amqRoot || !isSafeMailIdentifier(handle, 128) || !isSafeMailIdentifier(msgId)) {
+    return { ok: false, error: "Invalid mailbox or message identifier" };
+  }
+  try {
+    const agentDir = resolveAgentDirectory(amqRoot, handle, false);
+    if (!agentDir) return { ok: false, error: "Mailbox not found" };
+    const found =
+      findMessageInDirectory(path.join(agentDir, "inbox", "new"), msgId) ||
+      findMessageInDirectory(path.join(agentDir, "inbox", "cur"), msgId);
+    if (!found) return { ok: false, error: "Message not found" };
+
+    const text = fs.readFileSync(found.filePath, "utf8");
+    const m = text.match(/^---\s*json\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+    const raw = m ? text.slice(m[0].length) : text;
+    let header = found.header || {};
+    if (m) { try { header = JSON.parse(m[1]); } catch { /* keep the parsed header */ } }
+    return { ok: true, id: msgId, raw, from: header.from ?? null, to: header.to ?? null, subject: header.subject ?? null };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : "read failed" };
+  }
+}
+
 export function markMaildirMessageRead(amqRoot, handle, msgId) {
   if (!amqRoot || !isSafeMailIdentifier(handle, 128) || !isSafeMailIdentifier(msgId)) {
     return { ok: false, error: "Invalid mailbox or message identifier" };
