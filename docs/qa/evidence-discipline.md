@@ -119,7 +119,7 @@ into `clearOwnedDaemonRegistration()` and tested directly with a foreign pid, wh
 way to assert "a foreign cleanup leaves the live registration alone" while a singleton lock makes
 two daemons impossible to construct through the CLI.
 
-## retry_failure_trend windowing (commit 5f5a6f2)
+## retry_failure_trend windowing (commit 2ef917f)
 
 The alert could never clear. `retryCount` was the sum of `(attempts - 1)` over every delivery
 entry ever recorded, and `retryDelayMaxMs` was `max(now - firstAttemptAt)` — for a fixed first
