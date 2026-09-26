@@ -166,3 +166,98 @@ test("the help text does not document --attach as taking a single value", () => 
     assert.doesNotMatch(out, /\[--attach <p>\](?!\.\.\.)/, "help still shows a singular --attach");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// THE LIBRARY LAYER, one level down from the CLI. The CLI refuses a send with no --from and
+// no AM_ME, and that fix alone left POST /api/send handing an arbitrary request body straight
+// into sendAmqMessage, where the default stamped the coordinator. A fix at the flag surface is
+// not a fix at the layer the flags sit on, and the second is reachable without touching a flag.
+//
+// Read from the RECIPIENT side, everywhere, and asserted as the ABSENCE of a foreign sender.
+function anyDelivered(root) {
+  const out = [];
+  for (const h of fs.readdirSync(path.join(root, ".agent-mail/agents"))) {
+    for (const s of ["inbox/new", "inbox/cur"]) {
+      const d = path.join(root, ".agent-mail/agents", h, s);
+      for (const f of fs.existsSync(d) ? fs.readdirSync(d) : []) {
+        if (!f.endsWith(".md")) continue;
+        const m = fs.readFileSync(path.join(d, f), "utf8").match(/^---json\n([\s\S]*?)\n---/);
+        if (m) out.push({ mailbox: h, header: JSON.parse(m[1]) });
+      }
+    }
+  }
+  return out;
+}
+
+test("sendAmqMessage with no sender refuses and delivers nothing", async () => {
+  const root = fixture();
+  try {
+    const { sendAmqMessage } = await import("../src/store.mjs");
+    const res = sendAmqMessage(path.join(root, ".agent-mail"), {
+      to: "user", subject: "no sender", body: "b",
+    });
+    assert.equal(res.ok, false, "a send that cannot attribute itself must not succeed");
+    assert.match(res.error || "", /from/, "and it names the input that would fix it");
+    const delivered = anyDelivered(root);
+    assert.deepEqual(delivered, [], "nothing may be delivered under a guessed identity");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("sendAmqMessage with an explicit sender still delivers, and stamps that sender", async () => {
+  const root = fixture();
+  try {
+    const { sendAmqMessage } = await import("../src/store.mjs");
+    const res = sendAmqMessage(path.join(root, ".agent-mail"), {
+      from: "qa", to: "user", subject: "with sender", body: "b",
+    });
+    assert.equal(res.ok, true, `an attributed send must still work: ${JSON.stringify(res)}`);
+    const delivered = anyDelivered(root);
+    assert.equal(delivered.length, 1, "exactly one message was delivered");
+    assert.equal(delivered[0].mailbox, "user", "read from the recipient's mailbox");
+    assert.equal(delivered[0].header.from, "qa");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("POST /api/send with no sender is refused, and the dashboard is not a back door", async () => {
+  // The dashboard compose box is a USER-FACING path. Before this, composing a message without
+  // choosing a sender produced a successful send attributed to the coordinator, which is the
+  // defect the CLI fix was written for, reachable by clicking instead of typing.
+  const root = fixture();
+  let server = null;
+  const oldState = process.env.HERDR_PLUGIN_STATE_DIR;
+  const oldConfig = process.env.HERDR_PLUGIN_CONFIG_DIR;
+  try {
+    const { startWebServer } = await import("../src/server.mjs");
+    const amqRoot = path.join(root, ".agent-mail");
+    process.env.HERDR_PLUGIN_STATE_DIR = path.join(root, "state");
+    process.env.HERDR_PLUGIN_CONFIG_DIR = path.join(root, "config");
+    server = startWebServer({ port: 0, host: "127.0.0.1", amqRoot });
+    await new Promise((r) => server.once("listening", r));
+    const base = `http://127.0.0.1:${server.address().port}`;
+
+    const refused = await fetch(`${base}/api/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: "user", subject: "from the dashboard", body: "b" }),
+    });
+    assert.equal(refused.status, 400, "an unattributable send is a 400, not a 200 with somebody else's name on it");
+    assert.deepEqual(anyDelivered(root), [], "and nothing was delivered");
+
+    const accepted = await fetch(`${base}/api/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from: "qa", to: "user", subject: "from the dashboard", body: "b" }),
+    });
+    assert.equal(accepted.status, 200);
+    const delivered = anyDelivered(root);
+    assert.equal(delivered.length, 1);
+    assert.equal(delivered[0].header.from, "qa", "the sender the caller named is the sender on the wire");
+  } finally {
+    if (server) {
+      if (typeof server.closeAllConnections === "function") server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
+    if (oldState === undefined) delete process.env.HERDR_PLUGIN_STATE_DIR; else process.env.HERDR_PLUGIN_STATE_DIR = oldState;
+    if (oldConfig === undefined) delete process.env.HERDR_PLUGIN_CONFIG_DIR; else process.env.HERDR_PLUGIN_CONFIG_DIR = oldConfig;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1169,7 +1169,29 @@ function normalizeAmqKind(rawKind) {
  */
 export function sendAmqMessage(amqRoot, { from, to, subject, body, thread, priority, kind, attachments }) {
   const recipients = Array.isArray(to) ? to : [to];
-  const safeFrom = from || "coordinator";
+  // NO FALLBACK TO ANOTHER HANDLE. This read `from || "coordinator"`, and the two callers
+  // were audited rather than grepped, which is what made the difference:
+  //
+  //   * board.mjs:688 (notifyTaskEvent) always passes an explicit `from`, and that value is
+  //     now always defined, so the default was unreachable from the board.
+  //   * server.mjs:1099 (POST /api/send) passes a request body straight through, so ANY
+  //     client that omits `from` - the dashboard compose box with no sender chosen, a curl,
+  //     a script - reached this default and had its message attributed to the coordinator.
+  //     That path is LIVE and it is a real message, not a notification.
+  //
+  // So this refuses rather than defaults, and it refuses LOUDLY: a message that cannot
+  // attribute itself is an error, because a successful send that is silently attributed to
+  // another lane is the worst outcome available - nothing fails, and every downstream reader
+  // believes the wrong author. This is the same rule the CLI applies to a send with no
+  // --from and no AM_ME (7da39b9), applied to the layer underneath it.
+  const resolvedFrom = String(from ?? "").trim();
+  if (!resolvedFrom) {
+    return {
+      ok: false,
+      error: "Refusing to send with no sender: a defaulted sender attributes this message to another lane, and a successful send would hide that. Pass from=<handle>.",
+    };
+  }
+  const safeFrom = resolvedFrom;
   const safeThread = thread || computeCanonicalThread(safeFrom, recipients);
   const safePriority = priority || "normal";
   const safeKind = normalizeAmqKind(kind);
