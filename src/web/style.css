@@ -2078,6 +2078,49 @@ body.sidebar-collapsed .app-sidebar {
   white-space: nowrap;
 }
 
+/* The byte size, on EVERY attachment row. It is the only thing on this surface that tells a
+   42-byte deliberate probe from an upload that arrived nearly empty, so it is not a nicety:
+   its absence is what made a fixture read as a failed deliverable. */
+.attachment-size {
+  color: var(--text-muted, #5f6368);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* see raw / copy source. Deliberately on the message itself and not behind a menu: the
+   reader's question is "what did they actually send", and a menu item is a second question. */
+.message-source-tools {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle, #e8eaed);
+  font-size: 11.5px;
+}
+
+.message-source-tools .msg-raw-link,
+.message-source-tools .msg-raw-copy {
+  color: var(--accent, #1a73e8);
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.message-source-tools .msg-raw-copy {
+  color: var(--text-muted, #5f6368);
+}
+
+.message-source-tools .msg-raw-link:hover,
+.message-source-tools .msg-raw-copy:hover {
+  color: var(--text-main);
+}
+
 .attachment-files-list {
   display: flex;
   flex-wrap: wrap;
@@ -2106,7 +2149,6 @@ body.sidebar-collapsed .app-sidebar {
 
 .file-icon { font-size: 14px; }
 .file-name { font-weight: 500; }
-.file-size { font-size: 11px; color: var(--text-muted); margin-left: 2px; }
 .file-action { font-size: 12px; opacity: 0.7; }
 
 /* ─── Broken / Missing Attachment Styling ──────────────────────────────────── */

@@ -71,3 +71,53 @@ test("mailbox navigation returns to mail view and desktop menu collapses in-flow
   assert.match(css, /body\.sidebar-collapsed \.app-sidebar/);
   assert.doesNotMatch(css, /body\.sidebar-collapsed \.app-sidebar[^}]*sidebar-backdrop/);
 });
+
+// The source of a message must be reachable FROM THE MESSAGE, on every surface that renders
+// one, and every attachment must state its size.
+//
+// Both are here as source assertions because the failure is a duplication failure: there are
+// three places that render a message and a fourth that lists attachments, and a reader who
+// finds the affordance in the thread view but not in the sheet has been told the feature does
+// not exist. The rendered output is asserted for real in
+// test/e2e/dashboard-raw-source.test.mjs, which drives a browser; these arms exist to catch a
+// NEW render site added without the affordance, which no browser arm would notice until
+// somebody opened that view and complained.
+test("every surface that renders a message also offers the raw source and a copy", () => {
+  const renderSites = app.match(/renderAttachmentsSection\((?:m|msg)\.attachments\)/g) || [];
+  assert.equal(renderSites.length, 3, `expected 3 message render sites, found ${renderSites.length}`);
+  // One source-tools template, one delegated wiring, and both next to every render site.
+  assert.equal((app.match(/\$\{sourceToolsHtml\}/g) || []).length, 3, "every render site must place the source tools");
+  assert.equal((app.match(/wireMessageSourceTools\(/g) || []).length, 4, "one definition plus one call per rendered container");
+  assert.match(app, /href="\$\{url\}" target="_blank" rel="noopener"/);
+  assert.match(app, /\/api\/messages\/\$\{id\}\/raw\?account=\$\{account\}/);
+  // Scoped to a CONCRETE mailbox. The endpoint refuses `all`, so a link that carried it would
+  // be a link that cannot work, and it would fail only when clicked.
+  assert.match(app, /const account = encodeURIComponent\(getActiveSender\(\)\)/);
+  // The copy reads the JSON envelope rather than scraping the rendered tab, because a copy
+  // taken from the DOM is a second lossy rendering wearing the first one's name.
+  assert.match(app, /raw\?account=\$\{account\}&format=json/);
+  assert.match(app, /navigator\.clipboard\.writeText\(data\.raw \?\? ""\)/);
+  // And it says so when it fails, rather than silently doing nothing.
+  assert.match(app, /mail\.rawFailed/);
+  for (const key of ["mail.seeRaw", "mail.copyRaw", "mail.copiedRaw", "mail.rawFailed"]) {
+    assert.ok(i18n.includes(`"${key}"`), `${key} is missing from the translations`);
+  }
+  assert.match(css, /\.message-source-tools/);
+});
+
+test("every attachment row states its byte size, not only the file rows", () => {
+  // A 42-byte deliberate probe and an upload that arrived nearly empty look identical without
+  // a number next to them, and that confusion is what made a fixture read as a broken
+  // deliverable. The size was already computed and already on the wire; it was rendered for
+  // files and dropped for images and video.
+  assert.match(app, /const sizeTag = \(a\) =>/);
+  for (const name of ["img.name", "vid.name"]) {
+    assert.match(app, new RegExp(`attachment-filename">\\$\\{escapeHtml\\(${name.replace(".", "\\.")}\\)} \\$\\{sizeTag\\(`),
+      `${name} does not carry its size`);
+  }
+  // The file row kept its own class and gained the same tag, so all three row kinds go
+  // through one helper. A second, near-identical size renderer is how the two drifted apart
+  // in the first place.
+  assert.match(app, /class="file-name">\$\{escapeHtml\(f\.name\)\}<\/span>\s*\$\{sizeTag\(f\)\}/);
+  assert.match(css, /\.attachment-size/);
+});

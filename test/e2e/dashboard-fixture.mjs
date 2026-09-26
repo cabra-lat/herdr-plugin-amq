@@ -331,6 +331,7 @@ export async function createDashboardFixture({ registerAmqRootEnv = false, amqRo
 
   return {
     baseUrl,
+    amqRoot,
     herdr,
     latestMessageId,
     /** Registered handles this fixture expects to resolve from the Herdr session. */

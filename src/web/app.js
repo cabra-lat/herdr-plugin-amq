@@ -1264,6 +1264,7 @@
       const renderedBody = renderMarkdown(m.body);
       const highlightedBody = state.searchQuery ? highlightTerms(renderedBody, state.searchQuery) : renderedBody;
       const attachmentsHtml = renderAttachmentsSection(m.attachments);
+      const sourceToolsHtml = renderMessageSourceTools(m);
 
       html += `
         <div class="thread-card ${isLatest ? "expanded" : "collapsed"}" data-card-idx="${idx}" data-msg-id="${m.id}" data-msg-from="${m.from}">
@@ -1283,12 +1284,14 @@
             </div>
             <div class="md-content">${highlightedBody}</div>
             ${attachmentsHtml}
+            ${sourceToolsHtml}
           </div>
         </div>
       `;
     });
 
     threadMessagesListEl.innerHTML = html;
+    wireMessageSourceTools(threadMessagesListEl);
 
     // Attach card expansion clicks
     threadMessagesListEl.querySelectorAll(".thread-card-header").forEach((header) => {
@@ -1331,6 +1334,7 @@
     const renderedBody = renderMarkdown(msg.body);
     const highlightedBody = state.searchQuery ? highlightTerms(renderedBody, state.searchQuery) : renderedBody;
     const attachmentsHtml = renderAttachmentsSection(msg.attachments);
+    const sourceToolsHtml = renderMessageSourceTools(msg);
 
     threadMessagesListEl.innerHTML = `
       <div class="thread-card expanded" data-msg-id="${msg.id}" data-msg-from="${msg.from}">
@@ -1349,10 +1353,12 @@
           </div>
           <div class="md-content">${highlightedBody}</div>
           ${attachmentsHtml}
+          ${sourceToolsHtml}
         </div>
       </div>
     `;
 
+    wireMessageSourceTools(threadMessagesListEl);
     quickReplyTextEl.value = "";
 
     // Dynamic contextual Smart Replies
@@ -1562,12 +1568,75 @@
 
   // ─── Attachments Section ───────────────────────────────────────────────────
 
+  // ─── The source, next to the rendering ──────────────────────────────────────
+  //
+  // A rendered message and the markdown the sender wrote are two different things, and a
+  // reader who cannot see the source cannot tell which one they are looking at. That is not
+  // hypothetical: a 42-byte probe attachment was read as a broken deliverable because nothing
+  // on this surface let the reader open the file and see it was deliberate.
+  //
+  // Two actions, both one click from the message, because the reader's goal is to see what
+  // was actually sent:
+  //   see raw  -> opens the text/plain bytes in a NEW tab. New, not current: replacing the
+  //               reading view with the source loses the place the reader was.
+  //   copy     -> the same bytes on the clipboard, from the JSON envelope rather than by
+  //               scraping the tab, so a copied source is not a second lossy rendering.
+  function renderMessageSourceTools(message) {
+    if (!message || !message.id) return "";
+    const account = encodeURIComponent(getActiveSender());
+    const id = encodeURIComponent(message.id);
+    const url = `/api/messages/${id}/raw?account=${account}`;
+    return `
+      <div class="message-source-tools">
+        <a class="msg-raw-link" href="${url}" target="_blank" rel="noopener"
+           title="${escapeHtml(t("mail.seeRaw"))}">${escapeHtml(t("mail.seeRaw"))}</a>
+        <button type="button" class="msg-raw-copy" data-msg-id="${escapeHtml(message.id)}"
+           title="${escapeHtml(t("mail.copyRaw"))}">${escapeHtml(t("mail.copyRaw"))}</button>
+      </div>
+    `;
+  }
+
+  // Delegated, because the message list is re-rendered wholesale on every fetch and a
+  // per-button listener would be lost each time. One listener on the container, resolved by
+  // data-msg-id at click time.
+  function wireMessageSourceTools(container) {
+    if (!container) return;
+    container.querySelectorAll(".msg-raw-copy").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const id = encodeURIComponent(btn.getAttribute("data-msg-id") || "");
+        const account = encodeURIComponent(getActiveSender());
+        const original = btn.textContent;
+        try {
+          const res = await fetch(`/api/messages/${id}/raw?account=${account}&format=json`);
+          if (!res.ok) throw new Error(`raw read failed: ${res.status}`);
+          const data = await res.json();
+          await navigator.clipboard.writeText(data.raw ?? "");
+          btn.textContent = t("mail.copiedRaw");
+        } catch {
+          // Say so. A copy button that silently does nothing is indistinguishable from a
+          // message whose source is unavailable, which is the confusion this surface exists
+          // to remove.
+          btn.textContent = t("mail.rawFailed");
+        }
+        setTimeout(() => { btn.textContent = original; }, 1500);
+      });
+    });
+  }
+
   function renderAttachmentsSection(attachments) {
     if (!attachments || !attachments.length) return "";
 
     const images = attachments.filter((a) => a.isImage);
     const videos = attachments.filter((a) => !a.isImage && a.isVideo);
     const otherFiles = attachments.filter((a) => !a.isImage && !a.isVideo);
+
+    // EVERY row carries its size, not only the file rows. The size is already computed and
+    // already on the wire; it was rendered for files and dropped for images and video, which
+    // is precisely where a reader cannot otherwise tell a 42-byte deliberate probe from an
+    // upload that arrived nearly empty. Presentation only, no new server work.
+    const sizeTag = (a) => (a.sizeDisplay ? `<span class="attachment-size">(${escapeHtml(a.sizeDisplay)})</span>` : "");
 
     let html = `<div class="attachments-container">`;
     html += `<div class="attachments-header"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a3 3 0 0 0 6 0V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg> <span>Attachments & Visual Artifacts (${attachments.length})</span></div>`;
@@ -1592,7 +1661,7 @@
               <div class="attachment-thumb-wrap">
                 <img src="${fileUrl}" alt="${escapeHtml(img.name)}" loading="lazy" onerror="this.onerror=null;this.parentElement.innerHTML='<div class=\\'broken-img\\'>🖼️ ${escapeHtml(img.name)}</div>'">
               </div>
-              <span class="attachment-filename">${escapeHtml(img.name)}</span>
+              <span class="attachment-filename">${escapeHtml(img.name)} ${sizeTag(img)}</span>
             </div>
           `;
         }
@@ -1623,7 +1692,7 @@
               <div class="attachment-thumb-wrap">
                 <video controls preload="metadata" src="${fileUrl}" style="max-width:100%;max-height:320px;"></video>
               </div>
-              <span class="attachment-filename">${escapeHtml(vid.name)}</span>
+              <span class="attachment-filename">${escapeHtml(vid.name)} ${sizeTag(vid)}</span>
             </div>
           `;
         }
@@ -1645,12 +1714,12 @@
         } else {
           const fileUrl = f.url || `/api/file?path=${encodeURIComponent(f.path)}`;
           const icon = f.isLog ? "📄" : "📎";
-          const sizeBadge = f.sizeDisplay ? `<span class="file-size">(${escapeHtml(f.sizeDisplay)})</span>` : "";
+
           html += `
             <a href="${fileUrl}" target="_blank" class="attachment-file-chip" title="${escapeHtml(f.path)}">
               <span class="file-icon">${icon}</span>
               <span class="file-name">${escapeHtml(f.name)}</span>
-              ${sizeBadge}
+              ${sizeTag(f)}
               <span class="file-action">↗</span>
             </a>
           `;
@@ -3457,6 +3526,7 @@
       const toStr = Array.isArray(m.to) ? m.to.join(", ") : (m.to || "all");
       const renderedBody = renderMarkdown(m.body || "");
       const attachmentsHtml = renderAttachmentsSection(m.attachments);
+      const sourceToolsHtml = renderMessageSourceTools(m);
 
       html += `
         <div class="sheet-msg-card ${isLatest ? "expanded" : "collapsed"}" data-msg-id="${escapeHtml(m.id)}">
@@ -3476,12 +3546,14 @@
             </div>
             <div class="md-content">${renderedBody}</div>
             ${attachmentsHtml}
+            ${sourceToolsHtml}
           </div>
         </div>
       `;
     });
 
     sheetThreadList.innerHTML = html;
+    wireMessageSourceTools(sheetThreadList);
 
     sheetThreadList.querySelectorAll(".sheet-msg-header").forEach((hdr) => {
       hdr.addEventListener("click", () => {
