@@ -117,6 +117,49 @@ export function mergeHerdrStatusEvent(cache, event, observedAt = new Date().toIS
   return { handle, activity: next };
 }
 
+// A missing pane and a dead herdr are DIFFERENT failures and must never share a code.
+//
+// Herdr answers an unknown handle with a structured `agent_not_found` payload, and a
+// dead/unreachable binary with a spawn error. Both used to render as the single string
+// "herdr-unavailable", which made a total outage and two benign mailbox rows look
+// identical. That is exactly backwards: the outage is the condition that needs a human,
+// and it was the one being hidden. `user` and `worker` have AMQ mailboxes but no agent
+// pane, so a fleet with a perfectly healthy herdr reported two red errors a reader would
+// (correctly) dismiss as noise - and then a real outage later looked like that same
+// familiar noise.
+//
+// Exported so it can be tested directly: this classifier is the only thing standing
+// between a dead herdr and an unreadable dashboard.
+export function classifyPaneRead({ err, stdout, stderr } = {}) {
+  // Herdr writes its JSON error envelope to STDERR, not stdout (observed on 0.7.5:
+  // `agent read user` -> exit 1, empty stdout, envelope on stderr). Reading only
+  // stdout is why the first version of this fix passed every unit test and still
+  // reported a live outage in production: the test fixture used a payload herdr
+  // never emits on that path. Both streams are parsed.
+  let code = null;
+  for (const stream of [stdout, stderr]) {
+    const text = String(stream || "").trim();
+    if (!text.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.error && parsed.error.code) {
+        code = parsed.error.code;
+        break;
+      }
+    } catch {
+      // Not herdr's JSON envelope (a normal pane read is raw terminal text).
+    }
+  }
+  // agent_not_found is a FACT ABOUT THE HANDLE, so it is checked before `err`:
+  // it arrives WITH a non-zero exit, so trusting the exit code alone would classify
+  // every missing pane as a herdr outage.
+  if (code === "agent_not_found") {
+    return { ok: false, error: "no-pane" };
+  }
+  if (err) return { ok: false, error: "herdr-unavailable" };
+  return { ok: true, error: null };
+}
+
 export function startWebServer({
   port = 8505,
   host = process.env.AGMAIL_HOST || "127.0.0.1",
@@ -473,7 +516,7 @@ export function startWebServer({
                 getHerdrBin(),
                 ["agent", "read", a.handle, "--lines", String(lineCount), "--format", "text"],
                 { timeout: 8000, maxBuffer: 1024 * 1024 },
-                (err, stdout) => {
+                (err, stdout, stderr) => {
                   const clean = String(stdout || "")
                     // eslint-disable-next-line no-control-regex
                     .replace(/\u001b\[[0-9;]*m/g, "")
@@ -482,8 +525,7 @@ export function startWebServer({
                   // and binary locations into the UI (and API responses).
                   resolve({
                     handle: a.handle,
-                    ok: !err,
-                    error: err ? "herdr-unavailable" : null,
+                    ...classifyPaneRead({ err, stdout, stderr }),
                     output: clean.slice(-6000),
                     at: new Date().toISOString(),
                   });
