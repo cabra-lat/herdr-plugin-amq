@@ -27,8 +27,8 @@ test("coordinator metrics count stages, agent states, queue age, and stalled wor
     },
     board: board(),
     deliveredState: {
-      delivered: { msg1: { attempts: 3, firstAttemptAt: "2026-09-24T16:50:00.000Z" } },
-      deliveredTasks: { task1: { attempts: 2, firstAttemptAt: "2026-09-24T16:40:00.000Z" } },
+      delivered: { msg1: { attempts: 3, firstAttemptAt: "2026-09-24T16:50:00.000Z", at: "2026-09-24T16:59:00.000Z" } },
+      deliveredTasks: { task1: { attempts: 2, firstAttemptAt: "2026-09-24T16:40:00.000Z", at: "2026-09-24T16:58:00.000Z" } },
     },
     resources: { cpuPercent: 80, rssGiB: 1.6, gpuVramPercent: 85, importAgeMs: 400000, heavyJobs: 3 },
     now: NOW,
@@ -175,7 +175,7 @@ test("real retry evidence still raises retry_failure_trend", () => {
     handles: ["coordinator"],
     agentStatuses: { coordinator: "idle" },
     board: { columns: { backlog: [], in_progress: [], blocked: [], done: [] } },
-    deliveredState: { delivered: { message: { attempts: 2, firstAttemptAt: "2026-09-24T16:50:00.000Z" } } },
+    deliveredState: { delivered: { message: { attempts: 2, firstAttemptAt: "2026-09-24T16:50:00.000Z", at: "2026-09-24T16:59:30.000Z" } } },
     now: NOW,
   });
 
@@ -255,4 +255,55 @@ test("stalled_work surfaces note recency as evidence without making notes livene
   assert.equal(stalled.stalledCount, 2);
   assert.match(stalled.message, /1 of them carry notes/);
   assert.match(stalled.recommendedAction, /heartbeat|reason/i);
+});
+
+test("retry_failure_trend self-clears once delivery stops being retried, and age alone cannot raise it", () => {
+  // The defect this encodes: retryCount and retryDelayMaxMs were lifetime-cumulative,
+  // and retryDelayMaxMs grew at exactly one second per second for any fixed first
+  // attempt, so once any delivery had been retried the alert was over threshold
+  // permanently. Time alone must never be able to raise it.
+  const build = (now, delivered) => buildCoordinatorMetrics({
+    handles: ["coordinator"],
+    agentStatuses: { coordinator: "idle" },
+    board: { columns: { backlog: [], in_progress: [], blocked: [], done: [] } },
+    deliveredState: { delivered },
+    now,
+  });
+
+  // Retried 1 minute before NOW: the incident is open and the alert is legitimate.
+  const open = build(NOW, { stuck: { attempts: 2, firstAttemptAt: "2026-09-24T16:50:00.000Z", at: "2026-09-24T16:59:00.000Z" } });
+  assert.equal(open.retries.count, 1);
+  assert.equal(open.retries.retriedItems, 1);
+  assert.ok(open.alerts.some((alert) => alert.id === "retry_failure_trend"), "an actively retried delivery must alert");
+
+  // Nothing retried, but still inside the window: unchanged.
+  const quiet = build(NOW + 60 * 1000, { stuck: { attempts: 2, firstAttemptAt: "2026-09-24T16:50:00.000Z", at: "2026-09-24T16:59:00.000Z" } });
+  assert.equal(quiet.retries.count, 1, "still inside the window");
+  assert.ok(quiet.alerts.some((alert) => alert.id === "retry_failure_trend"), "still open inside the window");
+
+  // Past the window the incident is closed: the alert clears, and the lifetime
+  // figures remain as context without ever being compared to a threshold.
+  const closed = build(NOW + 20 * 60 * 1000, { stuck: { attempts: 2, firstAttemptAt: "2026-09-24T16:50:00.000Z", at: "2026-09-24T16:59:00.000Z" } });
+  assert.equal(closed.retries.count, 0);
+  assert.equal(closed.retries.maxDeliveryAgeMs, 0);
+  assert.equal(closed.alerts.some((alert) => alert.id === "retry_failure_trend"), false, "the alert must self-clear");
+  assert.equal(closed.retries.lifetime.count, 1, "lifetime context is retained");
+  assert.equal(closed.retries.lifetime.retriedItems, 1);
+  assert.equal(closed.retries.windowMs, 900 * 1000);
+
+  // A four-day-old closed retry is not a trend, however old it is.
+  const ancient = build(NOW, { ancient: { attempts: 2, firstAttemptAt: "2026-09-20T10:00:00.000Z", at: "2026-09-20T10:01:00.000Z" } });
+  assert.equal(ancient.alerts.some((alert) => alert.id === "retry_failure_trend"), false, "a closed retry from four days ago is not a trend");
+  assert.equal(ancient.retries.lifetime.count, 1);
+
+  // A delivery still being retried keeps the alert up, and the reported age is the
+  // duration of the CURRENT incident.
+  const ongoing = build(NOW, { ongoing: { attempts: 4, firstAttemptAt: "2026-09-24T16:50:00.000Z", at: "2026-09-24T16:59:59.000Z" } });
+  const alert = ongoing.alerts.find((entry) => entry.id === "retry_failure_trend");
+  assert.ok(alert, "3 retries inside the last minute must alert");
+  assert.equal(alert.retryCount, 3);
+  assert.equal(alert.retryCountLifetime, 3);
+  assert.equal(alert.retryDelayMaxMs, 10 * 60 * 1000, "age of the current incident");
+  assert.equal(alert.retryWindowMs, 900 * 1000);
+  assert.match(alert.message, /last 900s/, "the message must say the measurement is windowed");
 });

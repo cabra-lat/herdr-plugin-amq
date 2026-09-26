@@ -119,6 +119,32 @@ into `clearOwnedDaemonRegistration()` and tested directly with a foreign pid, wh
 way to assert "a foreign cleanup leaves the live registration alone" while a singleton lock makes
 two daemons impossible to construct through the CLI.
 
+## retry_failure_trend windowing (commit 5f5a6f2)
+
+The alert could never clear. `retryCount` was the sum of `(attempts - 1)` over every delivery
+entry ever recorded, and `retryDelayMaxMs` was `max(now - firstAttemptAt)` — for a fixed first
+attempt that grows at exactly one second per second, permanently, against a static threshold. The
+observed signature matched: retry count held at 232 while the age climbed by precisely the elapsed
+wall clock.
+
+Both measurements are now windowed on the entry's most recent attempt (`at`, which the bridge has
+always written): an entry whose last attempt is older than `retryWindowMs` (default 900 s) is a
+closed incident and stops counting. The age is taken over entries still inside the window and
+measures the duration of the *current* incident, so it grows while the incident is open and drops
+to zero when the window empties. Lifetime totals are still reported, as
+`retries.lifetime`, and are never compared to a threshold.
+
+| break | result |
+| --- | --- |
+| none (control) | 8 pass, 0 fail |
+| remove the window (count every retried entry ever) | 7 pass, **1 fail** |
+| measure the age from the last attempt instead of the incident start | 5 pass, **3 fail** |
+
+The second break is the tempting wrong fix: ageing from the last attempt makes the number decay
+immediately, which looks like the alert clearing, but it inverts the meaning — a large value then
+means "delivery has stopped failing", which is the good case. It is the reason the age is filtered
+to open incidents before it is measured.
+
 **Unresolved observation, recorded rather than diagnosed.** Across this restart the on-disk
 delivery map went from 68 entries (32 with `attempts > 1`) to 1 entry. Two daemons interleaving on
 one file is a plausible cause and the retry metric's own windowing defect is a separate matter;

@@ -12,6 +12,10 @@ const DEFAULT_THRESHOLDS = Object.freeze({
   retryWarningCount: 2,
   retryCriticalCount: 3,
   retryDelayWarnMs: 300 * 1000,
+  // A retry only counts toward the alert while it is still being retried. Without a
+  // window both the count and the age are lifetime-cumulative, so one delivery that
+  // failed once keeps the alert over threshold forever and it can never clear.
+  retryWindowMs: 900 * 1000,
   importWarnMs: 120 * 1000,
   importCriticalMs: 300 * 1000,
   cpuWarnPercent: 75,
@@ -208,13 +212,31 @@ export function buildCoordinatorMetrics({
     ...Object.values(deliveredState?.delivered || {}),
     ...Object.values(deliveredState?.deliveredTasks || {}),
   ];
-  const retryCount = deliveryEntries.reduce((sum, entry) => sum + Math.max(0, (Number(entry?.attempts) || 1) - 1), 0);
-  const retriedItems = deliveryEntries.filter((entry) => (Number(entry?.attempts) || 1) > 1).length;
   const retryEntries = deliveryEntries.filter((entry) => (Number(entry?.attempts) || 1) > 1);
-  const retryDelayMaxMs = retryEntries.reduce((max, entry) => {
+  const retryWindowMs = Number(limits.retryWindowMs) > 0 ? Number(limits.retryWindowMs) : 900 * 1000;
+  const windowStart = now - retryWindowMs;
+  // "Still failing" means the delivery was retried inside the window. An entry whose
+  // last attempt is older than that is a closed incident, and it must stop counting:
+  // this is the whole difference between an alert that can clear and one that cannot.
+  const retriedRecently = retryEntries.filter((entry) => {
+    const last = timestamp(entry?.at);
+    return last !== null && last >= windowStart;
+  });
+  // Upper bound: only the first and last attempt are recorded, so a single entry with
+  // attempts=5 contributes 4 even if the earlier ones predate the window.
+  const retryCount = retriedRecently.reduce((sum, entry) => sum + Math.max(0, (Number(entry?.attempts) || 1) - 1), 0);
+  const retriedItemCount = retriedRecently.length;
+  // Age of the CURRENT incident, taken over entries that are still being retried. It
+  // grows while the incident is open and drops to zero once the window empties, which
+  // is what makes the age disjunct self-clearing instead of monotonic.
+  const retryDelayMaxMs = retriedRecently.reduce((max, entry) => {
     const first = timestamp(entry?.firstAttemptAt || entry?.firstDeliveredAt);
     return first === null ? max : Math.max(max, Math.max(0, now - first));
   }, 0);
+  // Lifetime figures are reported for context and deliberately do NOT drive the
+  // alert: they are monotonic by construction.
+  const retryCountLifetime = retryEntries.reduce((sum, entry) => sum + Math.max(0, (Number(entry?.attempts) || 1) - 1), 0);
+  const retriedItems = retryEntries.length;
   const failureCount = cardsByStage.blocked;
   const resource = {
     cpuPercent: null,
@@ -319,8 +341,14 @@ export function buildCoordinatorMetrics({
     alerts.push({
       id: "retry_failure_trend",
       severity: retryCount >= limits.retryCriticalCount || retryDelayMaxMs > limits.retryDelayWarnMs ? "critical" : "warning",
-      message: `Observed ${retryCount} doorbell retry/retries and ${retryDelayMaxMs}ms maximum retried-delivery age.`,
+      message: `Observed ${retryCount} doorbell retry/retries across ${retriedItemCount} item(s) retried in the last ${Math.round(retryWindowMs / 1000)}s, and ${retryDelayMaxMs}ms maximum retried-delivery age.`,
       recommendedAction: "Review the affected delivery evidence before creating a bounded retry.",
+      retryWindowMs,
+      retriedItems,
+      retryCount,
+      retriedItemCount,
+      retryDelayMaxMs,
+      retryCountLifetime,
     });
   }
   alerts.push(...resourceAlerts);
@@ -331,7 +359,15 @@ export function buildCoordinatorMetrics({
     agents: { total: handles.length, byStatus: statusCounts, statuses, staleHeartbeats },
     cards: { total: allCards.length, byStage: cardsByStage },
     queue: { activeCards: activeCards.length, oldestAgeMs: queueAgeMs },
-    retries: { count: retryCount, retriedItems, maxDeliveryAgeMs: retryDelayMaxMs },
+    // `count` and `maxDeliveryAgeMs` are windowed and drive the alert; the
+    // `lifetime` figures are monotonic context and are never compared to a threshold.
+    retries: {
+      count: retryCount,
+      retriedItems,
+      maxDeliveryAgeMs: retryDelayMaxMs,
+      windowMs: retryWindowMs,
+      lifetime: { count: retryCountLifetime, retriedItems },
+    },
     failures: { blockedCards: failureCount },
     blockedWork,
     stalledWork: stalledCards,
