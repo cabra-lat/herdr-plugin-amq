@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { buildCoordinatorMetrics } from "../src/metrics.mjs";
+import { getStateDirDivergence } from "../src/config.mjs";
 
 const NOW = Date.parse("2026-09-24T17:00:00.000Z");
 
@@ -306,4 +310,33 @@ test("retry_failure_trend self-clears once delivery stops being retried, and age
   assert.equal(alert.retryDelayMaxMs, 10 * 60 * 1000, "age of the current incident");
   assert.equal(alert.retryWindowMs, 900 * 1000);
   assert.match(alert.message, /last 900s/, "the message must say the measurement is windowed");
+});
+
+test("a split state directory is reported instead of silently reading a stale file", () => {
+  // getStateDir() resolves to $HERDR_PLUGIN_STATE_DIR for a process herdr spawned and
+  // to ~/.herdr-amq-state for one started from a shell. Both files existed on this
+  // machine, and a delivery-history comparison across the two produced a confident,
+  // completely wrong conclusion. The divergence must be visible, not inferred.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "state-split-home-"));
+  const herdrDir = path.join(home, ".local", "state", "herdr", "plugins", "cabra.amq");
+  const legacyDir = path.join(home, ".herdr-amq-state");
+  fs.mkdirSync(herdrDir, { recursive: true });
+  fs.mkdirSync(legacyDir, { recursive: true });
+  fs.writeFileSync(path.join(herdrDir, "bridge-state.json"), JSON.stringify({ delivered: { a: { attempts: 9 } } }));
+  fs.writeFileSync(path.join(legacyDir, "bridge-state.json"), JSON.stringify({ delivered: { b: { attempts: 1 } } }));
+
+  const env = { HOME: home };
+  const split = getStateDirDivergence(env);
+  assert.ok(split, "two state directories holding delivery state must be reported");
+  assert.deepEqual(
+    [...split.directories].sort(),
+    [herdrDir, legacyDir].sort(),
+    "both directories must be named so the reader knows they are different histories",
+  );
+
+  // A single state directory is not a divergence, or the warning becomes noise.
+  fs.rmSync(path.join(legacyDir, "bridge-state.json"));
+  assert.equal(getStateDirDivergence(env), null);
+
+  fs.rmSync(home, { recursive: true, force: true });
 });

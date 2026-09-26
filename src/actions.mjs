@@ -8,6 +8,7 @@ import {
   getConfigDir,
   getEventContext,
   getPluginVersion,
+  getStateDirDivergence,
 } from "./config.mjs";
 import {
   getUnregisteredDaemon,
@@ -61,6 +62,15 @@ export function handleStatus() {
   }
   console.log(`AMQ Root:  ${amqRoot ? `\x1b[36m${amqRoot}\x1b[0m` : "\x1b[31mNot found\x1b[0m"}`);
   console.log(`State Dir: ${getStateDir()}`);
+  const splitState = getStateDirDivergence();
+  if (splitState) {
+    console.log(`\x1b[31m⚠ WARNING: more than one bridge state directory exists, so processes started from different contexts read different delivery history.\x1b[0m`);
+    for (const dir of splitState.directories) {
+      const marker = dir === splitState.active ? " (in use here)" : "";
+      console.log(`  - ${dir}${marker}`);
+    }
+    console.log(`  Do not compare delivery counters between these files; they are not the same history.`);
+  }
   console.log(`Config:    ${getConfigDir()}`);
   console.log("──────────────────────────────────────────────");
 

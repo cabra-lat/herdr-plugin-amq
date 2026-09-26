@@ -38,6 +38,39 @@ export function getStateDir() {
   return dir;
 }
 
+/**
+ * Report the state directories that exist, so a split state directory is visible
+ * instead of silently reading a file nothing is writing.
+ *
+ * `getStateDir()` resolves to `$HERDR_PLUGIN_STATE_DIR` when that is set (true for a
+ * process herdr spawned) and to `~/.herdr-amq-state` otherwise (true for one started
+ * from an interactive shell). Two processes started from different contexts can
+ * therefore use two different state files, and a comparison of one against the other
+ * produces a confident and completely wrong conclusion about delivery history.
+ */
+export function getStateDirCandidates(env = process.env, home = env.HOME || "/tmp") {
+  const dirs = [];
+  if (env.HERDR_PLUGIN_STATE_DIR) dirs.push(env.HERDR_PLUGIN_STATE_DIR);
+  dirs.push(path.join(home, ".herdr-amq-state"));
+  const base = env.XDG_STATE_HOME || path.join(home, ".local", "state");
+  dirs.push(path.join(base, "herdr-amq"));
+  const herdrPlugins = path.join(base, "herdr", "plugins", "cabra.amq");
+  dirs.push(herdrPlugins);
+  const seen = new Set();
+  return dirs.filter((dir) => {
+    if (!dir || seen.has(dir)) return false;
+    seen.add(dir);
+    return true;
+  });
+}
+
+export function getStateDirDivergence(env = process.env) {
+  const home = env.HOME || "/tmp";
+  const withState = getStateDirCandidates(env, home).filter((dir) => fs.existsSync(path.join(dir, "bridge-state.json")));
+  if (withState.length < 2) return null;
+  return { active: getStateDir(), directories: withState };
+}
+
 export function getRepoRootFromAmq(amqRoot) {
   if (!amqRoot) return process.cwd();
   return path.basename(amqRoot) === ".agent-mail"
