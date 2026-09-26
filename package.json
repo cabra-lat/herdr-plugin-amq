@@ -20,7 +20,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "test": "HERDR_DISABLE_PROMPT=1 node --test test/*.test.mjs",
+    "test": "node tools/run-tests.mjs",
     "test:coverage": "mkdir -p coverage && HERDR_DISABLE_PROMPT=1 node --test --experimental-test-coverage --test-reporter=spec --test-reporter=lcov --test-reporter-destination=stdout --test-reporter-destination=coverage/lcov.info test/*.test.mjs",
     "test:e2e": "HERDR_DISABLE_PROMPT=1 node --test test/e2e/*.test.mjs",
     "test:visual": "npm run test:e2e",

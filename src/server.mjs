@@ -873,6 +873,51 @@ export function startWebServer({
 
     // ─── Kanban Board Routes ─────────────────────────────────────────────────
 
+    // Standalone coordinator metrics and alerts.
+    //
+    // WHY THESE EXIST: alerts were only observable through /api/board, which is a
+    // ~387 KB payload. So "did the alert fire?" and, far worse, "did the alert STAY
+    // quiet?" could not be answered without fetching the whole board - and a negative
+    // claim needs an instrument that could have contained the event. This is the same
+    // defect as citing a request log that does not record requests: the silence was
+    // unreadable, not absent.
+    if ((pathname === "/api/metrics" || pathname === "/api/alerts") && req.method === "GET") {
+      const repoRoot = path.resolve(path.dirname(amqRoot));
+      const board = loadBoard(repoRoot, amqRoot);
+      const statusMap = await getHerdrStatusMap({ amqRoot });
+      const { metrics: coordinator } = await buildCoordinatorMetricsWithWorkAge({
+        handles: getAgentHandles(amqRoot),
+        agentStatuses: Object.fromEntries(statusMap),
+        board,
+        jobQueue,
+        repos: [repoRoot, path.join(repoRoot, "..", "herdr-plugin-amq")],
+      });
+      if (pathname === "/api/alerts") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ alerts: coordinator.alerts || [], at: new Date().toISOString() }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(coordinator));
+      return;
+    }
+
+    if (pathname === "/api/health" && req.method === "GET") {
+      // Cheap liveness that does NOT depend on herdr. /api/status reporting 200 while
+      // panes say herdr-unavailable is the failure shape that cost us an evening: a
+      // healthy endpoint over a degraded system.
+      const bridgePid = isDaemonRunning();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        ok: true,
+        at: new Date().toISOString(),
+        amqRoot,
+        bridge: { running: Boolean(bridgePid), pid: bridgePid || null },
+        herdr: { bin: getHerdrBin(), available: await isHerdrAvailable() },
+      }));
+      return;
+    }
+
     if (pathname === "/api/board" && req.method === "GET") {
       const repoRoot = path.resolve(path.dirname(amqRoot));
       const board = loadBoard(repoRoot, amqRoot);
