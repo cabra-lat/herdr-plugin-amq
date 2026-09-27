@@ -1602,9 +1602,45 @@ export function listBacklogTasks(repoRoot, amqRoot, handle = null) {
  * Drain tasks for an agent: returns all pending backlog tasks with full descriptions,
  * optionally auto-claiming the first available task if claim: true.
  */
+export function listClaimableTasks(repoRoot, amqRoot, handle = null) {
+  const busDir = getBusDirectory(repoRoot, amqRoot);
+  const target = handle && handle !== "all" ? canonicalizeOwner(handle) : null;
+  const tasks = [];
+
+  // Live work lives in `queued`; `backlog` means not-now. Reading only backlog meant a lane
+  // asking for work got "0 pending" on a board full of live cards, because the bucket holding
+  // them was invisible to the only two verbs a lane has for pulling work. That is not a
+  // documentation gap - it is why a fleet sat idle for hours with 14 claimable cards on the
+  // board. Backlog is still read first so its older convention keeps priority.
+  for (const column of ["backlog", "queued"]) {
+    const dir = path.join(busDir, column);
+    if (!fs.existsSync(dir)) continue;
+    let files = [];
+    try {
+      files = fs.readdirSync(dir).filter((f) => f.endsWith(".md") && !f.startsWith("."));
+    } catch {
+      continue;
+    }
+    for (const f of files) {
+      const parsed = parseTaskFile(path.join(dir, f), column);
+      if (!parsed) continue;
+      if (target && parsed.owner !== target) continue;
+      // A card whose next_actor is a person is waiting ON that person. A lane claiming it
+      // would not advance it, it would move a real wait into a lane's in_progress column and
+      // make the board claim work is happening when nothing can move it.
+      const actor = String(parsed.next_actor ?? parsed.nextActor ?? "").trim().toLowerCase();
+      if (actor === "user") continue;
+      tasks.push(parsed);
+    }
+  }
+
+  tasks.sort((a, b) => String(a.created || "").localeCompare(String(b.created || "")));
+  return tasks;
+}
+
 export function drainTasks(repoRoot, amqRoot, { me, claim = false, notify = true } = {}) {
   const target = me ? canonicalizeOwner(me) : "coordinator";
-  const tasks = listBacklogTasks(repoRoot, amqRoot, target);
+  const tasks = listClaimableTasks(repoRoot, amqRoot, target);
 
   let claimedTask = null;
   if (claim && tasks.length > 0) {
