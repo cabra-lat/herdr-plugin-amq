@@ -600,6 +600,57 @@ export function isItemPendingDrain(deliveryEntry, cooldownMs = DEFAULT_DOORBELL_
   return Date.now() - deliveredAt < cooldownMs;
 }
 
+/**
+ * A DOORBELL CANDIDATE IS NOT A DELIVERY. Membership in the list only says an alert MAY be shown;
+ * it never said it WOULD be. Exported so the CHOICE is testable, which is the whole point: when
+ * this selection was inline in the bridge body, the only assertion anyone could write was "the id
+ * is in the list" - and that assertion passed while the signal delivered ZERO times on a live
+ * board with 188 blocked_cards and 94 backlog_idle on the same day.
+ *
+ * The bug it replaces: alerts.find(sev === "critical") || alerts.find(id => IDS.includes(id)).
+ * Array.find returns the first match IN THE ALERTS ARRAY, so the winner was decided by the order
+ * metrics.mjs happens to push alerts in. person_queued_oldest is pushed at metrics.mjs:983,
+ * behind backlog_idle (865), blocked_cards (900) and blocked_age (915) - so on any board where one
+ * of those was present the find reached them first. Being warning by design it could never win the
+ * critical find either, so there was NO PATH to it. A ranked "oldest decision" signal competing by
+ * SOURCE LINE NUMBER is not a ranking anyone chose.
+ *
+ * THREE TIERS: SEVERITY (a critical always outranks a warning - the one place a person-gated wait
+ * must never come first), then STARVATION (among equals, the candidate gone longest since its last
+ * delivery wins; never-delivered sorts as infinitely old so a new signal gets its turn), then the
+ * declared list order as an explicit tiebreak rather than an accident of a file. Starvation is what
+ * makes the class unrepeatable: any fixed ordering eventually starves whatever sits at the end of
+ * it, and an undeliverable signal is indistinguishable from one that does not exist.
+ */
+export const DOORBELL_ALERT_IDS = ["backlog_idle", "retry_failure_trend", "blocked_cards", "blocked_age", "person_queued_oldest"];
+
+export function rankDoorbellAlerts(alerts, coordinatorAlerts = {}, now = Date.now(), alertKey = (a) => a.id) {
+  const lastDeliveredMs = (alert) => {
+    const at = Date.parse(coordinatorAlerts?.[alertKey(alert)]?.at ?? "");
+    return Number.isFinite(at) ? now - at : Number.POSITIVE_INFINITY;
+  };
+  const sev = (a) => (a.severity === "critical" ? 0 : 1);
+  return alerts
+    .filter((alert) => alert.severity === "critical" || DOORBELL_ALERT_IDS.includes(alert.id))
+    .slice()
+    .sort((a, b) => {
+      if (sev(a) !== sev(b)) return sev(a) - sev(b);
+      // DESCENDING by time-since-delivery: the longest wait goes FIRST. Ascending here is a
+      // silent inversion, because a never-delivered alert is +Infinity and +Infinity sorts
+      // LAST - which is exactly the defect being fixed, reintroduced inside the fix.
+      //
+      // THE TIE MUST BE COMPARED WITH `!==`, NOT BY SUBTRACTING. Infinity - Infinity is NaN, and a
+      // comparator that returns NaN leaves Array.sort's order UNSPECIFIED - which is how the same
+      // five alerts ranked differently depending only on the order they were pushed in, i.e. the
+      // original defect reproduced inside its own fix. Two never-delivered alerts must fall
+      // through to the declared order deterministically.
+      const la = lastDeliveredMs(a);
+      const lb = lastDeliveredMs(b);
+      if (la !== lb) return lb - la;
+      return DOORBELL_ALERT_IDS.indexOf(a.id) - DOORBELL_ALERT_IDS.indexOf(b.id);
+    });
+}
+
 function coordinatorAlertKey(alert) {
   return alert.fingerprint ? `${alert.id}:${alert.fingerprint}` : alert.id;
 }
@@ -859,12 +910,8 @@ export function runDoorbellPass({
   // human-facing view no matter how good its message is. Mine was `warning` by design - a person
   // waiting must never page - which also meant it could never win the `severity === "critical"`
   // find above, so it was technically delivered and practically unseen. That is the same class as
-  // a claim in the artifact about what the artifact does, one layer up: a signal in the payload
-  // that nobody is shown. It is a doorbell CANDIDATE, not a page: the coordinator is prompted to
-  // look, and the prompt is what a ranked "oldest decision" is for.
-  const DOORBELL_ALERT_IDS = ["backlog_idle", "retry_failure_trend", "blocked_cards", "blocked_age", "person_queued_oldest"];
-  const coordinatorAlert = alerts.find((alert) => alert.severity === "critical")
-    || alerts.find((alert) => DOORBELL_ALERT_IDS.includes(alert.id));
+  const candidates = rankDoorbellAlerts(alerts, state.coordinatorAlerts, Date.now(), coordinatorAlertKey);
+  const coordinatorAlert = candidates[0] || null;
   const coordinatorHandle = "coordinator";
   const coordinatorStatus = statusByHandle[coordinatorHandle] || (validHandles.includes(coordinatorHandle) ? getStatus(coordinatorHandle) : "missing");
   const alertKey = coordinatorAlert ? coordinatorAlertKey(coordinatorAlert) : null;
