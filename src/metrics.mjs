@@ -566,6 +566,27 @@ export function buildCoordinatorMetrics({
       continue;
     }
   }
+  // THE CHAIN LOOKUPS, AT FUNCTION SCOPE, BECAUSE TWO ALERTS ASK THE SAME QUESTION.
+  //
+  // These were a block-scoped const inside the blocked alert's section. The person-queued signal
+  // needs the identical walk - "does this card's chain terminate at a person" - and re-declaring
+  // them would have been two implementations of one rule that could disagree, which is how a
+  // blocked card and a queued card end up classified differently for no reason anyone chose.
+  const nextActorById = new Map(allCards.map((t) => [t.id, t.next_actor ?? t.nextActor ?? null]));
+  const depsOf = (t) => (Array.isArray(t.depends_on) ? t.depends_on
+    : Array.isArray(t.dependency) ? t.dependency
+      : (t.depends_on || t.dependency) ? [t.depends_on || t.dependency] : []);
+  const chainTerminatesAtUser = (task, seen = new Set()) => {
+    if (!task || !task.id || seen.has(task.id)) return false;   // seen = cycle guard
+    seen.add(task.id);
+    if (nextActorById.get(task.id) === "user") return true;
+    return depsOf(task).some((dep) => {
+      const depTask = statusById.get(dep)?.task;
+      return depTask ? chainTerminatesAtUser(depTask, seen) : false;
+    });
+  };
+
+
   const blockedWork = [];
   // A lookup of every card's status by id, so a blocked card's DEPENDENCIES can be resolved.
   // Without it a dependency id can only be counted, never checked, and a block whose blockers
@@ -744,19 +765,6 @@ export function buildCoordinatorMetrics({
     // its target and not exist yet, so a missing card leaves the chain unresolved and the card
     // stays lane-actionable. Assuming "blocked on a person" because a link dangles would demote
     // real defects into a count, which is the failure mode this whole split exists to avoid.
-    const nextActorById = new Map(allCards.map((t) => [t.id, t.next_actor ?? t.nextActor ?? null]));
-    const depsOf = (t) => (Array.isArray(t.depends_on) ? t.depends_on
-      : Array.isArray(t.dependency) ? t.dependency
-        : (t.depends_on || t.dependency) ? [t.depends_on || t.dependency] : []);
-    const chainTerminatesAtUser = (task, seen = new Set()) => {
-      if (!task || !task.id || seen.has(task.id)) return false;   // seen = cycle guard
-      seen.add(task.id);
-      if (nextActorById.get(task.id) === "user") return true;
-      return depsOf(task).some((dep) => {
-        const depTask = statusById.get(dep)?.task;
-        return depTask ? chainTerminatesAtUser(depTask, seen) : false;
-      });
-    };
 
     const resolved = blockedWork.map((task) => ({
       task,
@@ -910,6 +918,81 @@ export function buildCoordinatorMetrics({
       message: `${agedBlockedWork.length} blocked card(s) exceed the blocked-age threshold.`,
       recommendedAction: "Name the next actor and resolve or explicitly re-scope the blocker.",
       cards: agedBlockedWork,
+    });
+  }
+  // ---------------------------------------------------------------------------
+  // QUEUED CARDS POINTED AT A PERSON. The bucket no alert aged at all.
+  //
+  // MEASURED BY COORDINATOR ON THE LIVE BOARD, 453 cards: all ten user decisions were status
+  // QUEUED with next_actor=user, oldest ~6.5h, and NOT ONE had ever been named by an alert.
+  // `blocked_oldest` ages blocked cards; the person-gated line counts blocked cards whose chain
+  // ends at a person; `queue_age` covers backlog/doing/review only. Queued sits in none of them.
+  // So the oldest decision on the board - one that transitively gates other cards - was
+  // invisible, and the board looked healthier than it was because the person-gated line DID
+  // report a count. The reporting was not wrong; it was incomplete in the direction that hides.
+  //
+  // THE ENCODING IS RIGHT AND IS NOT BEING CHANGED. A card waiting on a person cannot be blocked:
+  // blocked requires a non-done machine-readable dependency and these are the ROOTS. Queued +
+  // next_actor=user is the correct shape, and coordinator checked before filing precisely because
+  // they expected a mis-encoding. There is none.
+  //
+  // IT IS REPORT-ONLY AND NEVER PAGES. Ten cards genuinely waiting on an owner is the correct
+  // shape of a project waiting on its owner, not a delivery failure, and an alert that pages on
+  // it trains people to ignore alerts. The whole value is ORDERING and OLDEST: a six-hour decision
+  // that gates main must sit visibly above a two-hour one that gates nothing. A count alone is
+  // what the person-gated line already does, and a count demonstrably did not surface this.
+  //
+  // ONE WAIT IS COUNTED ONCE. The chain-walk is reused, so a queued card behind a person-gated
+  // root resolves to the same decision. Entries are GROUPED BY THE ROOT the chain terminates at,
+  // which is why cd9e12 and 07e71e appear as cards waiting behind e135d1 rather than as three
+  // separate waits for one answer. Counting them separately would overstate the backlog and
+  // understate the leverage of the single oldest decision.
+  const queuedWork = [];
+  for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
+    if (columnName !== "queued") continue;
+    for (const task of (Array.isArray(columnTasks) ? columnTasks : []).filter(Boolean)) {
+      queuedWork.push({ task, ageMs: ageMs(task.updated || task.created_at || task.createdAt || task.created, now) });
+    }
+  }
+  // The ROOT a chain terminates at: the card whose own pointer is the person. A queued card with
+  // no such root is lane-runnable even if some card further down happens to name a person.
+  const personRootOf = (task, seen = new Set()) => {
+    if (!task || !task.id || seen.has(task.id)) return null;          // seen = cycle guard
+    seen.add(task.id);
+    if (nextActorById.get(task.id) === "user") return task;
+    for (const dep of depsOf(task)) {
+      const depTask = statusById.get(dep)?.task;
+      const root = depTask ? personRootOf(depTask, seen) : null;
+      if (root) return root;
+    }
+    return null;
+  };
+  const queuedByRoot = new Map();
+  for (const entry of queuedWork) {
+    const root = personRootOf(entry.task);
+    if (!root) continue;                                              // lane-runnable, not ours to age
+    const key = root.id;
+    if (!queuedByRoot.has(key)) queuedByRoot.set(key, { root, rootAgeMs: ageMs(root.updated || root.created_at || root.createdAt || root.created, now), waiting: [] });
+    queuedByRoot.get(key).waiting.push({ id: entry.task.id, title: entry.task.title, ageMs: entry.ageMs });
+  }
+  const personQueued = [...queuedByRoot.values()].sort((a, b) => (b.rootAgeMs ?? 0) - (a.rootAgeMs ?? 0));
+  if (personQueued.length > 0) {
+    const oldest = personQueued[0];
+    const totalWaiting = personQueued.reduce((n, e) => n + e.waiting.length, 0);
+    alerts.push({
+      id: "person_queued_oldest",
+      // NEVER "page" or "critical": this is a person waiting, and a human-gated wait resolves only
+      // through a person acting. It cannot clear while an alert names it, so paging on it would
+      // page on something no lane can fix.
+      severity: "warning",
+      fingerprint: conditionFingerprint({ id: "person_queued_oldest", severity: "warning", cards: personQueued.map((e) => e.root.id) }),
+      message: `${personQueued.length} decision(s) are waiting on a person, across ${totalWaiting} queued card(s). Oldest: ${oldest.root.id} (${oldest.root.title || "untitled"}) at ${oldest.rootAgeMs ?? "unknown"}ms.${personQueued.length > 1 ? ` Next oldest: ${personQueued[1].root.id} at ${personQueued[1].rootAgeMs ?? "unknown"}ms - the ordering is the point; a count alone is what the person-gated line already reports, and it did not surface this.` : ""} Cards behind the same decision are counted once, under the decision they wait on, not as separate waits. REPORT-ONLY: this never pages, because a project waiting on its owner is the correct shape of a project, not a delivery failure.`,
+      recommendedAction: "The decision is the owner's and no lane can move it. Treat the ORDERING as the signal: the oldest person-gated decision is the one that unblocks the most work.",
+      decisionCount: personQueued.length,
+      waitingCardCount: totalWaiting,
+      oldestDecisionId: oldest.root.id,
+      oldestAgeMs: oldest.rootAgeMs ?? 0,
+      decisions: personQueued,
     });
   }
   if (staleHeartbeats.length > 0) {
