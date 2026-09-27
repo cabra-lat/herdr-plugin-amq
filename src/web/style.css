@@ -3247,11 +3247,37 @@ mark.search-highlight {
   width: min(1200px, 98vw);
 }
 
+/* THE CLOSED SHEET MUST NOT BE IN THE LAYOUT AT ALL.
+ *
+ * This used to be `transform: translateX(100%)` plus `visibility: hidden`, which reads as
+ * "closed" and is not. The element stayed laid out, stayed 880px wide, and stayed
+ * measurable, so:
+ *   - the drawer and everything inside it sat at x=1440..2320 on a 1440px viewport, which is
+ *     a standing 880px of overflow reported by every geometry audit of this UI, forever,
+ *     including on routes where no card is open;
+ *   - the three sheet tabs (all / desc / transmissions, which live INSIDE this drawer) measured
+ *     at x=1469 / 1745 / 2021 and reported as unreachable;
+ *   - and a descendant with its own intrinsic width spilled past even that box (mail-badges at
+ *     x=1266..1344 on a 390px viewport), because nothing here clips.
+ *
+ * `display: none` is the honest closed state: not rendered, not laid out, not measurable, not
+ * focusable. The slide-IN is preserved by an animation rather than a transition, because a
+ * transition cannot run on an element that is not rendered. The slide-OUT is given up: there is
+ * no way to animate a box out of a layout that must not contain it, and a decorative exit
+ * animation is not worth a permanent false measurement of the page. If the exit animation is
+ * wanted back, the honest way is to animate the backdrop and drop the drawer's own transform,
+ * not to put the drawer back in the layout. */
 .task-sheet-drawer.hidden {
-  transform: translateX(100%);
-  pointer-events: none;
-  display: flex !important;
-  visibility: hidden;
+  display: none !important;
+}
+
+@keyframes task-sheet-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.task-sheet-drawer:not(.hidden) {
+  animation: task-sheet-slide-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .task-sheet-container {
