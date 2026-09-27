@@ -775,6 +775,19 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         process.exit(1);
       }
       let res;
+        // The stage is computed BEFORE the try, not inside it. It used to be declared inside,
+        // then read by the success message below the catch - so every successful reopen ended in
+        // "ReferenceError: stage is not defined" AFTER the write had already landed. The card
+        // moved and the command reported a crash: a reader sees a stack trace and concludes
+        // nothing happened, while the card has in fact been reopened. Nothing failed loudly
+        // enough to be found, because the only thing broken was the sentence reporting success.
+        const stageArg = String(flags.stage || "").trim();
+        const reopenedStage = stageArg ? STAGE_ALIASES[stageArg] : "in_progress";
+        if (stageArg && !reopenedStage) {
+          console.error(`❌ Unknown --stage ${JSON.stringify(stageArg)}. Legal values: ${STAGE_CHOICES}.`);
+          process.exit(1);
+        }
+
       try {
         // `--stage` is HONOURED, and the default is stated rather than implied.
         //
@@ -796,20 +809,23 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         // what the default is, not to remove a working invocation in the name of a principle.
         // A reopened card is being picked back up rather than filed, and `backlog`/`queued` are
         // one flag away for anyone who means otherwise.
-        const stageArg = String(flags.stage || "").trim();
-        const stage = stageArg ? STAGE_ALIASES[stageArg] : "in_progress";
-        if (stageArg && !stage) {
-          console.error(`❌ Unknown --stage ${JSON.stringify(stageArg)}. Legal values: ${STAGE_CHOICES}.`);
-          process.exit(1);
-        }
         res = updateBoardTask(repoRoot, amqRoot, taskId,
-          { status: stage, done_at: null },
+          { status: reopenedStage, done_at: null },
           { from: me, reopen: true, reason, notify: flags.notify !== "false" });
       } catch (error) {
         return failTask(`Failed to reopen task: ${error.message}`);
       }
       if (res.ok) {
-        console.log(`\n♻️  Task ${taskId} REOPENED into ${stage} - done_at cleared.\nReason: ${reason}\n`);
+        // `stage` used to be declared INSIDE the try above and read here, outside it. Block-scoped
+        // const does not escape braces, so every SUCCESSFUL reopen ended in
+        // "ReferenceError: stage is not defined" - after the write had already landed. The card
+        // moved and the command reported a crash, which is the worst pair available: a reader sees
+        // a stack trace and concludes nothing happened, while the card has in fact been reopened.
+        // Nothing failed loudly enough to be found, because the one thing that broke was the
+        // sentence reporting success.
+        //
+        // Hoisted above the try so the message can name the stage it actually wrote.
+        console.log(`\n♻️  Task ${taskId} REOPENED into ${reopenedStage} - done_at cleared.\nReason: ${reason}\n`);
       } else {
         console.error(`❌ Failed to reopen task: ${res.error}`);
         process.exit(1);
