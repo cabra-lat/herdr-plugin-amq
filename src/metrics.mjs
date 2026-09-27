@@ -614,6 +614,24 @@ export function buildCoordinatorMetrics({
     // does not exempt any card by name.
     const owned = blockedWork.filter((task) => task.nextActor);
     const unowned = blockedWork.filter((task) => !task.nextActor);
+    // A HUMAN-GATED WAIT IS NOT A COORDINATION FAILURE, and ranking it as one is what made
+    // this alert permanently pinned.
+    //
+    // next_actor=user means the card resolves ONLY through a person acting, and when a person
+    // acts the card leaves blocked. So the oldest such card is the one the alert will name on
+    // every future firing, and it cannot clear while the alert exists - an alert with exactly
+    // one possible exit is not measuring anything. Worse than noise: it reports a correctly
+    // encoded human wait with the same urgency it would report a stale edge to a finished card,
+    // so the lanes that learn to ignore it are exactly the lanes that would have caught the
+    // real ones, and an alert that is always true teaches its readers that alerts are always true.
+    //
+    // THIS IS A CHANGE OF RANKING, NOT A SUPPRESSION, and the difference is the whole point.
+    // Suppressing on age would hide a genuinely stale edge, because a card blocked on a
+    // finished dependency lands in the same bucket as a card blocked on a person and only
+    // next_actor tells them apart. Ranking the non-human population keeps the real defects
+    // visible and demotes the human waits to a count.
+    const humanGated = owned.filter((task) => task.nextActor === "user");
+    const actionable = owned.filter((task) => task.nextActor !== "user");
     if (unowned.length > 0) {
       unownedBlocked.push({
         count: unowned.length,
@@ -632,8 +650,8 @@ export function buildCoordinatorMetrics({
     // because it had been waiting 33 minutes. An unowned card must not be able to change
     // the severity of a page a human owns. Unowned information surfaces only in
     // unownedBlocked, which is a report and not a page.
-    const ownedOldestAgeMs = owned.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0);
-    const ownedOldestCard = owned.reduce(
+    const ownedOldestAgeMs = actionable.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0);
+    const ownedOldestCard = actionable.reduce(
       (oldestCard, task) => (task.ageMs !== null && (!oldestCard || task.ageMs > oldestCard.ageMs) ? task : oldestCard),
       null,
     );
@@ -643,23 +661,31 @@ export function buildCoordinatorMetrics({
     // blocked for five hours" one. Reuses the existing blockedWarnMs /
     // blockedCriticalMs thresholds rather than introducing new knobs.
     const severity = ownedOldestAgeMs >= limits.blockedCriticalMs ? "critical" : "warning";
-    const triaged = owned.filter((task) => task.triaged).length;
+    // A card that needs a person is reported as a COUNT, never ranked. The counts below are
+    // deliberately OUT of the fingerprint: a human wait that ages, changes owner or resolves
+    // must not re-fire this alert, or the alert is pinned to a card it cannot escape.
+    const triaged = actionable.filter((task) => task.triaged).length;
+    const humanOldestAgeMs = humanGated.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0);
     alerts.push({
       id: "blocked_oldest",
       severity,
       fingerprint: conditionFingerprint({
         id: "blocked_oldest",
         severity,
-        cards: cardCondition(owned),
+        cards: cardCondition(actionable),
       }),
-      message: `Oldest blocked card has been blocked for ${ownedOldestAgeMs}ms (${ownedOldestCard?.id || "unknown"}). ${triaged} of ${owned.length} carry a triage reason, which stops the untriaged alert but not this one.${unowned.length > 0 ? ` ${unowned.length} further blocked card(s) have no next actor and are reported, not paged: they are blocked on nobody.` : ""}`,
+      message: actionable.length === 0
+        ? `No blocked card is waiting on anything a lane can move: all ${humanGated.length} owned blocked card(s) are waiting on a person (next_actor=user), oldest ${humanOldestAgeMs}ms. That is good news, not a broken alert.${unowned.length > 0 ? ` ${unowned.length} further blocked card(s) have no next actor and are reported, not paged: they are blocked on nobody.` : ""}`
+        : `Oldest blocked card a LANE can move has been blocked for ${ownedOldestAgeMs}ms (${ownedOldestCard?.id || "unknown"}). ${triaged} of ${actionable.length} carry a triage reason, which stops the untriaged alert but not this one.${humanGated.length > 0 ? ` Separately, ${humanGated.length} blocked card(s) are waiting on a person (next_actor=user), oldest ${humanOldestAgeMs}ms - reported as a count, not ranked, because a human-gated wait resolves only through a person acting and cannot clear while an alert names it.` : ""}${unowned.length > 0 ? ` ${unowned.length} further blocked card(s) have no next actor and are reported, not paged: they are blocked on nobody.` : ""}`,
       recommendedAction: "Resolve it, re-scope it, or record why it is still blocked; a triage reason alone does not close an old blocker.",
       oldestCardId: ownedOldestCard?.id || null,
       oldestAgeMs: ownedOldestAgeMs,
       triagedCount: triaged,
-      untriagedCount: owned.length - triaged,
-      cardCount: owned.length,
-      cards: owned,
+      untriagedCount: actionable.length - triaged,
+      cardCount: actionable.length,
+      cards: actionable,
+      humanGatedCount: humanGated.length,
+      humanGatedOldestAgeMs: humanOldestAgeMs,
       unownedBlockedCount: unowned.length,
     });
     }
