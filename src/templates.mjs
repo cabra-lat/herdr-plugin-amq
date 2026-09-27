@@ -44,6 +44,97 @@ function resolveVariable(context, expression) {
   return normalizeScalar(value);
 }
 
+/**
+ * THE VARIABLE VOCABULARY a template may reference, per template name.
+ *
+ * The loader never needed this: it resolves whatever the source asks for and throws if the name
+ * is unknown. A WRITER does, and an editor behind the writer does more still, because both have
+ * to say "this placeholder is real" before a reader is told it will work. The contract was
+ * implicit in the prompt builders that call renderTemplate, which is the wrong place for a
+ * contract - the builders decide the shape and nothing recorded what they decided.
+ *
+ * Anything not listed here throws "Missing template variable" at render time, which surfaces to
+ * a lane as a doorbell that silently failed to build. That is worse than refusing the write, and
+ * it is why this list exists rather than a regex over names.
+ */
+export const TEMPLATE_VARIABLES = {
+  doorbell: [
+    "agent.handle",
+    "mail.count",
+    "mail.senders",
+    "board.backlog",
+    "board.doing",
+    "board.blocked",
+    "board.done",
+  ],
+  welcome: ["agent.handle", "agent.persona", "agent.role"],
+};
+
+/**
+ * Validate a template WITHOUT rendering it, and return the problems found.
+ *
+ * This is deliberately the SAME rules the loader enforces, reached by a different door. An editor
+ * validating against its own copy of the rules would drift from the loader, and the symptom of
+ * that drift is a template the UI reports as saved and the bridge then refuses. A saved template
+ * that will not render is the worst outcome available here, because the person who made it is not
+ * present when it fails - every lane is.
+ *
+ * The optional context is what upgrades this from a shape check to a real one: given a context,
+ * every referenced variable is resolved, which catches a name that is listed but absent.
+ */
+export function validateTemplateSource(source, { name, context } = {}) {
+  const problems = [];
+  if (typeof source !== "string" || !source.trim()) {
+    return { ok: false, problems: [{ kind: "empty", message: "Template is empty" }] };
+  }
+  if (Buffer.byteLength(source, "utf8") > MAX_TEMPLATE_BYTES) {
+    return {
+      ok: false,
+      problems: [{ kind: "too_large", message: "Template is larger than " + MAX_TEMPLATE_BYTES + " bytes" }],
+    };
+  }
+  if (source.includes("{%") || source.includes("{#")) {
+    problems.push({ kind: "unsupported_syntax", message: "Unsupported template syntax: {% and {# are not this template language" });
+  }
+  const withoutExpressions = source.replace(/{{([\s\S]*?)}}/g, "");
+  if (withoutExpressions.includes("{") || withoutExpressions.includes("}")) {
+    problems.push({ kind: "malformed", message: "Malformed template expression: a brace outside {{ }}" });
+  }
+
+  const referenced = [...source.matchAll(/{{([\s\S]*?)}}/g)].map((m) => m[1].trim());
+  const allowed = name && TEMPLATE_VARIABLES[name] ? new Set(TEMPLATE_VARIABLES[name]) : null;
+  const unknown = new Set();
+  for (const key of referenced) {
+    if (!VARIABLE_PATTERN.test(key)) {
+      problems.push({ kind: "bad_variable", message: '"' + key + '" is not a valid variable name' });
+      continue;
+    }
+    if (key.split(".").some((segment) => FORBIDDEN_SEGMENTS.has(segment))) {
+      problems.push({ kind: "forbidden_variable", message: '"' + key + '" is not an allowed variable' });
+      continue;
+    }
+    if (allowed && !allowed.has(key)) unknown.add(key);
+  }
+  for (const key of unknown) {
+    problems.push({
+      kind: "unknown_variable",
+      message: '"' + key + '" is not available to the ' + name + " template",
+      available: allowed ? [...allowed] : undefined,
+    });
+  }
+
+  if (context) {
+    for (const key of new Set(referenced)) {
+      try {
+        resolveVariable(context, key);
+      } catch (e) {
+        problems.push({ kind: "missing_at_render", message: e.message });
+      }
+    }
+  }
+  return { ok: problems.length === 0, problems, variables: [...new Set(referenced)] };
+}
+
 export function renderTemplate(source, context) {
   if (typeof source !== "string" || !source.trim()) throw new Error("Template is empty");
   if (Buffer.byteLength(source, "utf8") > MAX_TEMPLATE_BYTES) throw new Error("Template is too large");
