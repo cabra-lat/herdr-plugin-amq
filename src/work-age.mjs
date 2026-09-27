@@ -57,15 +57,62 @@ function isAllNumericShaCandidate(token) {
 }
 
 /** Every all-numeric SHA-shaped token in the fields evidence lands in, deduplicated. */
-function collectAllNumericCandidates(task = {}) {
-  const texts = [];
-  if (task.description) texts.push(String(task.description));
-  if (task.proof) texts.push(String(task.proof));
+// ONE LIST OF PLACES, READ BY BOTH PASSES.
+//
+// This function exists because the fix for dcec35 was INCOMPLETE and I nearly shipped it that
+// way. Widening `extractClaimedArtifacts` to read titles and bodies did nothing for the tokens
+// that motivated the change: an ALL-NUMERIC sha is only a citation once a repository confirms
+// it, and the confirmation pass - `collectAllNumericCandidates` - read a different and SMALLER
+// set (description, proof, notes). So a numeric SHA in a title was extracted by nobody and
+// confirmed by nobody, and the measurement came back unchanged: 80 more cards cited work, and
+// the two commits the card was about stayed at exactly 6 and 2.
+//
+// Two readers of the same card reading two different field sets is the same defect as a
+// projection that has a field and does not carry it, one layer further down: an absence
+// produced by a reader that did not look, in a place nobody was watching. Declaring the places
+// ONCE means the next field added to a card cannot be added to one pass and forgotten in the
+// other - which is the only way this stops recurring, because a test per pass would just be two
+// tests to keep in sync by hand.
+function artifactSources(task = {}) {
+  const sources = [];
   for (const note of Array.isArray(task.notes) ? task.notes : []) {
-    texts.push(typeof note === "string" ? note : (note?.text ?? ""));
+    const text = typeof note === "string" ? note : note?.text;
+    if (text) sources.push({ where: "note", text });
   }
+  if (task.proof) sources.push({ where: "proof", text: String(task.proof) });
+  if (task.block_reason) sources.push({ where: "block_reason", text: String(task.block_reason) });
+  if (task.reason) sources.push({ where: "reason", text: String(task.reason) });
+  // `description` is where the real evidence lives: on the live board, cards carried 6, 2
+  // and 1 cited commits in their description and zero in their notes, so a scanner that
+  // read only notes reported "no claims" on precisely the cards doing the most work.
+  if (task.description) sources.push({ where: "description", text: String(task.description) });
+  // THE TITLE AND THE BODY ARE READ, ON COORDINATOR'S SCOPE CALL, and they are read LAST so a
+  // citation found in a note is still attributed to the note.
+  //
+  // The argument is 29da63 one layer up. That card was a projection that HAD a field and did not
+  // CARRY it, so the renderer printed `|| null` and a populated field was indistinguishable from
+  // an absent one. This is the same shape: a card whose title is literally the SHA under review
+  // cites it as loudly as one that puts it in a proof field, and the reader was answering a
+  // NARROWER question than the one asked. A narrower answer reads as a complete one, which is
+  // the failure this scanner has been pulled out of all night - 11 card files contain 3975567
+  // and the reader saw 6 of them.
+  //
+  // WHAT IS DELIBERATELY NOT CHANGED: nothing about what COUNTS as a SHA. An all-numeric token
+  // is still only a citation when a repository confirms it, and the `isShaLike` shape test is
+  // untouched. Reading more PLACES is not the same as accepting more SHAPES, and a wider reader
+  // that accepts more shapes is a worse scanner - a scanner that reports more is not the same as
+  // a scanner that is right. The body in particular contains quoted text from other people,
+  // including SHAs belonging to the OTHER repository; resolution decides those, not the reader.
+  if (task.title) sources.push({ where: "title", text: String(task.title) });
+  if (task.body) sources.push({ where: "body", text: String(task.body) });
+  return sources;
+}
+
+function collectAllNumericCandidates(task = {}) {
   const found = new Set();
-  for (const text of texts) {
+  // The SAME list the extractor reads, not a private copy. It used to read description, proof
+  // and notes only, which is why widening the extractor alone changed nothing.
+  for (const { text } of artifactSources(task)) {
     for (const token of text.match(SHA_RE) || []) {
       if (isAllNumericShaCandidate(token)) found.add(token);
     }
@@ -83,19 +130,7 @@ function uniq(list) {
  * are not the same claim and a reader should be able to tell them apart.
  */
 export function extractClaimedArtifacts(task = {}, { isKnownCommit = null } = {}) {
-  const notes = Array.isArray(task.notes) ? task.notes : [];
-  const sources = [];
-  for (const note of notes) {
-    const text = typeof note === "string" ? note : note?.text;
-    if (text) sources.push({ where: "note", text });
-  }
-  if (task.proof) sources.push({ where: "proof", text: String(task.proof) });
-  if (task.block_reason) sources.push({ where: "block_reason", text: String(task.block_reason) });
-  if (task.reason) sources.push({ where: "reason", text: String(task.reason) });
-  // `description` is where the real evidence lives: on the live board, cards carried 6, 2
-  // and 1 cited commits in their description and zero in their notes, so a scanner that
-  // read only notes reported "no claims" on precisely the cards doing the most work.
-  if (task.description) sources.push({ where: "description", text: String(task.description) });
+  const sources = artifactSources(task);
 
   const shas = [];
   const runIds = [];
