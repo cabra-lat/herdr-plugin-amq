@@ -149,6 +149,42 @@ export function getEventContext() {
 /**
  * Resolve the active AMQ queue root (.agent-mail)
  */
+/**
+ * True when a candidate mailbox lives INSIDE another mailbox.
+ *
+ * `<root>/.agent-mail/.agent-mail` is a scaffold, not a second project. It appears whenever
+ * something creates a queue relative to a cwd that is already inside a queue - which is exactly
+ * what "run the tool from the project directory" invites once a project directory CONTAINS its
+ * mailbox. Accepting it is not a partial result: the nested root is empty, so every caller
+ * silently sees no agents, no messages and no cards, and reports a healthy empty board.
+ *
+ * On this machine there is exactly one real mailbox and one such scaffold, and resolving from a
+ * cwd inside the mailbox returned the SCAFFOLD. With one mailbox that is a wrong answer; the moment
+ * a second project exists, a tool walking up from the wrong directory picks a mailbox by
+ * accident and there is nothing in the result that says so.
+ */
+function isNestedMailbox(dir) {
+  return path.basename(path.dirname(dir)) === ".agent-mail";
+}
+
+/**
+ * The OUTERMOST mailbox at or above `from`.
+ *
+ * A candidate that is itself nested is skipped rather than returned, so resolution walks
+ * past a scaffold and finds the real queue instead of an empty one. Skipping, not erroring: a
+ * genuinely nested-only tree has no outer mailbox, and refusing to resolve would be a worse
+ * answer than resolving to the only one present.
+ */
+function outermostMailboxAtOrAbove(from) {
+  let curr = path.resolve(from);
+  for (;;) {
+    const mailDir = path.join(curr, ".agent-mail");
+    if (fs.existsSync(mailDir) && !isNestedMailbox(mailDir)) return mailDir;
+    if (curr === path.dirname(curr)) return null;
+    curr = path.dirname(curr);
+  }
+}
+
 export function findAmqRoot(cwd = process.cwd()) {
   // 1. Explicit env var
   if (process.env.AM_ROOT && fs.existsSync(process.env.AM_ROOT)) {
@@ -167,21 +203,17 @@ export function findAmqRoot(cwd = process.cwd()) {
 
     for (const dir of candidates) {
       const mailDir = path.join(dir, ".agent-mail");
-      if (fs.existsSync(mailDir)) return mailDir;
+      if (fs.existsSync(mailDir) && !isNestedMailbox(mailDir)) return mailDir;
     }
   }
 
-  // 3. Search up from current directory
-  let curr = path.resolve(cwd);
-  while (curr !== path.dirname(curr)) {
-    const mailDir = path.join(curr, ".agent-mail");
-    if (fs.existsSync(mailDir)) return mailDir;
-    curr = path.dirname(curr);
-  }
+  // 3. Search up from current directory, walking PAST any nested scaffold rather than into it.
+  const outermost = outermostMailboxAtOrAbove(cwd);
+  if (outermost) return outermost;
 
   // 4. Fallback in process.cwd()
   const cwdMailDir = path.join(process.cwd(), ".agent-mail");
-  if (fs.existsSync(cwdMailDir)) {
+  if (fs.existsSync(cwdMailDir) && !isNestedMailbox(cwdMailDir)) {
     return cwdMailDir;
   }
 
