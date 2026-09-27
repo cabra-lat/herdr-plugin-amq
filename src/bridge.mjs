@@ -1042,6 +1042,16 @@ export function startDaemonLoop({ interval = 3000, dryRun = false } = {}) {
   console.log(`[bridge] Queue: ${amqRoot}`);
   console.log(`[bridge] Interval: ${interval}ms`);
 
+  // SCOPE FIX, not a rename. 5970ae4 added `loadBoard(repoRoot, amqRoot)` to the tick below,
+  // but repoRoot is declared inside runDoorbellPass (a DIFFERENT function), so every pass threw
+  // "repoRoot is not defined". The try/catch around the tick swallowed it and continued, so the
+  // daemon looked alive, filled the log with a repeating error, and delivered nothing at all.
+  //
+  // Resolved once here, beside the other daemon-lifetime bindings, because the tick needs it and
+  // this is the scope it actually lives in. Deliberately NOT threaded through runDoorbellPass as a
+  // parameter: that would change a signature used by other call sites to fix a one-line defect.
+  // RED ARM: the daemon-lifetime repoRoot removed, leaving the tick to reference a binding scoped to runDoorbellPass
+
   // The tick is now ASYNC, and `setInterval` does not wait for it. Without a guard a tick slower
   // than the interval RE-ENTERS while the previous is still running: two passes over the same
   // undelivered mail, two prompts, two state writes. That hazard is created by the fix, so the
