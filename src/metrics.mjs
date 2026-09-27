@@ -269,6 +269,36 @@ function isTriagedBlocked(task) {
   return typeof reason === "string" && reason.trim().length > 0;
 }
 
+/**
+ * A BLOCK THAT NAMES NO CONDITION AND NO OWNER.
+ *
+ * This is the missing-edge case, and it is the one check that did not have to wait for a ruling
+ * about prose. The rule a block has to satisfy is about AUTHORING, not reading: the edge is the
+ * claim and the reason is narration, so a block is explained when it names an edge or an owner,
+ * and the prose never substitutes for either. That is checkable from two fields.
+ *
+ * IT IS NOT THE SAME AS `stale`, AND CONFLATING THEM WOULD REINTRODUCE THE FALSE BLOCK.
+ *  - STALE: the card names a real edge and every known dependency is DONE. The condition was named
+ *    and has since been satisfied. Coordinator's false block, and agsuite-dev's 1b4a3e.
+ *  - UNEXPLAINED: the card names nothing. No edge, no next actor. There is no condition to
+ *    evaluate, so it cannot be stale and it cannot be released - it is simply unowned.
+ *
+ * A LEGITIMATE BLOCK WITH NO EDGE IS STILL FINE, and this is the arm that matters, because
+ * coordinator corrected their own card into exactly that shape: WAIT-WITH-OWNER, next_actor set,
+ * depends_on empty, because "there is no card for that answer yet and inventing a dependency for
+ * an answer nobody has given is how the false block happened". So an owner alone satisfies the
+ * check. Refusing to require an edge would forbid the honest state in favour of a structured lie.
+ *
+ * UNKNOWN EDGES DO NOT COUNT AS NAMING A CONDITION. An edge to an id that is not on the board may
+ * well be remembered rather than read, which is the false-block signature, so it is reported
+ * rather than credited.
+ */
+function isUnexplainedBlock(task, dependencyStates) {
+  const nextActor = task?.next_actor ?? task?.nextActor ?? null;
+  if (typeof nextActor === "string" && nextActor.trim().length > 0) return false;
+  return !dependencyStates.some((d) => d.status !== "unknown");
+}
+
 function cardCondition(cards) {
   return (cards || []).map((card) => ({
     id: card.id,
@@ -491,6 +521,10 @@ export function buildCoordinatorMetrics({
         })) ?? [],
         reason: task.block_reason || task.reason || null,
         triaged: isTriagedBlocked(task),
+        unexplained: isUnexplainedBlock(task, (task.depends_on || task.dependency || []).map?.((d) => ({
+          id: typeof d === "string" ? d : d?.id,
+          status: statusById.get(typeof d === "string" ? d : d?.id)?.status ?? "unknown",
+        })) ?? []),
         ageMs: ageMsValue,
         ...noteSummary(task, now),
       });
