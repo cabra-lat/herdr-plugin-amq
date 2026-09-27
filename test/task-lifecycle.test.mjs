@@ -72,7 +72,16 @@ test("task lifecycle persists v1 fields and proof/reason with fake clock", () =>
     // read as a triaged blocker, or the blocked_oldest ownership split changes meaning.
     // The narration survives as a note instead.
     assert.equal(done.task.block_reason, null, "the reason slot is cleared on the way out of blocked");
-    assert.equal(done.task.blocked_ms, 2 * 60 * 1000);
+    // THIS ASSERTION USED TO PIN THE BUG. It read `blocked_ms === 2 * 60 * 1000` on a card that
+    // was NO LONGER BLOCKED, which is only true if the field means "total time ever blocked" -
+    // and a field named blocked_ms that answers that question misleads every consumer. Measured
+    // live: a card blocked 138 minutes read 0, and a card blocked 9 minutes after an earlier
+    // 150-minute block read 150. The 2 minutes are real and are not lost; they are the total, and
+    // the total now has a name that says so. A passing test is not evidence of correctness when
+    // the thing it pins is the defect.
+    assert.equal(done.task.blocked_ms, 0, "not blocked now, so the live age is 0");
+    assert.equal(done.task.blocked_total_ms, 2 * 60 * 1000,
+      "and the two minutes it spent blocked are preserved as the cumulative total");
     assert.equal(done.task.done_at, "2026-09-24T10:05:00.000Z");
     assert.deepEqual(done.task.depends_on, ["task_prerequisite"]);
     assert.equal(done.task.priority, "P1");

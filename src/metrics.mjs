@@ -444,10 +444,13 @@ export function buildCoordinatorMetrics({
   for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
     if (columnName !== "blocked") continue;
     for (const task of (Array.isArray(columnTasks) ? columnTasks : []).filter(Boolean)) {
-      // `blocked_ms` is a snapshot written when the card was blocked, so it stops
-      // counting the moment the card is written and understates by the time since.
-      // The live age from `blocked_at` is preferred wherever it exists; the stored
-      // figure is only a fallback for a card that has no parseable blocked_at.
+      // `blocked_at` is the authoritative live age of the CURRENT blocked spell.
+      // `blocked_ms` is the live age of that same spell, recomputed on every write, and
+      // `blocked_total_ms` is the cumulative time across every spell the card has ever had.
+      // The two used to be one field that meant the second while being named like the first,
+      // which is why a card blocked 138 minutes for the first time read 0 and a card blocked
+      // 9 minutes after an earlier 150-minute block read 150. The age is taken from
+      // `blocked_at`, and the fallbacks are in descending order of trust.
       const blockedAtMs = Date.parse(task.blocked_at);
       const ageMsValue = Number.isFinite(blockedAtMs)
         ? Math.max(0, now - blockedAtMs)

@@ -143,6 +143,7 @@ export function serializeTaskFile(task) {
     `last_heartbeat_by: ${JSON.stringify(task.last_heartbeat_by || null)}`,
     `claims: ${Number.isFinite(Number(task.claims)) ? Number(task.claims) : 0}`,
     `blocked_ms: ${Number.isFinite(Number(task.blocked_ms)) ? Number(task.blocked_ms) : 0}`,
+    `blocked_total_ms: ${Number.isFinite(Number(task.blocked_total_ms)) ? Number(task.blocked_total_ms) : 0}`,
     `block_reason: ${JSON.stringify(task.block_reason || null)}`,
     `proof: ${JSON.stringify(task.proof || null)}`,
     `notes: ${JSON.stringify(Array.isArray(task.notes) ? task.notes : [])}`,
@@ -234,6 +235,7 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
       last_heartbeat_by: meta.last_heartbeat_by || null,
       claims: Number.isFinite(Number(meta.claims)) ? Number(meta.claims) : 0,
       blocked_ms: Number.isFinite(Number(meta.blocked_ms)) ? Number(meta.blocked_ms) : 0,
+      blocked_total_ms: Number.isFinite(Number(meta.blocked_total_ms)) ? Number(meta.blocked_total_ms) : 0,
       block_reason: meta.block_reason || null,
       proof: meta.proof || null,
       notes: Array.isArray(meta.notes) ? meta.notes : [],
@@ -749,6 +751,7 @@ export function addBoardTask(
     last_heartbeat_by: null,
     claims: 0,
     blocked_ms: 0,
+    blocked_total_ms: 0,
     block_reason: null,
     proof: null,
     notes: [],
@@ -999,11 +1002,36 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     isBlocked &&
     ((touches("next_actor") && canonicalizeOwner(updates.next_actor) !== canonicalizeOwner(existingTask.next_actor || "")) ||
       (touches("owner") && canonicalizeOwner(updates.owner) !== canonicalizeOwner(existingTask.owner || "")));
-  let blockedMs = Number.isFinite(Number(existingTask.blocked_ms)) ? Number(existingTask.blocked_ms) : 0;
+  // `blocked_ms` used to be the TOTAL time a card had ever spent blocked, banked at the moment
+  // the card LEFT the blocked column. That made a field named "blocked_ms" read as "how long has
+  // this been blocked" while actually answering "how long has this been blocked across every
+  // spell it has ever had", and the two disagree by however long the previous spells were:
+  //
+  //   a card blocked 138 min for the first time   -> blocked_ms 0        (nothing banked yet)
+  //   a card blocked 9 min after 150 min blocked  -> blocked_ms 9037810 (the OLD spell, not this one)
+  //
+  // A consumer sorting by it orders the board wrongly while never looking wrong, which is the
+  // whole failure class. So the live age lives in `blocked_ms`, where the name points, and the
+  // cumulative figure is preserved as `blocked_total_ms` for anyone who really wants it.
+  // The ALERT was never wrong: metrics.mjs derives its age from `blocked_at` and only falls back
+  // to blocked_ms when blocked_at is unparseable. The defect was the field and the human-facing
+  // render, not the alerting.
+  const priorTotalMs = Number.isFinite(Number(existingTask.blocked_total_ms))
+    ? Number(existingTask.blocked_total_ms)
+    : (Number.isFinite(Number(existingTask.blocked_ms)) ? Number(existingTask.blocked_ms) : 0);
+  let blockedTotalMs = priorTotalMs;
   if (wasBlocked && !isBlocked && existingTask.blocked_at) {
     const blockedAtMs = Date.parse(existingTask.blocked_at);
-    if (Number.isFinite(blockedAtMs)) blockedMs += Math.max(0, nowMs - blockedAtMs);
+    if (Number.isFinite(blockedAtMs)) blockedTotalMs += Math.max(0, nowMs - blockedAtMs);
   }
+  // A card that has just entered blocked starts its first spell now, so its age is 0 - and it
+  // grows from here on every render, which is the entire point of a live figure. When the card is
+  // NOT blocked the live age is 0: it is not blocked for zero milliseconds, it is not blocked now.
+  const blockedMs = isBlocked
+    ? (wasBlocked && existingTask.blocked_at
+      ? Math.max(0, nowMs - (Number.isFinite(Date.parse(existingTask.blocked_at)) ? Date.parse(existingTask.blocked_at) : nowMs))
+      : 0)
+    : 0;
 
   const owner = updates.owner ? canonicalizeOwner(updates.owner) : existingTask.owner;
   const enteringProgress = targetStatus === "in_progress" && existingTask.status !== "in_progress";
@@ -1033,6 +1061,7 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     last_heartbeat_by: nextHeartbeatBy,
     claims: enteringProgress ? (Number(existingTask.claims) || 0) + 1 : (Number(existingTask.claims) || 0),
     blocked_ms: blockedMs,
+    blocked_total_ms: blockedTotalMs,
     // `block_reason` lives on blocked cards and NOWHERE ELSE. A reason supplied on any
     // transition that does not land on `blocked` must not linger in the field the alert
     // reads, or "carries a reason" stops meaning "is a triaged blocker" and the
