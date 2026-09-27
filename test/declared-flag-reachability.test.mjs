@@ -73,6 +73,12 @@ function makeResolver(src) {
     return next < 0 ? src.slice(from) : src.slice(from, from + next);
   }
   const cycles = [];
+  // Flag -> shortest hop at which it was found. Reported in failures so one-hop and three-hop
+  // reachability are distinguishable at a glance rather than both reading as "reachable".
+  const flagHops = new Map();
+  const note = (flag, hops) => {
+    if (!flagHops.has(flag) || hops < flagHops.get(flag)) flagHops.set(flag, hops);
+  };
   function readsFor(label, seen = new Set(), hops = 0) {
     if (seen.has(label)) { cycles.push([...seen, label].join(" -> ")); return new Set(); }
     seen.add(label);
@@ -82,9 +88,11 @@ function makeResolver(src) {
       ...[...body.matchAll(/flags\.([a-zA-Z_]\w*)/g)].map((x) => x[1]),
       ...[...body.matchAll(/flags\["([^"]+)"\]/g)].map((x) => x[1]),
     ]);
+    for (const flag of direct) note(flag, hops);
     for (const d of body.matchAll(/handleTaskCommand\(\s*"([a-z][\w-]*)"/g)) {
       for (const flag of readsFor(d[1], seen, hops + 1)) direct.add(flag);
     }
+    for (const flag of direct) note(flag, hops);
     return direct;
   }
   function graph() {
@@ -96,11 +104,11 @@ function makeResolver(src) {
     }
     return g;
   }
-  return { positions, handlerBody, readsFor, graph, cycles, labels: positions.map((p) => p.label) };
+  return { positions, handlerBody, readsFor, graph, cycles, flagHops, labels: positions.map((p) => p.label) };
 }
 
 const RESOLVER = makeResolver(taskSwitch);
-const { positions, handlerBody, readsFor, labels, cycles: delegationCycles } = RESOLVER;
+const { positions, handlerBody, readsFor, labels, cycles: delegationCycles, flagHops } = RESOLVER;
 function delegationGraph() { return RESOLVER.graph(); }
 
 
@@ -146,9 +154,17 @@ test("FALL-THROUGH IS HANDLED, not mistaken for an inert flag", () => {
 
 test("NO DECLARED FLAG IS INERT IN ITS OWN VERB, and delegation is resolved", () => {
   const inert = [];
+  const hopsByVerb = new Map();
   for (const [verb, flags] of declared) {
     if (!labels.includes(verb)) continue;          // aliases share a label; covered elsewhere
+    // The hop map is CLEARED PER VERB on purpose. It is written by every traversal, so a
+    // shared map reports the SHORTEST hop across all verbs - and `claim@0` would then describe
+    // drain's own direct read while the reader is asking about next, which is one hop further
+    // out. A number that answers a different question than the one asked is worse than no
+    // number, because it looks authoritative.
+    flagHops.clear();
     const reads = readsFor(verb);
+    hopsByVerb.set(verb, new Map(flagHops));
     for (const flag of flags) {
       // `from`/`me` are the metadata envelope read by the shared preamble rather than a handler,
       // and `help` is handled before dispatch. Declared universally on every verb.
@@ -156,8 +172,25 @@ test("NO DECLARED FLAG IS INERT IN ITS OWN VERB, and delegation is resolved", ()
       if (!reads.has(flag)) inert.push(`task ${verb} --${flag}`);
     }
   }
+  // A delegating verb's flags are a FUNCTION of its delegate's plus a raw passthrough, so
+  // "reachable in one hop" and "reachable three hops down" must not read the same in a failure.
+  // `found at hop N` is the difference between a check and a coincidence.
+  // Reported for the INERT VERBS, not whichever verb happened to be traversed last. An inert
+  // flag has no read at all, so "what did this verb read, and how far away" is the diagnostic
+  // that says something: hop 0 means the handler has the flag in hand and ignores it, while
+  // hop 2 means the value is two delegations away and the loss happened in between.
+  const fmt = (m) => (m && m.size ? [...m].sort((x, y) => x[1] - y[1]).map(([f, h]) => f + "@hop" + h).join(" ") : "nothing read");
+  const inertDetail = () => {
+    const verbs = [...new Set(inert.map((entry) => entry.split(" ")[1]))];
+    if (verbs.length === 0) return "";
+    return " Per inert verb: " + verbs.map((v) => `${v} [${fmt(hopsByVerb.get(v))}]`).join("; ") + ".";
+  };
+  const delegated = [...RESOLVER.graph()].filter(([, to]) => to.length).map(([f, t]) => `${f}->${t.join(",")}`);
+  const detail = inert.length === 0 ? "" :
+    ` Delegation edges walked: ${delegated.length ? delegated.join("; ") : "none"}.` +
+    `${inertDetail()}`
   assert.deepEqual(inert, [],
-    `declared and accepted by the parser but never read: ${inert.join(", ")}`);
+    `declared and accepted by the parser but never read: ${inert.join(", ")}${detail}`);
 });
 
 test("THE CONTROL: `next --claim` is reachable BY DELEGATION, not by its own read", () => {
