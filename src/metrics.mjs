@@ -442,6 +442,18 @@ export function buildCoordinatorMetrics({
   // A card is stale when neither an explicit heartbeat nor a state change has
   // happened within the threshold. Previously this read only `updated`, so an
   // actively worked card was indistinguishable from an ignored one.
+  // A lookup of every card's status by id, so a card's DEPENDENCIES can be resolved - both for
+  // the blocked projection below and for the STALLED projection, which now resolves its own
+  // edges. It used to be built after the active-card loop, which is why the stalled projection
+  // could not read it and had to omit `dependency` entirely: the field was unreachable from
+  // where it was needed, so the renderer printed null for every stalled card.
+  const statusById = new Map();
+  for (const [colName, colTasks] of Object.entries(board.columns || {})) {
+    for (const t of colTasks || []) {
+      if (t && t.id) statusById.set(t.id, { status: colName, task: t });
+    }
+  }
+
   const stalledCards = [];
   const unattributedLiveness = [];
   const livenessLease = [];
@@ -467,7 +479,49 @@ export function buildCoordinatorMetrics({
       continue;
     }
     if (projected.kind === "stalled") {
-      stalledCards.push(projected.stalled);
+      // DEPENDENCIES, PROJECTED HERE BECAUSE statusById IS IN SCOPE HERE AND NOT INSIDE
+      // projectCardStall.
+      //
+      // The stalled projection carried `stage`, `nextActor` and `reason` but NOT `dependency`,
+      // while the renderer printed `dependency=${JSON.stringify(card.dependency || null)}` for
+      // every card. An absent key is not a null value: the render turned a MISSING FIELD into an
+      // authoritative "this card has no dependencies", so three cards carrying live edges were
+      // displayed as unencumbered. It is the same defect as the `stage=undefined` one recorded in
+      // the projection itself, reached by the same route - one projection has a field the sibling
+      // lacks - and it survived a fix that added the sibling field on the line above.
+      //
+      // The STATES are read from the lookup, never assumed, for the same reason the blocked
+      // projection reads them from a lookup: a dependency id that is not in the table is
+      // UNKNOWN, and treating unknown as done would report a correctly-gated card as free.
+      const deps = Array.isArray(task.depends_on) ? task.depends_on
+        : Array.isArray(task.dependency) ? task.dependency
+          : (task.depends_on || task.dependency) ? [task.depends_on || task.dependency] : [];
+      const dependencyStates = deps.map((d) => {
+        const id = typeof d === "string" ? d : d?.id;
+        return { id, status: statusById.get(id)?.status ?? "unknown" };
+      });
+      stalledCards.push({
+        ...projected.stalled,
+        dependency: deps.length ? deps : null,
+        dependencyStates,
+        // WHAT IS STILL GATING IT, which is the question a stall triage actually asks.
+        //
+        // Printing the real edge alone would be a half-fix that makes things worse: all three of
+        // coordinator's cards depend on cards that are DONE, so a satisfied edge printed next to
+        // a stall alert invites the reader to conclude the work is blocked when it is in fact
+        // runnable. "deps all satisfied" is the most useful thing this alert can say, because it
+        // is the difference between work nobody started and work nobody could start - and until
+        // now the alert could not tell those apart at all.
+        //
+        // `unknown` counts as UNMET. A dependency that is not in the table may not exist yet, and
+        // calling that satisfied would clear a card on the strength of a dangling link.
+        unmetDependencies: dependencyStates.filter((d) => d.status !== "done"),
+        // True only when there was at least one edge and every one resolved to done. Zero
+        // dependencies is NOT "all satisfied" - it is the separate blocked-on-nobody case, and
+        // conflating them would report a card with no edges as a card whose edges are fine.
+        depsAllSatisfied: dependencyStates.length > 0 && dependencyStates.every((d) => d.status === "done"),
+      });
+      continue;
     }
   }
   const blockedWork = [];
@@ -475,12 +529,6 @@ export function buildCoordinatorMetrics({
   // Without it a dependency id can only be counted, never checked, and a block whose blockers
   // are all finished is indistinguishable from one that is genuinely waiting - which is the whole
   // defect. Built from the same board the cards come from, so it cannot disagree with them.
-  const statusById = new Map();
-  for (const [colName, colTasks] of Object.entries(board.columns || {})) {
-    for (const t of colTasks || []) {
-      if (t && t.id) statusById.set(t.id, { status: colName, task: t });
-    }
-  }
   for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
     if (columnName !== "blocked") continue;
     for (const task of (Array.isArray(columnTasks) ? columnTasks : []).filter(Boolean)) {

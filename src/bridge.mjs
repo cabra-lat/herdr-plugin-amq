@@ -650,8 +650,40 @@ export function buildCoordinatorAlertPrompt(alert) {
         // printing an owner as the next actor: a confident assertion the state does not
         // support, in the same field.
         `next-actor=${card.nextActor || (card.stage === "blocked" ? "none (blocked on nobody)" : "none (no next actor)")}`,
-        `dependency=${JSON.stringify(card.dependency || null)}`,
-        `reason=${card.reason || "unspecified"}`,
+        // WHAT IS STILL GATING THIS CARD, not merely what it points at.
+        //
+        // This printed `dependency=${JSON.stringify(card.dependency || null)}`, and the stalled
+        // projection had no `dependency` key at all - so an ABSENT field rendered as an
+        // authoritative "no dependencies", and three cards carrying live edges were displayed as
+        // unencumbered. `|| null` is what did it: it cannot tell a missing key from a null value,
+        // so a projection that forgot a field looks exactly like a card that has none.
+        //
+        // Now it reports the UNMET edges, and says so plainly when there are none to report. All
+        // three of coordinator's cards depend on cards that are DONE, so printing the satisfied
+        // edges would put three satisfied dependencies beside a stall alert and invite the reader
+        // to conclude the work is blocked when it is in fact runnable. "deps all satisfied" is the
+        // most useful thing this line can say: it is the difference between work nobody started
+        // and work nobody could start, which this alert previously could not express at all.
+        //
+        // The three states are kept distinct because collapsing them is the bug in a new place:
+        // edges exist and are all done; edges exist and some are unmet; there are no edges, which
+        // is the blocked-on-nobody case and is NOT "all satisfied".
+        (card.unmetDependencies && card.unmetDependencies.length > 0
+          ? `deps-unmet=${card.unmetDependencies.map((d) => `${d.id} (${d.status})`).join(",")}`
+          : card.depsAllSatisfied
+            ? `deps=all-satisfied (${card.dependencyStates.length})`
+            : card.dependencyStates && card.dependencyStates.length === 0
+              ? "deps=none (this card waits on nothing, which is not the same as its deps being met)"
+              : `deps=${JSON.stringify(card.dependency || null)}`),
+        // A REASON THAT DOES NOT APPLY IS NOT A MISSING REASON.
+        //
+        // `reason` reads block_reason, which only means anything for a BLOCKED card. Printing
+        // "unspecified" for an in_progress card presents an inapplicable field as a blank one,
+        // and a reader triaging a stall cannot tell "nobody wrote a reason" from "a reason was
+        // never the right question here" - so the column invites exactly the misreading the
+        // dependency line above exists to prevent. Stage-aware, for the same reason the
+        // next-actor line above is: one field, two meanings, and the wording has to say which.
+        `reason=${card.reason || (card.stage === "blocked" ? "unspecified" : "n/a (not blocked; only a blocked card carries a reason)")}`,
         // Note recency is progress evidence, never liveness: notes do not move `updated`.
         (card.noteCount ? `notes=${card.noteCount} last-note=${formatAge(card.noteAgeMs)} ago` : "notes=0"),
         // A heartbeat from anyone but the owner is a real signal, but a different
