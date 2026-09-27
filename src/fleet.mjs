@@ -287,6 +287,12 @@ export async function stopFleet(amqRoot, repoRoot, options = {}) {
     worktree: path.join(repoRoot, ".worktrees", agent.handle),
   }));
   const targetFleet = filterPersonas(fleet, options.agents);
+  // `--kind` is the FLEET-WIDE DEFAULT here for the same reason it is in launchFleet: it is not
+  // an override, it is the fallback for briefs that do not declare their own. It used to be
+  // compared against every pane directly, which meant `fleet down --kind agy` closed NOTHING on
+  // a fleet whose agents run as `pi` - while `fleet up` had already been fixed to launch each
+  // agent under its own brief's kind. An up that launches `pi` and a down that filters on `agy`
+  // cannot be idempotent in either direction; the pane `up` created is the pane `down` refuses.
   const kind = options.kind || null;
   const dryRun = Boolean(options.dryRun);
   const getLiveAgents = options.getLiveAgents || getHerdrAgents;
@@ -306,18 +312,40 @@ export async function stopFleet(amqRoot, repoRoot, options = {}) {
     const panes = matchingFleetPanes(agent, liveAgents, currentPaneId);
     const currentPane = panes.find((pane) => pane.pane_id === currentPaneId);
     const replaceablePanes = panes.filter((pane) => pane.pane_id !== currentPaneId);
-    const selected = kind ? replaceablePanes.filter((pane) => pane.agent === kind) : replaceablePanes;
-    if (currentPane && (!kind || currentPane.agent === kind)) {
+    // Same three-level resolution as launchFleet, so both halves of the lifecycle agree on what
+    // an agent SHOULD be running as. Omitting --kind still means "tear this agent down", which
+    // is the only way to clean up an agent whose kind nothing agrees on.
+    const expectedKind = kind ? resolveKind(agent, kind) : null;
+    const selected = expectedKind ? replaceablePanes.filter((pane) => pane.agent === expectedKind) : replaceablePanes;
+    const mismatched = expectedKind ? replaceablePanes.filter((pane) => pane.agent !== expectedKind) : [];
+    if (currentPane && (!expectedKind || currentPane.agent === expectedKind)) {
       result.skipped.push({ handle: agent.handle, reason: `current pane ${currentPane.pane_id} is protected` });
     }
     if (selected.length === 0) {
-      if (replaceablePanes.length > 0) {
-        result.skipped.push({ handle: agent.handle, reason: `kind is ${replaceablePanes.map((pane) => pane.agent).join(", ")}` });
+      if (mismatched.length > 0) {
+        // Named, with both kinds, because "skipped" on its own is how a teardown silently
+        // becomes a no-op and nobody notices for a week.
+        const found = [...new Set(mismatched.map((pane) => pane.agent))].join(", ");
+        result.skipped.push({
+          handle: agent.handle,
+          reason: `running as ${found}, expected ${expectedKind} (its brief, or --kind); not closed - re-run without --kind to tear it down`,
+          kind: found,
+          expectedKind,
+        });
       }
       continue;
     }
     if (dryRun) {
       result.wouldStop.push(...selected.map((pane) => ({ handle: agent.handle, paneId: pane.pane_id, kind: pane.agent })));
+      if (mismatched.length > 0) {
+        const found = [...new Set(mismatched.map((pane) => pane.agent))].join(", ");
+        result.skipped.push({
+          handle: agent.handle,
+          reason: `running as ${found}, expected ${expectedKind} (its brief, or --kind); not closed - re-run without --kind to tear it down`,
+          kind: found,
+          expectedKind,
+        });
+      }
       continue;
     }
     for (const pane of selected) {
