@@ -1517,13 +1517,26 @@ Options:
     if (dryRun) console.log("Mode: \x1b[33mDry Run (preview only)\x1b[0m\n");
 
     const res = await launchFleet(amqRoot, repoRoot, { kind, agents, dryRun, replace });
+    // The header shows the fleet-wide DEFAULT, which after per-agent kinds is no longer the whole
+    // story: one line per agent, so a brief that declared its own kind is visible rather than
+    // inferred. Without this the output says "kind: agy" above a fleet where one agent was
+    // launched as something else, which is the kind of summary that is technically accurate and
+    // practically misleading.
+    if (res.kinds && Object.keys(res.kinds).length > 0) {
+      const spread = new Set(Object.values(res.kinds));
+      if (spread.size > 1) {
+        console.log(`\x1b[90mResolved per agent:\x1b[0m ${Object.entries(res.kinds).map(([h, k]) => `${h}=${k}`).join(", ")}`);
+      } else if (res.kinds[Object.keys(res.kinds)[0]] !== kind) {
+        console.log(`\x1b[90mResolved per agent:\x1b[0m every target overrides --kind (${Object.values(res.kinds)[0]})`);
+      }
+    }
     if (res.alreadyRunning.length > 0) {
       console.log(`\x1b[36m● Already running (${res.alreadyRunning.length}):\x1b[0m ${res.alreadyRunning.join(", ")}`);
     }
     if (res.replaced.length > 0) {
       console.log(`\x1b[33m↻ Replaced mismatched agents (${res.replaced.length}):\x1b[0m`);
       for (const entry of res.replaced) {
-        console.log(`   • ${entry.handle}: ${entry.fromKinds.join(", ")} -> ${kind}`);
+        console.log(`   • ${entry.handle}: ${entry.fromKinds.join(", ")} -> ${res.kinds?.[entry.handle] ?? kind}`);
       }
     }
     if (dryRun && res.wouldReplace.length > 0) {
