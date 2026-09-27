@@ -438,7 +438,33 @@
     } catch {}
   }
 
+  // COALESCE THE REFETCH. This is the actual cost of the owner report, and it is not the
+  // scroll jump I fixed first.
+  //
+  // Measured on the live dashboard: /api/threads?account=all takes 27-34 SECONDS, because
+  // loadThreads calls loadAllMessages with account "all", scans every agent maildir, and
+  // groups every message in JS with paginate disabled. A single concrete account is 3.8-4.1s.
+  // There are 16,392 message files under agents/.
+  //
+  // The SSE channel calls fetchData on EVERY event, with no debounce and no in-flight guard,
+  // so while one 30-second scan is running every arriving event starts another. The browser
+  // then holds several concurrent 30-second requests, which is what a reader experiences as
+  // the page hanging or reloading when they scroll.
+  //
+  // The fix bounds it to ONE scan at a time and remembers that another was wanted, so a burst
+  // of events costs one extra scan rather than one per event. It does not make the scan
+  // cheaper - that is server-side work and it is not this card - it stops the pile-up, which
+  // is the part that makes the number unbounded.
+  let fetchInFlight = false;
+  let fetchTrailing = false;
   async function fetchData() {
+    if (fetchInFlight) {
+      // A refresh is already running and its result will be stale the moment it lands. Record
+      // that ONE more is owed and return, rather than joining the pile-up.
+      fetchTrailing = true;
+      return;
+    }
+    fetchInFlight = true;
     try {
       const endpoint = state.viewMode === "threads" ? "/api/threads" : "/api/messages";
       const currentPersona = getActiveSender();
@@ -472,6 +498,12 @@
     } catch (e) {
       state.mailError = e.message || "unknown error";
       renderList();
+    } finally {
+      fetchInFlight = false;
+      if (fetchTrailing) {
+        fetchTrailing = false;
+        fetchData();
+      }
     }
   }
 
