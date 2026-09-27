@@ -1157,9 +1157,21 @@ export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...option
   // rather than authoritative - so a caller that names only the game repo still gets plugin
   // citations dated, which is the defect this fixes. A caller CAN still narrow it by passing
   // `repos: []` explicitly if it wants a board resolved against nothing.
+  // CITATION-ONLY MODE. The citation render reads `work.citations` and each citation's
+  // `where`; it does not need a DATE for any of it. Resolving dates is the only part of this
+  // that touches git, and on the live 457-card board that is the difference between ~40ms and
+  // ~2.9s for the first build in a process. So a consumer that wants to show citations rather
+  // than report work age passes `repos: []`, which this function already treats as "resolve
+  // against nothing" - an existing switch, not a new one.
+  //
+  // The honest consequence, recorded in the returned metrics so it is read beside the data: with
+  // `repos: []` every citation resolves to `undated`, because undated is exactly what "we did not
+  // ask git" means. A caller that renders these must not present them as evidence whose age is
+  // unknown - it must say the dates were not resolved for this consumer.
+  const citationOnly = repos.length === 0;
   const requested = repos.length > 0 ? [...repos, PLUGIN_ROOT] : [PLUGIN_ROOT];
   const { used, skipped } = partitionRepos(requested);
-  const resolveDate = makeGitDateResolver({ repos: used });
+  const resolveDate = citationOnly ? async () => null : makeGitDateResolver({ repos: used });
   const workAgeById = new Map();
   await Promise.all(allBoardTasks.map(async (task) => {
     try {
@@ -1196,6 +1208,10 @@ export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...option
   // catch below - a card whose resolution throws is recorded as an explicit null rather than
   // being silently absent, because "absent" and "failed" need different responses.
   metrics.workAgeScope = {
+    // The consumer must be able to tell an unresolved commit from an unasked question. `repos: []`
+    // is how a caller asks for citations WITHOUT paying for date resolution, and the two are
+    // indistinguishable from the citations alone. Recorded here, beside the scope it qualifies.
+    ...(citationOnly ? { datesResolved: false, mode: "citation-only" } : { datesResolved: true, mode: "full" }),
     cards: allBoardTasks.length,
     note: "Work-age covers EVERY card on the board, including done ones. It is no longer limited to the stall-eligible set; that was an accident of which array the loop sat on, not a chosen scope. A card whose evidence cannot be resolved is recorded as an explicit null entry rather than omitted, so absence and failure stay distinguishable.",
   };

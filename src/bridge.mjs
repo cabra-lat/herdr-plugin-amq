@@ -12,7 +12,7 @@ import {
   execCmd,
 } from "./config.mjs";
 import { listBacklogTasks, getAgentTaskStats, loadBoard } from "./board.mjs";
-import { buildCoordinatorMetrics, stalledCardsForOwner } from "./metrics.mjs";
+import { buildCoordinatorMetrics, buildCoordinatorMetricsWithWorkAge, stalledCardsForOwner } from "./metrics.mjs";
 import { loadLocalTemplate, renderTemplate } from "./templates.mjs";
 import { isSafeMailIdentifier, listMaildirMessageFiles, readMaildirMessageFile, writeBoundedFileAtomic } from "./protocol.mjs";
 
@@ -785,6 +785,10 @@ export function runDoorbellPass({
   allowPrompt = false,
   persistState = false,
   state: injectedState = null,
+  // Precomputed full-board work age. INJECTED rather than built here because this function is
+  // SYNCHRONOUS and is called from a synchronous CLI path - making it await would either break
+  // that path or make it pay a ~2.9s first build. The daemon builds this once, ahead of the tick.
+  workAgeById = null,
   getStatus = getAgentStatus,
   healName = healAgentName,
   prompt = promptAgent,
@@ -927,6 +931,10 @@ export function runDoorbellPass({
     agentStatuses: statusByHandle,
     board: loadBoard(repoRoot, amqRoot),
     deliveredState: state,
+    // THE LINE THAT WAS MISSING. Without it every card gets `work: null` (metrics.mjs computes
+    // `work: workAgeById?.get(task.id) || null`), so `card.work?.citations` is undefined and the
+    // citation render can never fire from this function - no matter how correct the render is.
+    workAgeById,
   });
 
   let coordinatorDoorbellResult = { attempted: false, prompted: false, alert: null, fingerprint: null };
@@ -1034,15 +1042,38 @@ export function startDaemonLoop({ interval = 3000, dryRun = false } = {}) {
   console.log(`[bridge] Queue: ${amqRoot}`);
   console.log(`[bridge] Interval: ${interval}ms`);
 
-  const tick = () => {
+  // The tick is now ASYNC, and `setInterval` does not wait for it. Without a guard a tick slower
+  // than the interval RE-ENTERS while the previous is still running: two passes over the same
+  // undelivered mail, two prompts, two state writes. That hazard is created by the fix, so the
+  // fix owns it. Skips are counted, not hidden - a daemon quietly dropping passes is
+  // indistinguishable from a daemon with nothing to deliver.
+  let inFlight = false;
+  let skippedTicks = 0;
+  const tick = async () => {
+    if (inFlight) { skippedTicks++; return; }
+    inFlight = true;
     try {
       const handles = getAgentHandles(amqRoot);
-      const res = runDoorbellPass({ amqRoot, handles, dryRun, allowPrompt: true, persistState: true });
+      // CITATION-ONLY work age, for the render. No git, so this is the ~40ms steady-state build
+      // rather than the ~2.9s first build that would put a full-board resolve on a 3s tick.
+      // The builder returns { metrics, workAgeById } - workAgeById is TOP LEVEL, not under
+      // metrics, and reading it from the wrong place yields null and silently restores the bug.
+      const workAgeById = await buildCoordinatorMetricsWithWorkAge({
+        board: loadBoard(repoRoot, amqRoot),
+        repos: [],
+      }).then((r) => r.workAgeById ?? null).catch(() => null);
+      const res = runDoorbellPass({ amqRoot, handles, dryRun, allowPrompt: true, persistState: true, workAgeById });
       if (res.doorbelled > 0) {
         console.log(`[bridge] Doorbelled ${res.doorbelled} message(s)`);
       }
+      if (skippedTicks > 0) {
+        console.log(`[bridge] ${skippedTicks} tick(s) skipped: a pass was still running`);
+        skippedTicks = 0;
+      }
     } catch (err) {
       console.error(`[bridge] Error in pass: ${err.message}`);
+    } finally {
+      inFlight = false;
     }
   };
 
