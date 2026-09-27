@@ -30,6 +30,8 @@ import {
   reassignBoardTask,
   deleteBoardTask,
   drainTasks,
+  getBoardTask,
+  canonicalizeOwner,
 } from "./board.mjs";
 import {
   sendMaildirMessage,
@@ -231,7 +233,7 @@ const TASK_FLAGS = {
   create: new Set(["title", "to", "owner", "desc", "description", "status", "priority", "next-actor", "depends-on", "json", "notify", "me", "from", "help"]),
   new: new Set(["title", "to", "owner", "desc", "description", "status", "priority", "next-actor", "depends-on", "json", "notify", "me", "from", "help"]),
   assign: new Set(["to", "owner", "title", "desc", "description", "status", "next-actor", "depends-on", "priority", "notify", "me", "from", "help"]),
-  claim: new Set(["id", "notify", "me", "from", "help"]),
+  claim: new Set(["id", "notify", "me", "from", "force", "help"]),
   // `--reason` exists so a card can be completed FROM `blocked`: leaving blocked is an edge
   // and every edge is narrated. Without it the core guard refuses the exit and the only way
   // out would be a manufactured intermediate stage.
@@ -519,6 +521,62 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         process.exit(1);
       }
 
+      // WHAT THE CARD LOOKS LIKE BEFORE WE TOUCH IT, because whether this command did
+      // anything is not a property of its exit code.
+      //
+      // The board layer is correct and was not the bug: `updated` moves only when the card
+      // actually changed, and the claim notification is gated on a real status transition. But
+      // this command printed its success from `res.ok`, which is true whenever the write
+      // succeeded - INCLUDING when it wrote back identical values. Measured on a live card at
+      // 00:12Z, re-claiming my own in-progress card printed
+      //   "claimed by agsuite-dev (Status -> in_progress)" and
+      //   "Notification dispatched to coordinator via AMQ."
+      // while `Updated` stayed at 22:48:37.566Z, `Claims` stayed at 1, and no message reached
+      // coordinator at all. So the transition and the notification were both fiction.
+      //
+      // Why that is worse than a cosmetic lie: the stall doorbell tells an agent that claiming
+      // is one of the four ways to move a stalled card. An agent that follows the instruction,
+      // sees success, and watches the number not move has been told to do something useless by
+      // the tool that raised the alarm. And because the message reads as a claim, the attempt
+      // looks like progress in the lane's own history.
+      const located = getBoardTask(repoRoot, amqRoot, taskId);
+      const existing = located?.task || null;
+      if (!existing) {
+        return failTask(`Task not found: ${taskId}. Nothing was claimed and no notification was sent.`);
+      }
+
+      const currentOwner = canonicalizeOwner(existing.owner || "");
+      const heldByMe = currentOwner === me;
+      const alreadyInProgress = String(existing.status || "").replace(/-/g, "_") === "in_progress"
+        || String(existing.status || "") === "doing";
+      // HELD is not the same as ASSIGNED, and conflating them was the first bug in this guard:
+      // it refused any card with an owner, which made an ordinary unstarted backlog card
+      // unclaimable by anyone but its assignee - and picking up unstarted work is the normal
+      // path, not a theft. A card is held once it has been CLAIMED (claimed_at is set) or is
+      // already in progress. Before that it is merely addressed to somebody, and the owner field
+      // records who the work belongs to, not who is holding it.
+      const everClaimed = Boolean(existing.claimed_at);
+      const held = everClaimed || alreadyInProgress;
+
+      // A claim that would take a card another lane is actually holding is a REASSIGNMENT
+      // wearing a claim's clothes, and the board will happily overwrite the owner. It refuses
+      // unless the operator says so explicitly, for the same reason `fleet up --no-replace`
+      // exists: the destructive direction is opt-in, never inferred.
+      if (held && !heldByMe && currentOwner && !flags.force) {
+        console.error(`❌ Task ${taskId} is already claimed by ${currentOwner} (status: ${existing.status}).`);
+        console.error(`   Nothing was written and no notification was sent. A claim does not take a card from another lane.`);
+        console.error(`   Reassign it on purpose:  herdr-amq task reassign ${taskId} --me ${me} --to ${me} --reason "<why>"`);
+        console.error(`   Or override the guard:  herdr-amq task claim ${taskId} --me ${me} --force`);
+        process.exit(1);
+      }
+
+      // The transition that will ACTUALLY happen. A fresh claim on a card this lane does not
+      // already hold in progress is the only thing that moves claimed_at, the claim count and
+      // the state clock - see `enteringProgress` in updateBoardTask, which is gated on the
+      // status genuinely changing.
+      const performedClaim = !heldByMe || !alreadyInProgress;
+      const takingFrom = performedClaim && held && !heldByMe && currentOwner ? currentOwner : null;
+
       let res;
       try {
         res = updateBoardTask(
@@ -532,12 +590,29 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         return failTask(`Failed to write task claim: ${error.message}`);
       }
 
-      if (res.ok) {
-        console.log(`\n🚀 \x1b[33mTask ${taskId} claimed by ${me}\x1b[0m (Status -> in_progress)`);
-        console.log(`✉️ Notification dispatched to coordinator via AMQ.\n`);
-      } else {
+      if (!res.ok) {
         console.error(`❌ Failed to claim task: ${res.error}`);
         process.exit(1);
+      }
+
+      if (performedClaim) {
+        console.log(`\n🚀 \x1b[33mTask ${taskId} claimed by ${me}\x1b[0m (Status -> in_progress)`);
+        if (takingFrom) {
+          console.log(`\x1b[33m⚠️  Taken from ${takingFrom} via --force.\x1b[0m`);
+        }
+        console.log(`✉️ Notification dispatched to coordinator via AMQ.\n`);
+      } else {
+        // The truth, including the part that is inconvenient: this did not move the card, and
+        // claiming again is not a remedy for a stall. Saying so is the whole fix - a command
+        // that reports a no-op honestly is debuggable, and one that reports a phantom
+        // transition sends the next lane looking for a change that was never made.
+        console.log(`\nℹ️  Task ${taskId} is already claimed by you and already in_progress.`);
+        console.log(`   Nothing changed: the claim record, the claim count (${existing.claims ?? 0}) and the`);
+        console.log(`   state clock (updated ${existing.updated}) are all exactly as they were.`);
+        console.log(`   No notification was sent, because no claim happened.`);
+        console.log(`   \x1b[33mClaiming again does NOT clear a stall\x1b[0m - the stall ages the state clock, and only a`);
+        console.log(`   real change moves it. To move this card: re-scope it, block it with a reason,`);
+        console.log(`   or close it with --proof.`);
       }
       break;
     }
