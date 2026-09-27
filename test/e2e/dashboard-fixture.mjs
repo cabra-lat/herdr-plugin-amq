@@ -258,8 +258,17 @@ export async function createDashboardFixture({ registerAmqRootEnv = false, amqRo
 
   // Title-only agent: no Herdr `name`, identity can only come from the canonical
   // pane title, and only when the handle is registered in the AMQ root.
+  //
+  // `name` IS ABSENT HERE, NOT EMPTY. The real server omits the field for an agent that has no
+  // name; the fixture used to emit `name: ""`, which is a fake that is more PERMISSIVE than the
+  // thing it stands in for. A fake more permissive than reality cannot fail: a consumer written
+  // as `if ("name" in agent)` or `agent.name !== undefined` is exercised only by the fake, and
+  // the 7 pane tests were green against a shape that cannot occur on a real socket.
+  //
+  // A stricter fake is the useful direction. Omitting the field means any code that branches on
+  // the key's PRESENCE rather than its truthiness now fails here, which is the failure the
+  // fixture should have been producing all along.
   const titleOnlyAgent = {
-    name: "",
     agent: "pi",
     model: { id: "space-bunny-free", providerID: "opencode", variant: "max" },
     agent_session: { agent: "pi", source: "herdr:pi", value: "ses_e2e_spotter" },
