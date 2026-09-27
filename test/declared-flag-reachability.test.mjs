@@ -50,52 +50,79 @@ const taskSwitch = SRC.slice(switchStart, switchEnd);
 // looks unread. A 19-hit finding that is entirely segmentation artifact is the most dangerous
 // output shape there is, because it is specific. So a label whose next non-blank token is another
 // `case` is a FALL-THROUGH LABEL: it has no body of its own and must take the next body's.
-function labelPositions() {
-  const out = [];
-  const re = /case "([a-z][\w-]*)":/g;
+
+// ONE FACTORY, PARAMETERISED BY THE SOURCE. The transitivity arm needs a TWO-hop delegation to
+// exist somewhere, and today's real graph has exactly one edge - so without this, that arm either
+// cannot run or has to assert against a toy closure defined in the test, which proves nothing about
+// the resolver the product uses. A check that runs against a copy of the logic is a coincidence.
+function makeResolver(src) {
+  const labelRe = /case "([a-z][\w-]*)":/g;
+  const positions = [];
   let m;
-  while ((m = re.exec(taskSwitch))) {
-    const after = taskSwitch.slice(m.index + m[0].length);
-    const isFallThrough = /^\s*case\s/.test(after);
-    out.push({ label: m[1], start: m.index, bodyStart: m.index + m[0].length, fallThrough: isFallThrough });
+  while ((m = labelRe.exec(src))) {
+    const after = src.slice(m.index + m[0].length);
+    positions.push({ label: m[1], start: m.index, bodyStart: m.index + m[0].length, fallThrough: /^\s*case\s/.test(after) });
   }
-  return out;
+  function handlerBody(label) {
+    const i = positions.findIndex((p) => p.label === label);
+    if (i < 0) return null;
+    let j = i;
+    while (positions[j].fallThrough && j + 1 < positions.length) j += 1;   // shared body
+    const from = positions[j].bodyStart;
+    const next = src.slice(from).search(/\n {4}(case |default:)/);
+    return next < 0 ? src.slice(from) : src.slice(from, from + next);
+  }
+  const cycles = [];
+  function readsFor(label, seen = new Set(), hops = 0) {
+    if (seen.has(label)) { cycles.push([...seen, label].join(" -> ")); return new Set(); }
+    seen.add(label);
+    const body = handlerBody(label);
+    if (body === null) return new Set();
+    const direct = new Set([
+      ...[...body.matchAll(/flags\.([a-zA-Z_]\w*)/g)].map((x) => x[1]),
+      ...[...body.matchAll(/flags\["([^"]+)"\]/g)].map((x) => x[1]),
+    ]);
+    for (const d of body.matchAll(/handleTaskCommand\(\s*"([a-z][\w-]*)"/g)) {
+      for (const flag of readsFor(d[1], seen, hops + 1)) direct.add(flag);
+    }
+    return direct;
+  }
+  function graph() {
+    const g = new Map();
+    for (const { label } of positions) {
+      const body = handlerBody(label);
+      if (body === null) continue;
+      g.set(label, [...body.matchAll(/handleTaskCommand\(\s*"([a-z][\w-]*)"/g)].map((x) => x[1]));
+    }
+    return g;
+  }
+  return { positions, handlerBody, readsFor, graph, cycles, labels: positions.map((p) => p.label) };
 }
-const positions = labelPositions();
 
-function handlerBody(label) {
-  const i = positions.findIndex((p) => p.label === label);
-  if (i < 0) return null;
-  let j = i;
-  while (positions[j].fallThrough && j + 1 < positions.length) j += 1;  // follow the shared body
-  const from = positions[j].bodyStart;
-  const next = taskSwitch.slice(from).search(/\n {4}(case |default:)/);
-  return next < 0 ? taskSwitch.slice(from) : taskSwitch.slice(from, from + next);
-}
+const RESOLVER = makeResolver(taskSwitch);
+const { positions, handlerBody, readsFor, labels, cycles: delegationCycles } = RESOLVER;
+function delegationGraph() { return RESOLVER.graph(); }
 
-const labels = positions.map((p) => p.label);
 
 // A handler that forwards to another verb inherits that verb's reads. `seen` makes a mutual
 // delegation terminate instead of recursing forever, which is the cycle guard the chain-walk in
 // the blocked-metrics work needed for the same reason.
-function readsFor(label, seen = new Set()) {
-  if (seen.has(label)) return new Set();
-  seen.add(label);
-  const body = handlerBody(label);
-  if (body === null) return new Set();
-  // Both access forms. A dashed flag name cannot be written `flags.next-actor`, so every edge
-  // flag is read as `flags["next-actor"]` - and a dot-only regex reports all nine of them as
-  // declared-and-inert. That is a third false positive of exactly the kind this file exists to
-  // stop shipping, and I hit it myself in the first run: 32 findings, of which 9 were this.
-  const direct = new Set([
-    ...[...body.matchAll(/flags\.([a-zA-Z_]\w*)/g)].map((m) => m[1]),
-    ...[...body.matchAll(/flags\["([^"]+)"\]/g)].map((m) => m[1]),
-  ]);
-  for (const m of body.matchAll(/handleTaskCommand\(\s*"([a-z][\w-]*)"/g)) {
-    for (const flag of readsFor(m[1], seen)) direct.add(flag);
-  }
-  return direct;
-}
+// BALLISTICS' POINT 3, taken in full: a delegating verb's flag surface is a FUNCTION of its
+// delegate's plus a raw passthrough, so every reachability row for it is a statement about a
+// GRAPH and not about a handler. Two consequences, both asserted below rather than assumed:
+//
+//   RESOLVE TRANSITIVELY. A one-hop resolver passes today's code (one edge, next -> drain) and
+//   quietly mis-reports a TWO-hop delegation, because the flag is found in the second delegate
+//   and the row looks fine. The hop count is what distinguishes "reachable in one hop" from
+//   "reachable by luck" at a glance - the difference between a check and a coincidence.
+//
+//   FAIL ON A CYCLE RATHER THAN SURVIVING IT. The old code carried a `seen` set, which stops the
+//   recursion - and that is exactly the problem. A cycle `next -> drain -> next` is not a wrong
+//   answer a test can see; with `seen` it silently yields whatever was collected before the
+//   repeat, the suite passes, and the real failure is that a future refactor makes the CLI never
+//   return. A hung test is indistinguishable from a slow machine, so this is a failure mode with
+//   NO OUTPUT. Cycle is now thrown, which turns an invisible hang into a red assertion.
+
 
 test("the checker parsed something, so a clean result is not vacuous", () => {
   // Ballistics' first attempt reported "0 flags parsed" and "(none) dead flags" - a vacuous arm
@@ -158,4 +185,64 @@ test("`reopen --stage` is READ now - the defect ballistics actually found", () =
   assert.ok(handlerBody("reopen") !== null, "the reopen handler exists");
   assert.ok(readsFor("reopen").has("stage"),
     "reopen must READ --stage, not merely accept it; a removed flag is not a fixed flag");
+});
+
+test("THE DELEGATION GRAPH IS ACYCLIC, so a cycle cannot become a hang", () => {
+  // A cycle is the one failure mode here with NO OUTPUT: the resolver's `seen` set makes it
+  // terminate, the collected flags still look plausible, the suite passes - and what actually
+  // happened is that a refactor made the CLI never return. There is no assertion that fails,
+  // because there is no wrong answer, only a machine that stopped.
+  const g = delegationGraph();
+  const state = new Map();
+  const walk = (n, path) => {
+    if (state.get(n) === "done") return;
+    if (state.get(n) === "open") {
+      assert.fail(`delegation cycle: ${[...path, n].join(" -> ")}`);
+    }
+    state.set(n, "open");
+    for (const m of g.get(n) || []) walk(m, [...path, n]);
+    state.set(n, "done");
+  };
+  for (const n of g.keys()) walk(n, []);
+  // And record what today's graph actually is, so a future edge is visible in the diff rather
+  // than discovered by a hang.
+  const edges = [...g].filter(([, to]) => to.length).map(([from, to]) => `${from} -> ${to.join(",")}`);
+  assert.ok(edges.length >= 1, "there is at least one delegation to walk");
+  assert.deepEqual(delegationCycles, [], "resolving the real graph must not encounter a cycle");
+});
+
+test("RESOLUTION IS TRANSITIVE, and this arm runs the REAL resolver", () => {
+  // Built from SOURCE, and run through makeResolver - the same code path that walks
+  // actions.mjs. The first version of this arm defined its own two-hop closure inside the test
+  // and passed, and capping the REAL resolver at one hop still left the suite green: the arm was
+  // proving a copy of the logic rather than the logic. A check that runs against a copy is a
+  // coincidence wearing a test's clothes.
+  //
+  // `c` reads the flag, `b` delegates to `c`, `a` delegates to `b`. Two hops, which today's
+  // real graph does not contain - one edge, next -> drain - so only a synthetic SOURCE can
+  // produce this, and only the real resolver can answer it.
+  const synthetic = makeResolver(`
+    case "a": { handleTaskCommand("b", []); }
+    case "b": { handleTaskCommand("c", []); }
+    case "c": { const x = flags.proof; }
+    default:
+  `);
+  assert.ok(synthetic.readsFor("a").has("proof"), "a flag two hops down must be found");
+  // And the negative direction, so "found" is not an artifact of returning everything.
+  assert.equal(synthetic.readsFor("a").has("nonesuch"), false, "and nothing is invented on the way");
+  assert.equal(synthetic.readsFor("c").has("proof"), true, "the reading verb sees its own flag");
+});
+
+test("A CYCLE IS DETECTED BY THE REAL RESOLVER, not survived by it", () => {
+  // The no-output failure mode. The resolver's `seen` set makes a cycle TERMINATE, which is
+  // exactly the defect: it terminates quietly, the collected flags still look plausible, the
+  // suite passes - and what actually happened is the CLI would never return.
+  const cyc = makeResolver(`
+    case "a": { handleTaskCommand("b", []); }
+    case "b": { handleTaskCommand("a", []); }
+    default:
+  `);
+  cyc.readsFor("a");
+  assert.ok(cyc.cycles.length > 0, "a cycle must be RECORDED, not absorbed by the recursion guard");
+  assert.match(cyc.cycles[0], /a -> b -> a/, "and the path must be reported, so a hang becomes readable");
 });
