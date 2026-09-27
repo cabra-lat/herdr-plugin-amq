@@ -528,6 +528,32 @@ function buildRequiredDoorbellActions(handle, context) {
     ).join("; ");
     const more = stalled.length > 4 ? ` and ${stalled.length - 4} more` : "";
     actions.push(`STALLED: ${stalled.length} of your card(s) have not CHANGED STATE: ${named}${more}. Move the card - claim it, re-scope it, block it with a reason, or close it. This is measured on the card's own state clock, so a heartbeat will NOT clear it: \`herdr-amq task heartbeat <id> --me ${handle}\` declares you are present (a lease, not progress) and cannot move the number. Notes are narration, never liveness.`);
+    // THE CITATIONS A STALLED CARD IS CARRYING, AND WHERE EACH WAS READ FROM.
+    //
+    // `where` shipped as payload with no consumer: produced in work-age.mjs, read by two tests,
+    // shown to nobody. That is the same defect as the doorbell list - a field in the artifact
+    // about the artifact - and I am not fixing it by adding a second unused field. It becomes
+    // visible here, on the line where a stalled card is already being reported.
+    //
+    // It is worth the space because it answers a question a stalled card always raises: is this
+    // card citing anything at all? An undated count alone cannot distinguish "cites nothing" from
+    // "cites something nobody can date", and those need opposite responses - start work versus go
+    // find the commit. Naming the source field is what separates them.
+    //
+    // The scope caveat travels WITH the data rather than living only in a commit message: this
+    // signal covers ACTIVE cards only, because workAgeById is built from the stall-eligible set.
+    // A finished card's evidence is not undated here - it is ABSENT, and a reader who is not told
+    // that will read the absence as a finding.
+    const cited = stalled
+      .map((card) => {
+        const cites = card.work?.citations || [];
+        if (cites.length === 0) return null;
+        return `${card.id}: ${cites.slice(0, 3).map((c) => `${c.value} (from ${c.where})`).join(", ")}${cites.length > 3 ? ` +${cites.length - 3} more` : ""}`;
+      })
+      .filter(Boolean);
+    if (cited.length > 0) {
+      actions.push(`Evidence cited by ${cited.length} stalled card(s), with the field each citation was read from: ${cited.join("; ")}. ACTIVE CARDS ONLY: this covers cards that have not finished, because the work-age signal is built from the stall-eligible set - a DONE card's evidence is ABSENT from this list, not undated, and its absence is not a finding about the card.`);
+    }
   }
   const unknownLiveness = context.board.unknownLivenessCards || [];
   if (unknownLiveness.length > 0) {
