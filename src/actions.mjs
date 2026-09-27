@@ -1151,9 +1151,21 @@ export function handleMailCommand(subcmd, args = []) {
       const subject = getArg("--subject", "-s") || "(no subject)";
       const bodyArg = getArg("--body", "-b");
       let body = bodyArg || "";
-      if (bodyArg && bodyArg.startsWith("@")) {
-        const filePath = bodyArg.slice(1);
-        if (fs.existsSync(filePath)) body = fs.readFileSync(filePath, "utf8");
+      // `@file` is RESOLVED OR REFUSED. This used to be `if (existsSync) body = read(...)`,
+      // which meant an unreadable path fell through with the literal "@/no/such/file" still in
+      // `body` - and the message was delivered, with a receipt, a message id and exit 0. The
+      // recipient got a pathname. That is a SUCCESS SIGNAL THAT DOES NOT DEPEND ON THE THING IT
+      // REPORTS, the same class as the --attach partial send, and the operations reference used
+      // to LICENSE it: "a literal string or @file is used as-is". A documented permission is a
+      // mechanism, so the doc was corrected first and the code second; expandAtFile has always
+      // failed closed and was simply not used on this path.
+      if (typeof bodyArg === "string" && bodyArg.startsWith("@")) {
+        const expanded = expandAtFile(bodyArg, "--body");
+        if (expanded.error) {
+          console.error(`❌ ${expanded.error}. Nothing was sent.`);
+          process.exit(1);
+        }
+        body = expanded.value;
       }
       const kind = getArg("--kind");
       const priority = getArg("--priority") || "normal";
@@ -1191,9 +1203,18 @@ export function handleMailCommand(subcmd, args = []) {
       const id = getArg("--id");
       const bodyArg = getArg("--body", "-b");
       let body = bodyArg || "";
-      if (bodyArg && bodyArg.startsWith("@")) {
-        const filePath = bodyArg.slice(1);
-        if (fs.existsSync(filePath)) body = fs.readFileSync(filePath, "utf8");
+      // Same fail-closed contract as `send`, and the coordinator flagged that they had NOT tested
+      // `mail reply` because it may take a different path. It took the same path, with the same
+      // bug: an unreadable @file left the literal "@path" as the body and reported success. A
+      // reply that ships a pathname is worse than a send that does, because it also lands in a
+      // thread as if it were an answer.
+      if (typeof bodyArg === "string" && bodyArg.startsWith("@")) {
+        const expanded = expandAtFile(bodyArg, "--body");
+        if (expanded.error) {
+          console.error(`❌ ${expanded.error}. Nothing was sent.`);
+          process.exit(1);
+        }
+        body = expanded.value;
       }
       const attach = getMultiArg("--attach");
 
