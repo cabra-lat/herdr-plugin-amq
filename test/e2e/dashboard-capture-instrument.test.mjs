@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { execFileSync } from "node:child_process";
@@ -40,22 +40,35 @@ function findChromium() {
   throw new Error("no chromium found");
 }
 
+// ONE browser and ONE fixture for the whole file, not one per test.
+//
+// This is the fix for the "cancelled" report on task_1790482860492_1b4a3e, and the hypothesis
+// was tested rather than assumed: dashboard-journey.test.mjs creates a single browser for the file
+// and does NOT linger, while this file and dashboard-sheet-geometry.test.mjs both wrapped EVERY
+// test in its own launch/close and both held the event loop open for ~20 minutes after their
+// assertions passed. Repeatedly launching and closing chromium leaves a handle behind, and node's
+// runner then reports the whole FILE as cancelled - so every result in it was uncitable even
+// though every assertion passed.
+let shared = null;
+
 async function withBrowser(fn) {
-  let fixture = null;
-  let browser = null;
-  try {
-    fixture = await createDashboardFixture();
-    browser = await chromium.launch({
+  if (!shared) {
+    const fixture = await createDashboardFixture();
+    const browser = await chromium.launch({
       headless: true,
       executablePath: findChromium(),
       args: ["--no-sandbox", "--disable-dev-shm-usage"],
     });
-    return await fn(fixture, browser);
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-    if (fixture?.cleanup) await fixture.cleanup().catch(() => {});
+    shared = { fixture, browser };
   }
+  return await fn(shared.fixture, shared.browser);
 }
+
+after(async () => {
+  if (!shared) return;
+  await shared.browser.close().catch(() => {});
+  await shared.fixture?.cleanup?.().catch?.(() => {});
+});
 
 const SIZES = [["mobile", { width: 390, height: 844 }], ["desktop", { width: 1440, height: 900 }]];
 
@@ -131,13 +144,9 @@ for (const [label, viewport] of SIZES) {
       assert.ok(exercised.changedFraction > idleDelta * 5,
         `an exercised capture must be clearly distinguishable from an idle one: ` +
         `${(exercised.changedFraction * 100).toFixed(1)}% vs ${(idleDelta * 100).toFixed(3)}%`);
-      // Hygiene, not a fix. I added page.close() before context.close() hoping it would end the
-      // ~20 minute post-test linger, and it did NOT: this file still holds the runner's event
-      // loop open and node reports the FILE as cancelled. dashboard-sheet-geometry.test.mjs has
-      // the same behaviour and predates this file, so the cause is in the shared fixture/browser
-      // teardown, not here, and it is UNDIAGNOSED. Until someone finds it, a "cancelled" line in
-      // `npm run test:e2e` means those two files' results may not be cited as a clean gate -
-      // including these, even though every assertion in them passes.
+      // Hygiene, not the fix - the per-test browser was the actual cause and withBrowser above
+      // now shares one. This stays because a closed page cannot leak even if the shared browser
+      // lives until the after() hook.
       await page.close().catch(() => {});
       await context.close();
     });
