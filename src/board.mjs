@@ -1228,9 +1228,23 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     // A re-route preserves the stamp. `reroutedWhileBlocked` no longer restarts the clock; the
     // time it covers is credited by the UNBLOCK path instead, which banks blocked_at -> now into
     // blocked_total_ms, so nothing is discarded here and nothing is double-counted there.
+    // CLEARED ON LEAVING blocked, together with blocked_ms, and the elapsed spell is NOT lost: the
+    // lines above have already banked blocked_at -> now into blocked_total_ms. So nothing is
+    // discarded and nothing is double-counted.
+    //
+    // It used to be preserved unconditionally, which was right for a RE-ROUTE (a card that stays
+    // blocked has not started a new spell) and wrong for a genuine EXIT. The result was a field
+    // that read as authoritative and described a state the card was not in: 88 of 448 non-blocked
+    // cards carried a blocked_at, including the oldest queued user decision on the board, which is
+    // queued and waiting on a person - a different fact with a different remedy. A reader checking
+    // whether blocked_at is SET concludes the most load-bearing decision on the board is blocked.
+    //
+    // The rule, stated because it is a rule and not an implementation detail: blocked_at and
+    // blocked_ms mean "blocked RIGHT NOW" and are both empty when the card is not blocked;
+    // blocked_total_ms is the only field that means "was ever blocked, and for how long in total".
     blocked_at: isBlocked
       ? (wasBlocked ? existingTask.blocked_at : now)
-      : existingTask.blocked_at,
+      : null,
     // An EXPLICIT null in the updates wins, and that is the reopen path. done_at is otherwise
     // preserved on every non-done transition, which is what let a claim leave a card asserting
     // done and in_progress at once; a deliberate reopen has to be the one write that CLEARS the
