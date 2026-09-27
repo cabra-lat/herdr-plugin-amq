@@ -658,6 +658,43 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       break;
     }
 
+    case "reopen": {
+      // The DELIBERATE way out of done, because the guard in updateBoardTask refuses a claim
+      // against a finished card. Without this the board would have two honest states (done or
+      // not) and no way to reach the second one from the first.
+      //
+      // It clears done_at rather than leaving it, which is what makes the invariant hold in
+      // BOTH directions: a card must not be done and not-done at once, so reopening has to
+      // remove the completion stamp instead of merely moving the stage. A card that came back
+      // with a stale done_at would be the same contradiction one command later.
+      const taskId = positional[0] || flags.id;
+      if (!taskId) {
+        console.error("❌ Task ID is required: herdr-amq task reopen <taskId> --reason <reason>");
+        process.exit(1);
+      }
+      const reason = (flags.reason || "").trim();
+      if (!reason) {
+        console.error("❌ --reason is required: reopening discards a completion record, and an " +
+          "unexplained one cannot be distinguished from a racing claim.");
+        process.exit(1);
+      }
+      let res;
+      try {
+        res = updateBoardTask(repoRoot, amqRoot, taskId,
+          { status: "doing", done_at: null },
+          { from: me, reopen: true, reason, notify: flags.notify !== "false" });
+      } catch (error) {
+        return failTask(`Failed to reopen task: ${error.message}`);
+      }
+      if (res.ok) {
+        console.log(`\n♻️  Task ${taskId} REOPENED - done_at cleared.\nReason: ${reason}\n`);
+      } else {
+        console.error(`❌ Failed to reopen task: ${res.error}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case "unblock": {
       const taskId = positional[0] || flags.id;
       if (!taskId) {

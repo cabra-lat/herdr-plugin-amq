@@ -91,7 +91,19 @@ test("legal statuses are still accepted, including the doing alias", () => {
     assert.equal(updateBoardTask(root, amqRoot, id, { status: "done" }).ok, false, "leaving blocked without a reason must be refused");
     assert.equal(updateBoardTask(root, amqRoot, id, { status: "done", reason: "ruling delivered" }).ok, true);
     assert.equal(getBoardTask(root, amqRoot, id).task.status, "done");
-    assert.equal(updateBoardTask(root, amqRoot, id, { status: "backlog" }).ok, true);
+    // The card is DONE at this point, so the trailing line of this vocabulary sweep is no longer
+    // a statement about which statuses are legal - it is a claim moving a finished card back to
+    // backlog, which is the exact operation that used to leave a card asserting done and
+    // in_progress at once (done_at was preserved on every non-done transition). It is now
+    // refused, and this line asserts the refusal rather than being deleted, so the guard is
+    // pinned here too and not only in test/done-card-revival.test.mjs.
+    assert.equal(updateBoardTask(root, amqRoot, id, { status: "backlog" }).ok, false,
+      "a done card must not be claimable back into the queue");
+    assert.equal(getBoardTask(root, amqRoot, id).task.status, "done", "and the card is untouched");
+    // With the deliberate reopen, the same move is available on purpose.
+    assert.equal(updateBoardTask(root, amqRoot, id, { status: "backlog", done_at: null },
+      { reopen: true, reason: "reopening deliberately" }).ok, true, "reopen is the way through");
+    assert.equal(getBoardTask(root, amqRoot, id).task.status, "backlog");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -893,6 +893,35 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     return { ok: false, error: "Task not found" };
   }
 
+  // A CARD IS EITHER DONE OR NOT, AND NO TRANSITION MAY LEAVE IT ASSERTING BOTH.
+  //
+  // Reproduced on a real card, from the board's own instrumented event log rather than a
+  // reconstruction: a card was closed with proof at 05:45:55.314Z and written back to
+  // in_progress at 05:45:57.905Z - two and a half seconds later, by a stale caller acting on
+  // a reading it had not refreshed. The result was a card with status in_progress, a done_at
+  // stamp 2.6 seconds older, sitting in doing/, owned by a lane with nothing left to do. No
+  // reader can resolve that: `done` and `in_progress` are both true and the stage directory
+  // says doing/.
+  //
+  // The cause was that done_at is PRESERVED on every non-done transition, so leaving done did
+  // not clear the completion record; the claim simply manufactured a contradiction.
+  //
+  // REFUSING IS THE HONEST DEFAULT, and it is also what the neighbouring function already
+  // does - heartbeatBoardTask refuses a done card outright. The two paths disagreed about the
+  // same rule and the claim path was the one the tooling actually used, which is why the
+  // contradiction was reachable at all. Reopening now requires saying so on purpose.
+  //
+  // The alternative - silently nulling done_at - is weaker and was rejected deliberately: a
+  // racing caller would erase a real completion record, including its proof, and a card whose
+  // proof has been quietly discarded is worse than a card that refused a write.
+  if (existingTask.status === "done" && updates.status && updates.status !== "done" && !opts.reopen) {
+    return {
+      ok: false,
+      error: `Task is done (done_at ${existingTask.done_at || "unknown"}); ` +
+        "a claim cannot revive it. Use `task reopen` if reopening is a real intent.",
+    };
+  }
+
   // REJECT WHAT WE CANNOT HONOUR, BY NAME.
   //
   // A write that reports ok:true and quietly does nothing is worse than one that fails:
@@ -1054,7 +1083,14 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     blocked_at: isBlocked
       ? (wasBlocked ? (reroutedWhileBlocked ? now : existingTask.blocked_at) : now)
       : existingTask.blocked_at,
-    done_at: targetStatus === "done" ? (existingTask.done_at || now) : existingTask.done_at,
+    // An EXPLICIT null in the updates wins, and that is the reopen path. done_at is otherwise
+    // preserved on every non-done transition, which is what let a claim leave a card asserting
+    // done and in_progress at once; a deliberate reopen has to be the one write that CLEARS the
+    // completion stamp, or the card comes back with a stale done_at and the contradiction simply
+    // reappears one command later.
+    done_at: Object.prototype.hasOwnProperty.call(updates, "done_at")
+      ? (updates.done_at || null)
+      : (targetStatus === "done" ? (existingTask.done_at || now) : existingTask.done_at),
     // A claim is a liveness signal, an in-progress update is not: only a fresh
     // claim (or an explicit `task heartbeat`) sets the liveness clock.
     last_heartbeat_at: nextHeartbeatAt,
