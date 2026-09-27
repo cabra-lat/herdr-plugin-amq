@@ -1050,7 +1050,8 @@ export function startDaemonLoop({ interval = 3000, dryRun = false } = {}) {
   // Resolved once here, beside the other daemon-lifetime bindings, because the tick needs it and
   // this is the scope it actually lives in. Deliberately NOT threaded through runDoorbellPass as a
   // parameter: that would change a signature used by other call sites to fix a one-line defect.
-  // RED ARM: the daemon-lifetime repoRoot removed, leaving the tick to reference a binding scoped to runDoorbellPass
+  const repoRoot = getRepoRootFromAmq(amqRoot);
+  console.log(`[bridge] Repo: ${repoRoot}`);
 
   // The tick is now ASYNC, and `setInterval` does not wait for it. Without a guard a tick slower
   // than the interval RE-ENTERS while the previous is still running: two passes over the same

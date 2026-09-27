@@ -83,13 +83,34 @@ test("heal dry-run reports without renaming", () => {
 // superseded daemon deleted the LIVE daemon's registration, and the next
 // `herdr-amq start` spawned a second one that nothing could stop. Killing a pid
 // would not have fixed it; only the singleton lock does.
-function countDaemons() {
+/**
+ * Count daemons, optionally SCOPED TO ONE STATE DIR.
+ *
+ * This used to count every herdr-amq bridge-daemon on the machine and assert only that the number
+ * did not GROW. A global count compared across time fails for reasons unrelated to the singleton
+ * lock: the live doorbell restarting, or any other test spawning a daemon concurrently. It passed
+ * alone and failed the full guard at 4 -> 8 daemons, which is a test whose result depends on
+ * timing rather than on the thing it claims to check.
+ *
+ * The singleton property is about ONE lock: a second daemon must not start for the SAME state dir.
+ * Each daemon carries its own HERDR_PLUGIN_STATE_DIR in its environment, readable from
+ * /proc/<pid>/environ for same-user processes, so a test can count exactly the daemons holding
+ * its OWN lock and ignore the live one and anything else on the box. That is the assertion meant.
+ */
+function countDaemons(stateDir = null) {
   const out = spawnSync("sh", [
     "-c",
     "for p in /proc/[0-9]*; do c=$(tr '\\0' ' ' < $p/cmdline 2>/dev/null) || continue; " +
       "case \"$c\" in *'herdr-amq.mjs bridge-daemon'*) case \"$c\" in *bash*) ;; *) echo ${p#/proc/};; esac;; esac; done",
   ], { encoding: "utf8" });
-  return out.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const pids = out.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!stateDir) return pids;
+  return pids.filter((pid) => {
+    try {
+      const env = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
+      return env.includes(`HERDR_PLUGIN_STATE_DIR=${stateDir}`);
+    } catch { return false; }
+  });
 }
 
 test("a lost pid file no longer produces a second daemon", { timeout: 60000 }, async () => {
@@ -108,7 +129,7 @@ test("a lost pid file no longer produces a second daemon", { timeout: 60000 }, a
     assert.equal(first.ok, true, `first start failed: ${first.error}`);
     await new Promise((r) => setTimeout(r, 1500));
 
-    const afterFirst = countDaemons();
+    const afterFirst = countDaemons(stateDir);
     assert.ok(afterFirst.length >= 1, "no daemon running after first start");
 
     // Reproduce the production condition: the pid file disappears while a daemon
@@ -120,7 +141,7 @@ test("a lost pid file no longer produces a second daemon", { timeout: 60000 }, a
     assert.match(second.error, /singleton lock/i);
     await new Promise((r) => setTimeout(r, 1500));
 
-    const afterSecond = countDaemons();
+    const afterSecond = countDaemons(stateDir);
     assert.equal(
       afterSecond.length,
       afterFirst.length,
