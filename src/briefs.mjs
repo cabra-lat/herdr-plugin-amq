@@ -71,6 +71,11 @@ export function parseAgentBriefFile(filePath, repoRoot = "") {
     const role = frontmatter.role || description || formatAgentTitle(handle);
     const model = frontmatter.model || null;
     const mode = frontmatter.mode || "subagent";
+    // The agent KIND, per agent, if the brief declares one. Read here and not inferred in
+    // fleet.mjs because the brief is the only place a human states what an agent should be -
+    // "such as I use agy for mkt activities" is a statement about mkt, not about the fleet.
+    // Null when absent, and null is meaningful: it means "no opinion", not "agy".
+    const kind = frontmatter.kind ? String(frontmatter.kind).trim() || null : null;
 
     return {
       handle,
@@ -79,6 +84,7 @@ export function parseAgentBriefFile(filePath, repoRoot = "") {
       role,
       model,
       mode,
+      kind,
       prompt,
       source: relPath,
       fullPath: filePath,

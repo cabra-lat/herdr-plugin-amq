@@ -212,6 +212,19 @@ function waitFor(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * The kind an agent should run as: its own brief's `kind`, else the fleet-wide `--kind`,
+ * else the historical default.
+ *
+ * `agent.kind || fleetDefault || "agy"` - three levels, and the middle one is what makes
+ * `--kind` keep working as a fleet-wide default rather than becoming an override. A brief that
+ * says nothing has expressed no opinion, which is NOT the same as saying "agy", and collapsing
+ * the two at parse time would make it impossible to tell those apart later.
+ */
+function resolveKind(agent, fleetDefault) {
+  return (agent && agent.kind) || fleetDefault || "agy";
+}
+
 export function defaultLaunchArgs(kind, handle) {
   if (kind === "agy") return ["--dangerously-skip-permissions"];
   if (kind === "opencode") return ["--agent", handle, "--auto"];
@@ -324,7 +337,7 @@ export async function stopFleet(amqRoot, repoRoot, options = {}) {
  * Launch or recover the agent fleet inside Herdr
  */
 export async function launchFleet(amqRoot, repoRoot, options = {}) {
-  const kind = options.kind || "agy";
+  const fleetDefaultKind = options.kind || "agy";
   const dryRun = Boolean(options.dryRun);
   const timeoutMs = options.timeout || 25000;
   const replace = options.replace !== false;
@@ -333,14 +346,19 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
   const execHerdr = options.execHerdr || null;
   const sleep = options.sleep || waitFor;
   const safePath = options.envPath || buildFleetEnvPath();
-  const configuredArgs = options.args == null
+  const configuredArgsFor = (kind) => (options.args == null
     ? defaultLaunchArgs(kind, "")
-    : Array.isArray(options.args) ? options.args : [String(options.args)];
+    : Array.isArray(options.args) ? options.args : [String(options.args)]);
+  const configuredArgs = configuredArgsFor(fleetDefaultKind);
   const fleet = prepopulate(amqRoot, repoRoot);
   const targetFleet = filterPersonas(fleet, options.agents);
   const result = {
     total: targetFleet.length,
     prepopulated: targetFleet.map((agent) => agent.handle),
+    // What each agent RESOLVED to, so `fleet up` can be read rather than trusted. The kind is
+    // a per-agent decision now, and a report that only lists handles cannot show which of the
+    // three levels of agent.kind || --kind || "agy" produced the answer.
+    kinds: Object.fromEntries(targetFleet.map((a) => [a.handle, resolveKind(a, fleetDefaultKind)])),
     alreadyRunning: [],
     replaced: [],
     wouldReplace: [],
@@ -363,6 +381,12 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
   try {
     for (const agent of targetFleet) {
       const handle = agent.handle;
+      // PER AGENT, resolved from the agent's own brief. Every comparison and every launch
+      // below uses this, so a brief that declares `kind: pi` is launched, matched and
+      // duplicate-closed as `pi` while the rest of the fleet stays as it was. The one
+      // fleet-wide `kind` used to be compared against every pane, which meant a single
+      // non-default agent could never be recognised as already running.
+      const kind = resolveKind(agent, fleetDefaultKind);
       const panes = matchingFleetPanes(agent, liveAgents, currentPaneId);
       const currentPane = panes.find((pane) => pane.pane_id === currentPaneId);
       if (currentPane) {
@@ -484,7 +508,7 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
         ];
         const launchArgs = kind === "opencode" && options.args == null
           ? defaultLaunchArgs(kind, handle)
-          : configuredArgs;
+          : configuredArgsFor(kind);
         if (launchArgs.length > 0) startArgs.push("--", ...launchArgs);
 
         let started = false;
