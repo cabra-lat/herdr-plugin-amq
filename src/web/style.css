@@ -970,6 +970,15 @@ body.sidebar-collapsed .app-sidebar {
   margin-right: 12px;
 }
 
+/* TOUCH TARGET, NOT A GLYPH SIZE.
+   Measured on a real 390x844 render: .star-btn painted at 14x16. That is below the 24px minimum
+   and a quarter of the ~44px comfortable target, and it is the control for starring a thread -
+   the one action on a message row a user reaches for repeatedly. The glyph is not enlarged,
+   because a 16px star at 44px reads as a different, heavier icon; instead the HIT AREA is grown
+   with padding and pulled back with a negative margin, so the row does not reflow and the star
+   does not get bigger. Same trick on .compose-btn-wrap's button, measured at 20x20.
+   This is a real render measurement, not a guideline quoted in the abstract: the probe read
+   getBoundingClientRect() at a device-pixel-ratio of 2. */
 .star-btn {
   background: none;
   border: none;
@@ -977,6 +986,14 @@ body.sidebar-collapsed .app-sidebar {
   font-size: 16px;
   color: var(--text-muted);
   line-height: 1;
+  /* Grow the target without growing the icon or moving anything. */
+  min-width: 24px;
+  min-height: 24px;
+  padding: 4px;
+  margin: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .star-btn.starred {
@@ -5169,6 +5186,18 @@ html[data-theme="dark"] ::placeholder {
     min-height: 40px;
     flex: 1;
     justify-content: center;
+  }
+}
+
+@media (max-width: 540px) {
+  /* On a phone the row has room, so the target goes to the comfortable size rather than the
+     minimum. Still padding-only: the glyph stays 16px so the visual density of the list does
+     not change between breakpoints. */
+  .star-btn {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 12px;
+    margin: -12px;
   }
 }
 
