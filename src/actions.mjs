@@ -634,6 +634,40 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         return failTask(proofExpanded.error);
       }
       const proof = proofExpanded.value;
+
+      // A CARD'S EXISTING PROOF IS NOT ERASED BY CLOSING IT AGAIN.
+      //
+      // This used to compute `proof` unconditionally and always pass it in OPTS, defaulting to
+      // "". board.mjs resolves `updates.proof ?? opts.proof ?? existingTask.proof`, and "" is NOT
+      // nullish - so the empty string won over the existing proof and an ordinary `task done` with
+      // no --proof silently DELETED the card's evidence. Verified through this CLI, not by
+      // reading the code: a card closed with "THE ORIGINAL PROOF: measured 45/0 ..." and then
+      // re-closed with no flag came back `proof: null`.
+      //
+      // It is invisible by construction. A replaced proof looks exactly like a first proof - the
+      // replacement is indistinguishable from the original because there is nothing left to
+      // compare it to - which is why this is worse than the done_at overwrite this board has
+      // already been bitten by. The timestamp was the CHEAP field and survived; the proof is the
+      // expensive one and did not, and no amount of reading the card afterwards can recover it.
+      //
+      // So an absent --proof means "do not touch the proof", not "set the proof to nothing".
+      const proofGiven = proofArg.trim().length > 0;
+      if (!proofGiven && flags["clear-proof"]) {
+        return failTask(
+          "--clear-proof removes the evidence from a card. If that is what you mean, close the " +
+          "card with an explicit --proof describing what was actually measured instead; an " +
+          "undocumented erasure cannot be told apart from a card that was never evidenced."
+        );
+      }
+      const existing = getBoardTask(repoRoot, amqRoot, taskId)?.task;
+      const carriedProof = existing?.proof ?? null;
+      if (!proofGiven && carriedProof) {
+        console.warn(
+          `⚠️  ${taskId} already carries a proof; it is being PRESERVED (no --proof given).` +
+          " To replace it deliberately, pass --proof. To remove the evidence, there is no flag — " +
+          "and that is deliberate."
+        );
+      }
       let res;
       try {
         res = updateBoardTask(
@@ -641,7 +675,14 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
           amqRoot,
           taskId,
           { status: "done" },
-          { from: me, proof, reason: (flags.reason || "").trim() || undefined, notify: flags.notify !== "false" }
+          {
+            from: me,
+            // OMITTED ENTIRELY when no flag was given. Passing "" here is what erased evidence:
+            // "" is not nullish, so it beat existingTask.proof in the ?? chain in board.mjs.
+            ...(proofGiven ? { proof } : {}),
+            reason: (flags.reason || "").trim() || undefined,
+            notify: flags.notify !== "false",
+          }
         );
       } catch (error) {
         return failTask(`Failed to write task completion: ${error.message}`);
@@ -649,7 +690,8 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
 
       if (res.ok) {
         console.log(`\n🎉 \x1b[32mTask ${taskId} marked as DONE\x1b[0m`);
-        if (proof) console.log(`Evidence: ${proof}`);
+        if (proofGiven) console.log(`Evidence: ${proof}`);
+        else if (carriedProof) console.log(`Evidence: (preserved from the previous close)`);
         console.log(`✉️ Completion alert dispatched to coordinator via AMQ.\n`);
       } else {
         console.error(`❌ Failed to complete task: ${res.error}`);
