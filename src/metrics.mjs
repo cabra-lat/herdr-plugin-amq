@@ -441,6 +441,16 @@ export function buildCoordinatorMetrics({
     }
   }
   const blockedWork = [];
+  // A lookup of every card's status by id, so a blocked card's DEPENDENCIES can be resolved.
+  // Without it a dependency id can only be counted, never checked, and a block whose blockers
+  // are all finished is indistinguishable from one that is genuinely waiting - which is the whole
+  // defect. Built from the same board the cards come from, so it cannot disagree with them.
+  const statusById = new Map();
+  for (const [colName, colTasks] of Object.entries(board.columns || {})) {
+    for (const t of colTasks || []) {
+      if (t && t.id) statusById.set(t.id, { status: colName, task: t });
+    }
+  }
   for (const [columnName, columnTasks] of Object.entries(board.columns || {})) {
     if (columnName !== "blocked") continue;
     for (const task of (Array.isArray(columnTasks) ? columnTasks : []).filter(Boolean)) {
@@ -463,6 +473,22 @@ export function buildCoordinatorMetrics({
         owner: task.owner || null,
         nextActor: task.next_actor ?? task.nextActor ?? null,
         dependency: task.depends_on || task.dependency || null,
+        // The dependency STATES, so a block can be told apart from a stale block.
+        //
+        // A blocked card whose dependencies are ALL DONE is unambiguously a defect in the BOARD
+        // rather than in the work: nothing is waiting on anything, so the block is simply wrong.
+        // Coordinator's own false block was exactly this - waiting on a card superseded hours
+        // earlier, known, noted, and never re-pointed. Both the tooling defect and the human
+        // defect are the same defect: nothing releases a block when its dependency completes.
+        //
+        // The states are read from a lookup, not assumed, because a dependency id that is not in
+        // the table is UNKNOWN rather than done - and treating unknown as done would label a
+        // correctly-blocked card as stale, which is the false positive that would make this label
+        // worthless on its first day.
+        dependencyStates: (task.depends_on || task.dependency || []).map?.((d) => ({
+          id: typeof d === "string" ? d : d?.id,
+          status: statusById.get(typeof d === "string" ? d : d?.id)?.status ?? "unknown",
+        })) ?? [],
         reason: task.block_reason || task.reason || null,
         triaged: isTriagedBlocked(task),
         ageMs: ageMsValue,
@@ -710,6 +736,28 @@ export function buildCoordinatorMetrics({
       oldestCardId: blockedOldestCard?.id || null,
       triaged: blockedWork.filter((task) => task.triaged).length,
       untriaged: blockedWork.filter((task) => !task.triaged).length,
+      // A REPORT AND NOT AN ALERT, deliberately. A block whose dependencies are all done is a
+      // defect in the board, and it is the one state nobody can argue about - but alerting on it
+      // would page lanes about a bookkeeping error that only a human can fix, and an alert which
+      // fires on ordinary queue latency is an alert everyone learns to ignore, after which the
+      // next real one is missed too. The same reasoning that made the needs_reply count a report.
+      //
+      // `stale` is a block with at least one dependency and EVERY dependency done or unknown-
+      // but-not-blocking. `noEdge` is a block with no dependency at all: the abandonment shape,
+      // a park expressed as nothing, which is indistinguishable from a card nobody came back to.
+      // Both are listed so the difference between them stays visible.
+      stale: blockedWork
+        .filter((t) => t.dependencyStates.length > 0 && t.dependencyStates.every((d) => d.status === "done"))
+        .map((t) => ({
+          id: t.id,
+          owner: t.owner,
+          nextActor: t.nextActor,
+          ageMs: t.ageMs,
+          releasedBy: t.dependencyStates.map((d) => d.id).join(","),
+        })),
+      noEdge: blockedWork
+        .filter((t) => t.dependencyStates.length === 0)
+        .map((t) => ({ id: t.id, owner: t.owner, nextActor: t.nextActor, ageMs: t.ageMs })),
     },
     // `count` and `maxDeliveryAgeMs` are windowed and drive the alert; the
     // `lifetime` figures are monotonic context and are never compared to a threshold.
