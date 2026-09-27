@@ -1595,6 +1595,26 @@ export function appendBoardTaskNote(repoRoot, amqRoot, taskId, { text, author = 
     return { ok: false, error: `failed to write note: ${error.message}` };
   }
 
+  // THE WRITE AUDIT, WHICH THIS FUNCTION DID NOT DO AT ALL.
+  //
+  // `recordCardWrite` had exactly ONE call site - inside `updateBoardTask` - and this function
+  // writes the card by hand instead. So `task comment` produced a durable write that left no
+  // trace: the note landed, the CLI reported success, and the card's history showed no actor.
+  // ballistics demonstrated it on one card and correctly refused to generalise from one verb, so
+  // the shape of it is: any writer that does not route through `updateBoardTask` is invisible to
+  // the audit, and the note's own `author` is on the card while absent from the log.
+  //
+  // That asymmetry is what makes it worth fixing rather than documenting: an investigation
+  // reconstructing who touched a card from the write log would conclude nobody did.
+  try {
+    recordCardWrite(getStateDir(), taskId, existingTask, updatedTask, {
+      actor: String(author || "") || null,
+      at: timestamp,
+    });
+  } catch {
+    // Never let instrumentation fail a board write - the note is already durable.
+  }
+
   return { ok: true, taskId, note, notes, task: { ...updatedTask, filePath: existingPath } };
 }
 
