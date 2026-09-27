@@ -985,7 +985,13 @@ export function buildCoordinatorMetrics({
       // through a person acting. It cannot clear while an alert names it, so paging on it would
       // page on something no lane can fix.
       severity: "warning",
-      fingerprint: conditionFingerprint({ id: "person_queued_oldest", severity: "warning", cards: personQueued.map((e) => e.root.id) }),
+      // SORTED, and this is load-bearing rather than tidy. The condition is "these root decisions
+      // are waiting" - a SET. personQueued is ordered by rootAgeMs for the message text, so feeding
+      // its order into the fingerprint meant any two roots swapping age position re-fingerprinted an
+      // UNCHANGED condition, and the delivered-state suppression keyed on id:fingerprint stopped
+      // suppressing. A report-only signal then re-delivered on cooldown with nothing changed except
+      // the ages it deliberately excludes. Sorted makes the fingerprint order-independent.
+      fingerprint: conditionFingerprint({ id: "person_queued_oldest", severity: "warning", cards: [...personQueued.map((e) => e.root.id)].sort() }),
       message: `${personQueued.length} decision(s) are waiting on a person, across ${totalWaiting} queued card(s). Oldest: ${oldest.root.id} (${oldest.root.title || "untitled"}) at ${oldest.rootAgeMs ?? "unknown"}ms.${personQueued.length > 1 ? ` Next oldest: ${personQueued[1].root.id} at ${personQueued[1].rootAgeMs ?? "unknown"}ms - the ordering is the point; a count alone is what the person-gated line already reports, and it did not surface this.` : ""} Cards behind the same decision are counted once, under the decision they wait on, not as separate waits. REPORT-ONLY: this never pages, because a project waiting on its owner is the correct shape of a project, not a delivery failure.`,
       recommendedAction: "The decision is the owner's and no lane can move it. Treat the ORDERING as the signal: the oldest person-gated decision is the one that unblocks the most work.",
       decisionCount: personQueued.length,
