@@ -17,6 +17,7 @@ import { startDaemonLoop } from "../src/bridge.mjs";
 import { launchDashboardPane, launchInboxPeekPane } from "../src/panes.mjs";
 import { GUARD_MANIFEST, GUARD_LOCATIONS } from "../src/guards.mjs";
 import { getPluginVersion } from "../src/config.mjs";
+import { handleProjectsCommand } from "../src/projects-cli.mjs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -102,6 +103,10 @@ switch (cmd) {
   case "tasks":
   case "board":
     handleTaskCommand(process.argv[3], process.argv.slice(4));
+    break;
+  case "projects":
+  case "mailboxes":
+    process.exit(handleProjectsCommand(process.argv[3], process.argv.slice(4)) || 0);
     break;
   case "next":
     handleTaskCommand("next", process.argv.slice(3));
