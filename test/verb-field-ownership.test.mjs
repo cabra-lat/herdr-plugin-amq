@@ -58,6 +58,9 @@ const WATCHED = [
   "claimed_at", "blocked_at", "done_at", "status_at", "updated", "owner_at", "next_actor_at",
   "last_heartbeat_at", "blocked_ms", "blocked_total_ms", "proof", "description", "title",
   "next_actor", "owner", "notes", "depends_on",
+  // resume_line, lease_epoch and lease_started_at are watched for a second reason: they are
+  // DELIBERATELY not allowed to move `updated`, and an arm that cannot see them cannot prove it.
+  "resume_line", "lease_epoch", "lease_started_at",
 ];
 
 // A card already `doing`, every stamp pushed into the past so any rewrite is unmissable.
@@ -105,6 +108,10 @@ const VERBS = [
   { name: "reassign next_actor", args: (id) => ["task", "reassign", id, "--to", "lane", "--next-actor", "verifier"], mayChange: ["next_actor", "next_actor_at"], mustChange: "next_actor" },
   { name: "heartbeat", args: (id) => ["task", "heartbeat", id], mayChange: ["last_heartbeat_at", "last_heartbeat_by"], mustChange: "last_heartbeat_at" },
   { name: "comment", args: (id) => ["task", "comment", id, "--text", "a note"], mayChange: ["notes"], mustChange: "notes" },
+  // mayChange is EXACTLY resume_line and nothing else - not `updated`. A resume line restates an
+  // obligation that already exists, so treating the restatement as progress would let an agent
+  // clear its own stall by re-typing what it was already supposed to do.
+  { name: "resume-line", args: (id) => ["task", "resume-line", id, "--text", "land the commit"], mayChange: ["resume_line"], mustChange: "resume_line" },
   // This row REPLACES a "priority bump" row from the measured draft I started from, which
   // recorded "priority bump: none". There is no such command: `reassign` rejects --priority as an
   // unknown option, and its help never advertised one. So that row measured a command that does
@@ -157,8 +164,13 @@ for (const verb of VERBS) {
 test("STATIC REACHABILITY: every row names a real verb with flags the CLI accepts", () => {
   const actions = fs.readFileSync(path.join(HERE, "..", "src", "actions.mjs"), "utf8");
   const block = actions.slice(actions.indexOf("const TASK_FLAGS = {"), actions.indexOf("\n};", actions.indexOf("const TASK_FLAGS = {")));
+  // The key may be QUOTED, and it must be for any hyphenated verb: `resume-line: new Set(...)` is
+  // a syntax error, so the verb can only be registered as `"resume-line":`. This parser had the
+  // same unquoted-only limitation as the one in named-verb-reachability.test.mjs, and it reported
+  // a correctly-registered verb as non-existent. Two copies of one bug is the reason to fix the
+  // pattern in both rather than in whichever one bit first.
   const flagsFor = new Map(
-    [...block.matchAll(/([a-z][\w-]*):\s*new Set\(\[([^\]]*)\]\)/g)]
+    [...block.matchAll(/["']?([a-z][\w-]*)["']?:\s*new Set\(\[([^\]]*)\]\)/g)]
       .map((m) => [m[1], new Set([...m[2].matchAll(/"([^"]+)"/g)].map((f) => f[1]))]),
   );
   assert.ok(flagsFor.size > 10, `TASK_FLAGS did not parse, so this check would be vacuous (${flagsFor.size})`);

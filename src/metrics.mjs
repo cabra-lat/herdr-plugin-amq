@@ -197,6 +197,17 @@ const DEFAULT_THRESHOLDS = Object.freeze({
   staleHeartbeatMs: 30 * 1000,
   staleHeartbeatCriticalMs: 120 * 1000,
   stalledWorkMs: 600 * 1000,
+  // A LEASE WITH A REAL DEADLINE, for the owner re-prompt. Deliberately far above
+  // staleHeartbeatMs (30s) and staleHeartbeatCriticalMs (120s), which are AGENT-level and are
+  // about a pane being gone - a different question with a much more urgent answer. A card whose
+  // owner is mid-analysis looks identical to a compacted one from here, so the only safe
+  // asymmetry is to be late rather than to interrupt: 90 minutes of silence is a strong hint,
+  // 3 minutes is a coin flip that fires during ordinary work.
+  ownerLeaseMs: 90 * 60 * 1000,
+  // A SECOND lapse is a different fact from a first one. The first may be a compacted agent
+  // that can act on its resume line; by the second, whatever was going to happen has not, and
+  // the cheap and recoverable move is to offer reassignment to a lane that can pick it up cold.
+  ownerLeaseReassignMs: 6 * 60 * 60 * 1000,
   retryWarningCount: 2,
   retryCriticalCount: 3,
   retryDelayWarnMs: 300 * 1000,
@@ -525,6 +536,44 @@ export function buildCoordinatorMetrics({
     for (const t of colTasks || []) {
       if (t && t.id) statusById.set(t.id, { status: colName, task: t });
     }
+  }
+
+  // OWNERS WHOSE LEASE HAS LAPSED ON A CARD THEY STILL HOLD.
+  //
+  // What compaction destroys is the OBLIGATION, not the facts, and every existing signal is blind
+  // to it: a card left in_progress still shows a live owner and a recent heartbeat, so it reads as
+  // owned and young, and nothing doorbells. The state is consistent and wrong - the card says
+  // working, the agent has no memory of working.
+  //
+  // The heartbeat cannot be the trigger, because a heartbeat is a lease and a lease proves
+  // PRESENCE, which is precisely the thing compaction removes. This reads the card's OWN
+  // last_heartbeat_at, so an agent that stopped sending them is visible even though its card
+  // still looks owned.
+  const lapsedLeases = [];
+  // allCards, not a byStage map: the stage map is COUNTS (cardsByStage, line 478), and the
+  // column is named `doing` here while the status FIELD reads `in_progress` on a live card.
+  // Two spellings for one stage is why this was not simply copied from a neighbouring loop.
+  for (const task of allCards) {
+    if (task.status !== "in_progress" && task.stage !== "in_progress") continue;
+    const owner = task.owner || null;
+    if (!owner) continue;
+    const beat = timestamp(task.last_heartbeat_at);
+    if (beat === null) continue;                       // never heartbeated: a different question
+    const leaseAgeMs = Math.max(0, now - beat);
+    if (leaseAgeMs <= limits.ownerLeaseMs) continue;
+    lapsedLeases.push({
+      id: task.id,
+      owner,
+      title: task.title || "",
+      leaseAgeMs,
+      // QUOTED IN THE PROMPT. This is the whole mechanism: the agent reads what it owes instead
+      // of reconstructing a conversation it no longer has. Null is reported as null and NEVER
+      // invented - a fabricated resume line is a confident instruction to do the wrong work,
+      // which is strictly worse than admitting the card does not say.
+      resumeLine: task.resume_line || null,
+      leaseEpoch: task.lease_epoch ?? null,
+      reassignmentSuggested: leaseAgeMs > limits.ownerLeaseReassignMs,
+    });
   }
 
   const stalledCards = [];
@@ -1043,6 +1092,20 @@ export function buildCoordinatorMetrics({
       message: `${staleHeartbeats.length} agent heartbeat(s) are stale.`,
       recommendedAction: "Check the affected pane and bridge delivery before re-queueing work.",
       agents: staleHeartbeats,
+    });
+  }
+  if (lapsedLeases.length > 0) {
+    alerts.push({
+      id: "owner_lease_lapsed",
+      severity: "warning",
+      message: `${lapsedLeases.length} in_progress card(s) are held by an owner whose lease has lapsed.`,
+      // Advisory, and never "restart". A re-prompt that tells a working agent to start again
+      // costs it the analysis it already did, and an agent burned that way learns to stop
+      // resuming - which is the failure this card exists to fix, manufactured by the fix.
+      recommendedAction: "Tell the owner it still holds the card and quote its resume line. Do NOT tell it to restart: discarding partial analysis is worse than not resuming at all.",
+      cards: lapsedLeases,
+      lapseCount: lapsedLeases.length,
+      reassignmentSuggested: lapsedLeases.filter((c) => c.reassignmentSuggested).map((c) => c.id),
     });
   }
   if (retryCount >= limits.retryWarningCount || retryDelayMaxMs > limits.retryDelayWarnMs) {

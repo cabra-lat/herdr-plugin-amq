@@ -27,6 +27,7 @@ import {
   updateBoardTask,
   appendBoardTaskNote,
   heartbeatBoardTask,
+  setTaskResumeLine,
   reassignBoardTask,
   deleteBoardTask,
   drainTasks,
@@ -256,7 +257,10 @@ const TASK_FLAGS = {
   // person leaving the block did not make. doing = picking it up now, queued = scheduled
   // behind other work, backlog = nobody is coming back to it.
   unblock: new Set(["id", "reason", "stage", "next-actor", "priority", "notify", "me", "from", "help"]),
-  heartbeat: new Set(["id", "me", "from", "help"]),  reassign: new Set(["id", "to", "owner", "next-actor", "depends-on", "clear-depends-on", "notify", "me", "from", "help"]),
+  heartbeat: new Set(["id", "me", "from", "help"]),
+  // --text is required and refused when empty: the whole point is that the card records what is
+  // owed, so an empty line would write the absence this verb exists to prevent.
+  "resume-line": new Set(["id", "text", "line", "me", "from", "help"]),  reassign: new Set(["id", "to", "owner", "next-actor", "depends-on", "clear-depends-on", "notify", "me", "from", "help"]),
   show: new Set(["id", "me", "from", "help"]),
   drain: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
   next: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
@@ -398,7 +402,7 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
   const me = flags.me || flags.from || process.env.AMQ_ME;
   const TASK_WRITE_SUBCOMMANDS = new Set([
     "create", "assign", "claim", "done", "complete", "unblock",
-    "block", "heartbeat", "reassign", "comment", "note",
+    "block", "heartbeat", "reassign", "comment", "note", "resume-line",
   ]);
   // Subcommands that take a task id as their first positional, and report a missing one
   // themselves. The actor guard DEFERS to that check: an earlier version fired first and
@@ -624,7 +628,16 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
           repoRoot,
           amqRoot,
           taskId,
-          { status: "in_progress", owner: me },
+          {
+            status: "in_progress",
+            owner: me,
+            // A CLAIM IS A NEW LEASE, and a re-claim is the common case here: the card this
+            // serves is one the owner ALREADY holds, which never enters progress and so would
+            // not bump the epoch on its own. Bumping it here is what re-arms the owner re-prompt
+            // for an agent that resumed - and for an agent that is dead, it is the difference
+            // between being prompted once and being forgotten.
+            lease_epoch: (Number(existing?.lease_epoch) || 0) + 1,
+          },
           { from: me, notify: flags.notify !== "false" }
         );
       } catch (error) {
@@ -922,6 +935,36 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         console.error(`❌ Failed to block task: ${res.error}`);
         process.exit(1);
       }
+      break;
+    }
+
+    case "resume-line": {
+      const taskId = positional[0] || flags.id;
+      if (!taskId) {
+        console.error("❌ Task ID is required: herdr-amq task resume-line <taskId> --text \"<next action>\" --me <handle>");
+        process.exit(1);
+      }
+      const text = String(flags.text ?? flags.line ?? "").trim();
+      if (!text) {
+        console.error("❌ The resume line cannot be empty. A card with no next action is the state this exists to prevent.");
+        process.exit(1);
+      }
+      let res;
+      try {
+        res = setTaskResumeLine(repoRoot, amqRoot, taskId, text, { from: flags.me || flags.from || process.env.AMQ_ME });
+      } catch (error) {
+        return failTask(`Failed to write resume line: ${error.message}`);
+      }
+      if (!res.ok) {
+        console.error(`❌ Failed to record resume line: ${res.error}`);
+        process.exit(1);
+      }
+      // Says what it did NOT do, because the field it deliberately does not move is the one a
+      // reader would check to decide whether this was progress.
+      console.log(`\n🧭 Resume line recorded for task ${taskId}`);
+      console.log(`Next action: ${text}`);
+      console.log("(state clock unchanged: a resume line restates work already owed, it is not progress)");
+      console.log("──────────────────────────────────────────────");
       break;
     }
 

@@ -776,6 +776,50 @@ export function buildCoordinatorAlertPrompt(alert) {
 
 // ─── Doorbell Pass ────────────────────────────────────────────────────────────
 
+/**
+ * THE OWNER RE-PROMPT. Advisory, aimed at the OWNER, and deliberately NOT the coordinator.
+ *
+ * A compacted agent still holds a card, a live owner name and a fresh-enough heartbeat, so
+ * nothing else on this board notices it is gone: the card says working and the agent has no
+ * memory of working. The heartbeat cannot be the signal, because a heartbeat proves PRESENCE and
+ * presence is exactly what compaction takes away.
+ *
+ * Four things this prompt must not do, each of which is a way to make the failure worse:
+ *   - not say "restart". Discarding correct partial analysis is worse than not resuming, and an
+ *     agent that is told to restart and then restarts from zero will learn to stop resuming,
+ *     which is this defect manufactured by its own fix.
+ *   - not invent a resume line. A fabricated next action is a confident instruction to do the
+ *     wrong work; a card with no line says so and asks the owner to write one.
+ *   - not go to the coordinator. Coordinator cannot resume another lane's context, so escalating
+ *     turns a mechanical failure into a manual one - which is what made this slow to notice.
+ *   - not repeat. Armed per (card, lease epoch), so a resumed agent is prompted at most once per
+ *     claim and age growth alone never re-delivers.
+ */
+function buildOwnerResumePrompt(card) {
+  const lines = [
+    `You still own ${card.id}${card.title ? ` ("${card.title}")` : ""} and it is still in_progress.`,
+    `Your lease last showed a heartbeat ${Math.round(card.leaseAgeMs / 60000)} minute(s) ago. This usually means a CONTEXT COMPACTION dropped your working context, not that you stopped.`,
+  ];
+  if (card.resumeLine) {
+    // The mechanism: a read of the card, not a reconstruction of a conversation.
+    lines.push(`Your next action, recorded on the card at claim time: ${card.resumeLine}`);
+    lines.push("Read the card and continue from that line. Your earlier analysis is still valid - do not redo it.");
+  } else {
+    lines.push("This card has NO resume line recorded, so there is nothing to continue from on the card itself.");
+    const reestablish = `herdr-amq task resume-line ${card.id} --text "<the next action>"`;
+    lines.push("Re-establish it first: " + reestablish);
+    lines.push("Do not start new work until the card says what is owed.");
+  }
+  if (card.reassignmentSuggested) {
+    // The second sub-case, kept distinct: a process that is genuinely gone cannot be resumed by
+    // being told to resume. Reassignment to a lane that can pick it up cold is the recoverable
+    // move, and it is offered rather than taken.
+    lines.push("This lease has lapsed a second time, so the card may be held by a process that is gone. If you cannot act on it, say so and it can be reassigned to a lane that can pick it up cold.");
+  }
+  lines.push("This is advisory. It is not an instruction to restart, and arrival is not a reason to discard anything.");
+  return lines.join("\n");
+}
+
 export function runDoorbellPass({
   amqRoot = findAmqRoot(),
   handles = null,
@@ -979,7 +1023,39 @@ export function runDoorbellPass({
     }
   }
 
-  if (allowPrompt && persistState && !dryRun && (doorbelledCount > 0 || doorbelledTasksCount > 0 || coordinatorDoorbellResult.prompted)) {
+  // OWNER RE-PROMPTS, delivered to the OWNER and to nobody else.
+  const leaseAlert = alerts.find((a) => a.id === "owner_lease_lapsed");
+  const ownerLeaseResult = { attempted: 0, prompted: 0, cards: [] };
+  if (leaseAlert && allowPrompt && !dryRun) {
+    state.ownerLeasePrompts = state.ownerLeasePrompts || {};
+    for (const card of leaseAlert.cards || []) {
+      ownerLeaseResult.attempted++;
+      // Armed per (card, epoch). A claim bumps the epoch, so a resumed agent is re-armed exactly
+      // once - and an agent that heartbeats never reaches here at all, because the metric is
+      // driven by the card's own lapsed heartbeat rather than by the wall clock. That is what
+      // keeps this from re-creating the alert churn this board spent a night removing: AGE ALONE
+      // IS NOT A TRANSITION, and this path has no age-based key to repeat on.
+      const key = `${card.id}@${card.leaseEpoch ?? "none"}`;
+      if (state.ownerLeasePrompts[key]) continue;
+      if (!validHandles.includes(card.owner)) {
+        ownerLeaseResult.cards.push({ id: card.id, owner: card.owner, action: "owner_not_registered" });
+        continue;
+      }
+      const ok = prompt(card.owner, buildOwnerResumePrompt(card), false);
+      ownerLeaseResult.cards.push({ id: card.id, owner: card.owner, action: ok ? "prompted" : "prompt_failed" });
+      if (ok) {
+        state.ownerLeasePrompts[key] = {
+          at: new Date().toISOString(),
+          owner: card.owner,
+          leaseEpoch: card.leaseEpoch ?? null,
+          reassignmentSuggested: Boolean(card.reassignmentSuggested),
+        };
+        ownerLeaseResult.prompted++;
+      }
+    }
+  }
+
+  if (allowPrompt && persistState && !dryRun && (doorbelledCount > 0 || doorbelledTasksCount > 0 || coordinatorDoorbellResult.prompted || ownerLeaseResult.prompted)) {
     saveDeliveredState(state);
   }
 
@@ -992,6 +1068,7 @@ export function runDoorbellPass({
     results,
     coordinator: coordinatorMetrics,
     coordinatorDoorbell: coordinatorDoorbellResult,
+    ownerLease: ownerLeaseResult,
   };
 }
 

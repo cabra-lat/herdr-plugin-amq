@@ -49,8 +49,17 @@ const taskFlagsBlock = SRC.slice(SRC.indexOf("const TASK_FLAGS = {"), SRC.indexO
 // A Map, not a Set, so a test can ask WHICH FLAGS a verb accepts - help text that advertises a
 // flag the gate rejects sends the reader back where they started, one step later and with more
 // confidence than they had before.
+// The key may be QUOTED. It has to be, for any verb with a hyphen: `resume-line: new Set(...)` is
+// a syntax error, so a hyphenated verb can only be registered as `"resume-line":`. The original
+// pattern required an unquoted key, which meant this gate could not express ANY hyphenated verb -
+// a real limitation, latent until today because no verb needed one. It failed by reporting a
+// correctly-registered `resume-line` as shadowed, which is the failure mode that trains a reader
+// to dismiss a guard: a gate that reports working code as broken is worse than no gate.
+//
+// Loosening a guard to accept your own code is exactly the move that needs a red arm, so the arm
+// below proves the widened pattern still catches a quoted verb that is NOT registered.
 const registered = new Map(
-  [...taskFlagsBlock.matchAll(/([a-z][\w-]*):\s*new Set\(\[([^\]]*)\]\)/g)]
+  [...taskFlagsBlock.matchAll(/["']?([a-z][\w-]*)["']?:\s*new Set\(\[([^\]]*)\]\)/g)]
     .map((m) => [m[1], new Set([...m[2].matchAll(/"([^"]+)"/g)].map((f) => f[1]))]),
 );
 
@@ -92,6 +101,19 @@ test("and it can still go RED: a backticked command that does not exist fails th
   const named = new Set([...probe.matchAll(/\btask ([a-z][\w-]*)\b/g)].map((m) => m[1]));
   assert.ok(named.has("frobnicate") && !registered.has("frobnicate"),
     "the probe really is a command that is not registered");
+});
+
+test("THE WIDENED PATTERN IS NOT A LOOSENING: a quoted, unregistered verb is still caught", () => {
+  // `resume-line` widened the key pattern to accept quotes. Without this arm the change is
+  // indistinguishable from deleting the check, and the honest question about any guard change -
+  // does it still bite? - would have no answer.
+  // A SYNTHETIC table, not SRC plus a suffix: appending to SRC put the probe AFTER the real
+  // table's closing brace, so the block slice excluded it and the arm failed on its own fixture.
+  // That is the failure mode of a red arm that never exercised the thing it claims to.
+  const block = "const TASK_FLAGS = {\n  \"quoted-ghost\": new Set([\"id\"]),\n};";
+  const found = new Set([...block.matchAll(/["']?([a-z][\w-]*)["']?:\s*new Set\(\[([^\]]*)\]\)/g)].map((m) => m[1]));
+  assert.ok(found.has("quoted-ghost"), "the probe really is a registered quoted verb");
+  assert.ok(!registered.has("quoted-ghost"), "and it really is not in the real table");
 });
 
 test("NO IMPLEMENTED BRANCH IS SHADOWED BY THE GATE", () => {

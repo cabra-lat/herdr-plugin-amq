@@ -132,6 +132,15 @@ export function serializeTaskFile(task) {
     `created: ${JSON.stringify(task.created || now)}`,
     `updated: ${JSON.stringify(task.updated || now)}`,
     `claimed_at: ${JSON.stringify(task.claimed_at || null)}`,
+    // THE RESUME OBLIGATION, and it lives HERE because what compaction preserves is a summary of
+    // FACTS and a summary almost never preserves the OBLIGATION - that a commit was still owed is
+    // the first thing to fall out. A card that records its next action is recoverable by reading
+    // the card; a card that relies on the agent remembering is not recoverable at all.
+    `resume_line: ${JSON.stringify(task.resume_line || null)}`,
+    // A LEASE EPOCH, incremented on every entry into progress. The owner re-prompt is armed per
+    // epoch, so re-claiming an agent that DID resume re-arms it exactly once instead of never.
+    `lease_epoch: ${JSON.stringify(task.lease_epoch ?? null)}`,
+    `lease_started_at: ${JSON.stringify(task.lease_started_at || null)}`,
     `blocked_at: ${JSON.stringify(task.blocked_at || null)}`,
     // Transition stamps: what the stall metric reads as progress. Persisted explicitly
     // because the serializer writes a fixed key list.
@@ -223,6 +232,10 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
       created: meta.created || null,
       updated: meta.updated || null,
       claimed_at: meta.claimed_at || null,
+      resume_line: meta.resume_line || null,
+      // Coerced at the parse boundary, not left to each reader - see the note at the writer.
+      lease_epoch: (() => { const n = Number(meta.lease_epoch); return Number.isFinite(n) && n > 0 ? n : null; })(),
+      lease_started_at: meta.lease_started_at || null,
       blocked_at: meta.blocked_at || null,
       // Transition stamps must be read back, or they are written and then silently
       // dropped on the next parse - the card would look unstamped and the progress
@@ -809,6 +822,9 @@ export function addBoardTask(
     created: now,
     updated: now,
     claimed_at: null,
+    resume_line: null,
+    lease_epoch: null,
+    lease_started_at: null,
     blocked_at: null,
     done_at: null,
     last_heartbeat_at: null,
@@ -868,7 +884,22 @@ export function addBoardTask(
  */
 // Fields that are bookkeeping about the write rather than state of the card: they
 // must not, on their own, make a no-op look like progress.
-const WRITE_METADATA = new Set(["filePath", "file_path"]);
+// `resume_line` is a RECORD OF AN EXISTING OBLIGATION, not progress. It is excluded here for the
+// same reason a note is: `cardStateChanged` decides whether `updated` moves, so without this an
+// agent could clear its own stall clock by re-typing what it was already supposed to do - the same
+// class of defect as heartbeating your way out of a stall, arrived at through a different door.
+//
+// `lease_epoch` and `lease_started_at` are deliberately NOT excluded. A claim is a genuine state
+// transition and a new lease genuinely is a new obligation, so those must move `updated`; only the
+// restatement of what was already owed does not.
+// The LEASE FIELDS ARE HERE TOO, and the reason is the tension worth naming. The owner re-prompt
+// must re-arm when a resumed agent re-claims, and a re-claim of a card already in_progress is a
+// no-op on status - so the lease epoch is the only thing that moves. If that moved `updated`,
+// re-claiming would clear a stall clock, which is precisely the churn this card forbids: an agent
+// could keep a stalled card alive forever by re-asserting an obligation it has not performed.
+// So a lease renewal is a change to the OBLIGATION and not to the work. A real claim still moves
+// `updated`, because status genuinely changes.
+const WRITE_METADATA = new Set(["filePath", "file_path", "resume_line", "lease_epoch", "lease_started_at"]);
 
 // True when `next` differs from `previous` in any field that describes the card.
 // `updated` is excluded on both sides because it is the field being decided here.
@@ -1224,6 +1255,33 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     status: targetStatus,
     priority: updates.priority || existingTask.priority || "normal",
     claimed_at: enteringProgress ? now : (existingTask.claimed_at || null),
+    // A CLAIM IS A NEW LEASE. Bumping the epoch on entry into progress is what re-arms the
+    // owner re-prompt for an agent that resumed, and it is the only thing that does: the lease
+    // age is measured from the card's own heartbeat, so a resumed agent that heartbeats stays
+    // quiet regardless, and this covers the agent that came back WITHOUT heartbeating first.
+    //
+    // `updates.lease_epoch` wins when a caller sets it explicitly, because a RE-CLAIM of a card
+    // that is already in_progress never enters progress and so would otherwise never re-arm. That
+    // is not a corner case: the card this serves is one whose owner already holds it, which is
+    // exactly the state a second compaction happens in. Without the override, an agent that was
+    // prompted once and came back could never be prompted again, and a genuinely dead one would
+    // be prompted once and then forgotten - the failure this mechanism exists to catch.
+    // A claim is a genuine state transition and a new lease genuinely is a new obligation, so the
+    // LEASE FIELDS must move `updated`... except they must not, see WRITE_METADATA. Only the
+    // restatement of what was already owed does not.
+    //
+    // The Number() is not decoration. YAML round-trips a bare `1` back as a string, so
+    // `existingTask.lease_epoch ?? null` handed a STRING forward, the serializer wrote `lease_epoch: "1"`,
+    // and the next read wrote `"1"` again - a field that changes TYPE on every routine verb that
+    // touches the card. Nothing failed, the card looked fine, and a comparison of that field would
+    // disagree with itself across two writes. Coerced once, here, rather than at each reader.
+    lease_epoch: (() => {
+      const raw = updates.lease_epoch
+        ?? (enteringProgress ? (Number(existingTask.lease_epoch) || 0) + 1 : existingTask.lease_epoch);
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })(),
+    lease_started_at: enteringProgress ? now : (existingTask.lease_started_at || null),
     next_actor: nextActor,
     // A re-route preserves the stamp. `reroutedWhileBlocked` no longer restarts the clock; the
     // time it covers is credited by the UNBLOCK path instead, which banks blocked_at -> now into
@@ -1636,6 +1694,24 @@ export function listClaimableTasks(repoRoot, amqRoot, handle = null) {
 
   tasks.sort((a, b) => String(a.created || "").localeCompare(String(b.created || "")));
   return tasks;
+}
+
+/**
+ * RECORD THE RESUME OBLIGATION ON THE CARD.
+ *
+ * This is the field a compacted agent reads, because a compaction keeps a summary of FACTS and
+ * drops the OBLIGATION first: that a commit is still owed, that a measurement is still owed. The
+ * summary survives and the agent believes it is caught up.
+ *
+ * It does NOT move `updated`, and that is deliberate. A resume line restates work that is already
+ * owed; treating the restatement as progress would let an agent clear its own stall clock by
+ * re-typing what it was already supposed to do, which is the same class of defect as heartbeating
+ * your way out of a stall.
+ */
+export function setTaskResumeLine(repoRoot, amqRoot, taskId, text, opts = {}) {
+  const res = updateBoardTask(repoRoot, amqRoot, taskId, { resume_line: text }, opts);
+  if (!res.ok) return res;
+  return { ...res, resume_line: res.task?.resume_line ?? text };
 }
 
 export function drainTasks(repoRoot, amqRoot, { me, claim = false, notify = true } = {}) {
