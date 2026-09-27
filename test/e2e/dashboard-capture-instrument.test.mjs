@@ -67,7 +67,22 @@ async function withBrowser(fn) {
 after(async () => {
   if (!shared) return;
   await shared.browser.close().catch(() => {});
-  await shared.fixture?.cleanup?.().catch?.(() => {});
+  // `close`, NOT `cleanup`. The fixture has never had a `cleanup` method, and
+  // `?.cleanup?.()` turned that typo into a SILENT NO-OP: the fixture's HTTP server and the
+  // fake-Herdr net.Server stayed open until node killed the FILE, which is what the e2e gate
+  // was reporting as `cancelled: 2` on every run. The two files that call `cleanup` were exactly
+  // the two that hung; the four that call `close` all exited. Optional chaining is what made it
+  // survive review - there is no way to tell "already closed" from "never closed" by reading
+  // `a?.b?.()`.
+  //
+  // So the teardown asserts instead of chaining. If the method is ever renamed again, this throws
+  // at the end of the run rather than leaving a server listening and blaming the browser.
+  if (shared.fixture) {
+    if (typeof shared.fixture.close !== "function") {
+      throw new Error("dashboard fixture has no close(): teardown would silently leak its server");
+    }
+    await shared.fixture.close();
+  }
 });
 
 const SIZES = [["mobile", { width: 390, height: 844 }], ["desktop", { width: 1440, height: 900 }]];

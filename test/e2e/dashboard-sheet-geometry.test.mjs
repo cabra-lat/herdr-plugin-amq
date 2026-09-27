@@ -131,7 +131,20 @@ async function withBrowser(fn) {
     return await fn(fixture, browser);
   } finally {
     if (browser) await browser.close().catch(() => {});
-    if (fixture?.cleanup) await fixture.cleanup().catch(() => {});
+    // `close`, NOT `cleanup` - and the guard is inverted on purpose. The fixture has never had a
+    // `cleanup` method, so `if (fixture?.cleanup)` was always false and the HTTP server and the
+    // fake-Herdr net.Server were never torn down; node then killed the FILE and reported it as
+    // cancelled. `?.cleanup?.()` in the sibling file failed the same way for the same reason.
+    //
+    // The teardown is unconditional and throws if the method is missing, because a teardown that
+    // silently does nothing is indistinguishable from one that already ran - and that ambiguity
+    // is what let this survive as a flake attributed to the browser.
+    if (fixture) {
+      if (typeof fixture.close !== "function") {
+        throw new Error("dashboard fixture has no close(): teardown would leak its server");
+      }
+      await fixture.close();
+    }
   }
 }
 
