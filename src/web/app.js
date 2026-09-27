@@ -690,7 +690,21 @@
         </button>
       `;
     }
+    // PRESERVE SCROLL ACROSS THE REBUILD. The owner reported "when I scroll down in the side
+    // bar it triggers the reload", and there is NO scroll listener anywhere in this app, so the
+    // cause cannot be what it looks like. It is this: the SSE channel at :2223 calls
+    // renderPresenceList on every event, unconditionally, and the next line replaces the whole
+    // subtree. Replacing a scroll container contents resets its scrollTop to zero, so a live
+    // board - which emits constantly - throws the reader back to the top whenever they have
+    // scrolled down. The page never reloads; the sidebar is rebuilt under their thumb, and it
+    // reads as a reload because what they were reading vanishes.
+    //
+    // The fix restores the scroll rather than stopping the re-render: this list is the live
+    // agent roster, and going stale is a worse defect than a jump. Scroll position is the
+    // reader state exactly as the open thread is, and a rebuild must silently discard neither.
+    const presenceScroll = presenceListEl.scrollTop;
     presenceListEl.innerHTML = html;
+    if (presenceScroll > 0) presenceListEl.scrollTop = presenceScroll;
     presenceListEl.querySelectorAll(".presence-item").forEach((button) => {
       button.addEventListener("click", () => openPanesFocus(button.dataset.agentHandle));
     });
