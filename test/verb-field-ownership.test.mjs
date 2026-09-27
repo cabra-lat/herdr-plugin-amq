@@ -56,7 +56,8 @@ const field = (text, name) => text.match(new RegExp(`^${name}: (.*)$`, "m"))?.[1
 // test. `title` is here for the same reason.
 const WATCHED = [
   "claimed_at", "blocked_at", "done_at", "status_at", "updated", "owner_at", "next_actor_at",
-  "last_heartbeat_at", "blocked_ms", "blocked_total_ms", "proof", "description", "title", "next_actor", "owner",
+  "last_heartbeat_at", "blocked_ms", "blocked_total_ms", "proof", "description", "title",
+  "next_actor", "owner", "notes", "depends_on",
 ];
 
 // A card already `doing`, every stamp pushed into the past so any rewrite is unmissable.
@@ -85,13 +86,25 @@ const before = (root, id) => Object.fromEntries(WATCHED.map((k) => [k, field(car
 // changed, so `owner_at` moves; and the verb moves the actor with the owner. The table's value
 // is not in the fields a verb MAY write - it is in the ones it may not, which is why the
 // expectations are declared rather than inferred.
-const EVERY_WRITE = ["updated"];
+// THE FIELD THAT PROVES EACH VERB ACTUALLY DID SOMETHING.
+//
+// I first used `updated` for this, on the claim that "updated is owned by every write because it
+// is a modification time and not a lifecycle stamp". That claim is TOO STRONG, and two rows
+// caught it: `heartbeat` and `comment` do not move `updated` - deliberately, because a note and
+// a heartbeat are narration, not progress, and a board where they moved the modification time
+// would make looking busy indistinguishable from working. So `updated` is a poor liveness probe
+// for exactly the two verbs whose whole point is not to look like work.
+//
+// Which also means `updated` belongs in mayChange (it is not a defect when it moves) and NOT in
+// the set of things a verb must move. Each row therefore declares the field that proves IT
+// acted, and the table says so rather than leaving a reader to infer it.
+const EVERY_WRITE = ["updated"];   // may move; never a defect. Not a proof of anything.
 
 const VERBS = [
-  { name: "reassign owner", args: (id) => ["task", "reassign", id, "--to", "someone-else"], mayChange: ["owner", "owner_at", "next_actor"] },
-  { name: "reassign next_actor", args: (id) => ["task", "reassign", id, "--to", "lane", "--next-actor", "verifier"], mayChange: ["next_actor", "next_actor_at"] },
-  { name: "heartbeat", args: (id) => ["task", "heartbeat", id], mayChange: ["last_heartbeat_at", "last_heartbeat_by"] },
-  { name: "comment", args: (id) => ["task", "comment", id, "--text", "a note"], mayChange: [] },
+  { name: "reassign owner", args: (id) => ["task", "reassign", id, "--to", "someone-else"], mayChange: ["owner", "owner_at", "next_actor"], mustChange: "owner" },
+  { name: "reassign next_actor", args: (id) => ["task", "reassign", id, "--to", "lane", "--next-actor", "verifier"], mayChange: ["next_actor", "next_actor_at"], mustChange: "next_actor" },
+  { name: "heartbeat", args: (id) => ["task", "heartbeat", id], mayChange: ["last_heartbeat_at", "last_heartbeat_by"], mustChange: "last_heartbeat_at" },
+  { name: "comment", args: (id) => ["task", "comment", id, "--text", "a note"], mayChange: ["notes"], mustChange: "notes" },
   // This row REPLACES a "priority bump" row from the measured draft I started from, which
   // recorded "priority bump: none". There is no such command: `reassign` rejects --priority as an
   // unknown option, and its help never advertised one. So that row measured a command that does
@@ -100,7 +113,7 @@ const VERBS = [
   //
   // An edge write is the more useful row anyway: depends_on is the field tonight's three defects
   // circled, and it is written by a routine verb.
-  { name: "reassign adding a dependency", args: (id) => ["task", "reassign", id, "--to", "lane", "--depends-on", "some-other-card"], mayChange: [] },
+  { name: "reassign adding a dependency", args: (id) => ["task", "reassign", id, "--to", "lane", "--depends-on", "some-other-card"], mayChange: ["depends_on"], mustChange: "depends_on" },
 ];
 
 for (const verb of VERBS) {
@@ -114,8 +127,55 @@ for (const verb of VERBS) {
     const changed = WATCHED.filter((k) => field(afterText, k) !== b[k] && !allowed.has(k));
     assert.deepEqual(changed, [],
       `${verb.name} changed ${changed.join(", ")} - a routine verb must not destroy a field it does not own`);
+    // AND THE WRITE ACTUALLY LANDED. Without this a row whose command is a silent no-op passes:
+    // "nothing changed" is exactly what a dead row looks like, and it is indistinguishable from
+    // the row's actual claim. Only `reassign` had a positive arm; the other four were asking a
+    // question that a verb which does nothing would also answer correctly.
+    assert.notEqual(field(afterText, verb.mustChange), b[verb.mustChange],
+      `${verb.name} must actually change ${verb.mustChange}, or this row measures nothing`);
   });
 }
+
+// EVERY ROW MUST NAME A VERB THAT EXISTS, WITH FLAGS THE PARSER ACCEPTS.
+//
+// This is the FOURTH vacuity mode, and it is the one no runtime assertion catches: a path that is
+// unreachable from ANY verb. No exit code, no assertion and no amount of running detects it,
+// because at the library level the code is correct and the fixture is asking a question no user
+// can ask. Ballistics' "priority bump" row was exactly this: `updateBoardTask(..., {priority:
+// "high"})` returns ok:true, the field reads high, nothing throws - a green row for a path with
+// no door. Their probe called the library, so there was no non-zero exit to notice.
+//
+// Assertions detect DIVERGENCE - an arm behaving unlike its expectation. They cannot detect
+// UNREACHABILITY, where the arm behaves exactly as expected and the question was never asked.
+// So the defence has to be STATIC: enumerate verb -> flags, which is what this does, by reading
+// the same TASK_FLAGS table the CLI gates on.
+//
+// The CLI level catches the REJECTED case for free - execFileSync throws on a non-zero exit, so
+// an unknown verb or flag fails the row loudly. What it cannot catch is a row whose flags parse
+// but whose semantics nothing ever performs. That is what this check is for, and it is the same
+// parser the product uses rather than a second opinion about it.
+test("STATIC REACHABILITY: every row names a real verb with flags the CLI accepts", () => {
+  const actions = fs.readFileSync(path.join(HERE, "..", "src", "actions.mjs"), "utf8");
+  const block = actions.slice(actions.indexOf("const TASK_FLAGS = {"), actions.indexOf("\n};", actions.indexOf("const TASK_FLAGS = {")));
+  const flagsFor = new Map(
+    [...block.matchAll(/([a-z][\w-]*):\s*new Set\(\[([^\]]*)\]\)/g)]
+      .map((m) => [m[1], new Set([...m[2].matchAll(/"([^"]+)"/g)].map((f) => f[1]))]),
+  );
+  assert.ok(flagsFor.size > 10, `TASK_FLAGS did not parse, so this check would be vacuous (${flagsFor.size})`);
+  for (const verb of VERBS) {
+    const argv = verb.args("task_x");
+    const name = argv[1];
+    assert.ok(flagsFor.has(name), `row "${verb.name}" names a verb that does not exist: ${name}`);
+    const allowed = flagsFor.get(name);
+    for (let i = 2; i < argv.length; i += 1) {
+      const token = argv[i];
+      if (!token.startsWith("--")) continue;
+      const flag = token.slice(2);
+      assert.ok(allowed.has(flag),
+        `row "${verb.name}" uses --${flag}, which "task ${name}" rejects: the row exercises a path no user can reach`);
+    }
+  }
+});
 
 test("AND THE POSITIVE DIRECTION: the field the verb DOES own does change", () => {
   // Without this, "nothing ever changes" satisfies every arm above - and would be achieved by
