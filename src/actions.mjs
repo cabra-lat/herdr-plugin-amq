@@ -1044,8 +1044,8 @@ export function handleMailCommand(subcmd, args = []) {
     // left singular while the command list was corrected, so a reader who read only the top of
     // the help still learned that repeats are dropped. A flag is documented in every place it
     // appears or it is documented wrongly somewhere.
-    console.log("       herdr-amq send --to <h> --subject <s> --body <b> [--attach <p>]...");
-    console.log("       herdr-amq reply --id <id> --body <b> [--attach <p>]...");
+    console.log("       herdr-amq send --to <h> --subject <s> --body <b> [--attach <p>]... [--needs-reply|--no-needs-reply]");
+    console.log("       herdr-amq reply --id <id> --body <b> [--attach <p>]... [--answers] [--needs-reply|--no-needs-reply]");
     console.log("       herdr-amq drain --me <handle> [--include-body]");
     console.log("\nCommands:");
     // --attach REPEATS. The parser accumulates repeated flags and also accepts a
@@ -1070,6 +1070,41 @@ export function handleMailCommand(subcmd, args = []) {
   function getArg(flag, alias) {
     const idx = args.findIndex((a) => a === flag || (alias && a === alias));
     return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
+  }
+
+  /**
+   * Read the tri-state needs_reply flag: `--needs-reply`, `--no-needs-reply`, or NEITHER.
+   *
+   * This function existing at all is the fix for the worst version of the field, which is a
+   * reader for a field no writer can set. The first implementation of needs_reply added the
+   * header, the total reader and findUnansweredAsks, and shipped 14 green tests - while the CLI
+   * exposed no way to set it. The result was a feature that was INERT in the direction that
+   * matters: nothing could ever declare an ask, so every message stayed permanently UNKNOWN, so
+   * every message was treated as maybe-asking, and the system behaved exactly as it did before
+   * the field existed - with more code. The live report read `declared=0 declared-no=0`, which
+   * is also precisely what a build with a missing writer produces, so the number could not
+   * distinguish "nobody declared" from "nobody could".
+   *
+   * It is TRI-STATE and two flags rather than one flag with a value, because
+   * `--needs-reply=false` and an omitted `--needs-reply=false` have to be distinguishable from
+   * "unset", and a value-taking flag invites exactly the stringly-typed trap that readNeedsReply
+   * exists to prevent - `needs_reply: "false"` is truthy, and a truthy "false" is worse than an
+   * absent key because it looks like a decision.
+   *
+   * Both flags given at once is a caller error and is refused rather than resolved by order: a
+   * message that both asks and does not ask is a contradiction, and silently picking one is how a
+   * sender ends up believing they declared something they did not.
+   */
+  function getNeedsReply() {
+    const yes = args.includes("--needs-reply");
+    const no = args.includes("--no-needs-reply");
+    if (yes && no) {
+      console.error("❌ --needs-reply and --no-needs-reply are contradictory. Nothing was sent.");
+      process.exit(1);
+    }
+    if (yes) return true;
+    if (no) return false;
+    return null; // UNSET, and unset is the safe-when-absent default, not a false
   }
 
   // A REPEATED flag used to be silently truncated to its first occurrence, because this
@@ -1170,6 +1205,7 @@ export function handleMailCommand(subcmd, args = []) {
       const kind = getArg("--kind");
       const priority = getArg("--priority") || "normal";
       const attach = getMultiArg("--attach");
+      const needsReply = getNeedsReply();
 
       if (!to.length) {
         console.error("❌ Missing required --to recipient.");
@@ -1186,11 +1222,17 @@ export function handleMailCommand(subcmd, args = []) {
           kind,
           priority,
           attachments: attach,
+          needs_reply: needsReply,
         });
         // The count is part of the receipt, not a nicety: "Sent" alone is what let a dropped file
-        // pass for a delivered one.
+        // pass for a delivered one. The same argument applies to the declaration: a receipt that
+        // says "Sent" when a field was silently left unset is a receipt that cannot be used to
+        // tell a declared ask from an undeclared one after the fact.
         console.log(`✉️  Sent ${res.id} to ${to.join(", ")} (from: ${from}) [maildir native]` +
-          (attach.length ? ` [${attachmentCountLabel(attach.length)}]` : ""));
+          (attach.length ? ` [${attachmentCountLabel(attach.length)}]` : "") +
+          (needsReply === true ? " [needs_reply: yes]"
+            : needsReply === false ? " [needs_reply: explicitly no]"
+              : " [needs_reply: undeclared]"));
       } catch (err) {
         console.error(`❌ Send failed: ${err.message}`);
         process.exit(1);
@@ -1217,6 +1259,11 @@ export function handleMailCommand(subcmd, args = []) {
         body = expanded.value;
       }
       const attach = getMultiArg("--attach");
+      // Both writers the field needs, on the same surface. `--answers` is the one that matters
+      // most: without it an UNANSWERED ask is indistinguishable from a answered one, because
+      // "ack, looking" is a body and the only record that a reply happened is the reply.
+      const needsReply = getNeedsReply();
+      const answers = args.includes("--answers");
 
       if (!id) {
         console.error("❌ Missing required --id of message to reply to.");
@@ -1234,9 +1281,17 @@ export function handleMailCommand(subcmd, args = []) {
           replyToId: id,
           body,
           attachments: attach,
+          needs_reply: needsReply,
+          answersAsk: answers,
         });
         console.log(`✉️  Replied ${res.id} to ${res.to.join(", ")} (in-reply-to: ${id}) [maildir native]` +
-          (attach.length ? ` [${attachmentCountLabel(attach.length)}]` : ""));
+          (attach.length ? ` [${attachmentCountLabel(attach.length)}]` : "") +
+          // Stating the answer verdict in the receipt, because the alternative is a thread that
+          // looks handled on the strength of a reply existing - which is the failure.
+          (answers ? " [answers_ask: yes]" : " [answers_ask: no]") +
+          (needsReply === true ? " [needs_reply: yes]"
+            : needsReply === false ? " [needs_reply: explicitly no]"
+              : " [needs_reply: undeclared]"));
       } catch (err) {
         console.error(`❌ Reply failed: ${err.message}`);
         process.exit(1);
