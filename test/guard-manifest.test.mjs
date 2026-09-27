@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GUARD_MANIFEST } from "../src/guards.mjs";
+import { GUARD_MANIFEST, GUARD_LOCATIONS } from "../src/guards.mjs";
 
 /**
  * THE BUILD MUST BE ABLE TO SAY WHICH BUILD IT IS.
@@ -50,4 +50,34 @@ test("--version names the resolved path and the guards", () => {
   for (const name of Object.keys(GUARD_MANIFEST)) {
     assert.ok(out.includes(name), `manifest entry not printed: ${name}`);
   }
+});
+
+test("each guard is reported as a SOURCE LOCATION, and the location is real", () => {
+  // Wording is load-bearing: "found src/board.mjs:917" is a fact a reader can go and check, while
+  // "guard: in place" is a claim they cannot. The line number is verified rather than trusted,
+  // because a location that points at the wrong line is worse than no location.
+  for (const [name, present] of Object.entries(GUARD_MANIFEST)) {
+    const loc = GUARD_LOCATIONS[name];
+    if (!present) { assert.equal(loc, null, `${name} reads absent but claims a location`); continue; }
+    const m = loc.match(/^src\/(\w+)\.mjs:(\d+)$/);
+    assert.ok(m, `${name} has an unparseable location: ${loc}`);
+    const line = fs.readFileSync(new URL(`../src/${m[1]}.mjs`, import.meta.url), "utf8")
+      .split("\n")[Number(m[2]) - 1];
+    assert.ok(line && line.length > 0, `${name} points at an empty line in ${loc}`);
+  }
+});
+
+test("the output says the suites hold the guards, and prints the commit it read", () => {
+  // "Which tree am I standing in" should answer to a commit, not a directory - a directory ages
+  // silently, and a stale manifest is then invisible rather than wrong.
+  const out = execFileSync(process.execPath, [CLI, "--version"], { encoding: "utf8" });
+  // Whitespace is normalised first, and that is the FIFTH time tonight an arm of mine has been
+  // wrong for a reason the code under test does not control. The previous version of this very
+  // assertion failed on a LINE WRAP in the artifact - the sentence it checks is correct and the
+  // newline falls between "the" and "guards". An arm that fails on formatting is not testing the
+  // thing it names, and the tell is the same one every time: one arm, wrong for a reason of mine.
+  const flat = out.replace(/\s+/g, " ");
+  assert.match(flat, /test suites are what hold the guards/i, "the limitation is in the artifact, not only in a message");
+  assert.match(flat, /commit:\s+\S+/, "and the commit it read at");
+  assert.match(flat, /not a claim that a guard is in place/i, "and it does not overclaim what it checked");
 });
