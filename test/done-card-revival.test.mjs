@@ -150,3 +150,107 @@ describe("the guard matches the one that already existed", () => {
     assert.equal(claim.ok, false, "and so does the claim path - they now agree");
   });
 });
+
+// ─── the residual hole, measured by ballistics against a throwaway bus ─────────
+//
+// The first predicate keyed on `existingTask.status === "done"`, so it fired only when LEAVING a
+// CLEAN done card. A card that is ALREADY contradictory - status not done while done_at is set -
+// was unprotected, and could be written again with the contradiction intact. That is the one
+// instance still standing on the live board.
+//
+// These four arms are promoted rather than the probe deleted, per the standing rule: a probe
+// that finds something leaves its assertion behind. The shapes are exactly the four ballistics
+// ran, and the ORDER of the arms matters - see the control note at the end.
+describe("an ALREADY-CONTRADICTORY card is protected too", () => {
+  /** A card in the broken shape: not done, but carrying a completion record. */
+  function makeBad(root, amqRoot) {
+    const { task } = make(root, amqRoot);
+    const id = task.id;
+    updateBoardTask(root, amqRoot, id, { status: "done" }, { from: "o", proof: "real proof", notify: false });
+    // Reach the broken state the way history did: a claim, forced past the guard by writing
+    // done_at to null alongside, which is what a pre-01aad98 caller effectively produced.
+    updateBoardTask(root, amqRoot, id, { status: "blocked", done_at: null, reason: "forced" },
+      { from: "legacy", reopen: true, reason: "simulating a pre-guard card", notify: false });
+    const t = getBoardTask(root, amqRoot, id).task;
+    // Re-stamp done_at directly to reproduce the historical shape exactly.
+    updateBoardTask(root, amqRoot, id, { status: "blocked", done_at: "2026-09-27T01:37:46.824Z", reason: "forced" },
+      { from: "legacy", reopen: true, reason: "simulating a pre-guard card", notify: false });
+    assert.ok(getBoardTask(root, amqRoot, id).task.done_at, "fixture must actually be contradictory");
+    return { id, t };
+  }
+
+  test("A: a claim on a CLEAN done card is refused", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "done-revive-"));
+    const amqRoot = path.join(root, ".agent-mail");
+    fs.mkdirSync(amqRoot, { recursive: true });
+    const { task } = make(root, amqRoot);
+    const id = task.id;
+    updateBoardTask(root, amqRoot, id, { status: "done" }, { from: "o", proof: "p", notify: false });
+    const r = updateBoardTask(root, amqRoot, id, { status: "in_progress" }, { from: "racer", notify: false });
+    assert.equal(r.ok, false, "the original guard, unchanged");
+    assert.match(r.error, /cannot revive/i);
+  });
+
+  test("B: a write on an ALREADY-BAD card is refused - the hole", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "done-revive-"));
+    const amqRoot = path.join(root, ".agent-mail");
+    fs.mkdirSync(amqRoot, { recursive: true });
+    const { id } = makeBad(root, amqRoot);
+    const before = getBoardTask(root, amqRoot, id).task;
+
+    const r = updateBoardTask(root, amqRoot, id, { status: "blocked" }, { from: "racer", notify: false });
+    assert.equal(r.ok, false, "a contradictory card must not be writable");
+    assert.match(r.error, /contradicts itself/i);
+    const after = getBoardTask(root, amqRoot, id).task;
+    assert.equal(after.done_at, before.done_at, "and the record is not overwritten on the way");
+  });
+
+  test("C: THE CONTROL - an ordinary claim is ACCEPTED, so 'refused' is not 'not found'", () => {
+    // This is ballistics' own correction to their first probe, and it is the arm that makes the
+    // other three meaningful. They passed the bus DIRECTORY where getBusDirectory() expects the
+    // AMQ ROOT, every arm returned "Task not found", and read carelessly that looks like a guard
+    // refusing everything - a clean sweep that tested nothing. They caught it because the
+    // CONTROL also refused: a guard that refuses an ordinary claim is not a guard.
+    //
+    // A red arm suite needs an arm that MUST PASS, or "refused" is indistinguishable from
+    // "not found". Every guard in this file is only trustworthy because of this one.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "done-revive-"));
+    const amqRoot = path.join(root, ".agent-mail");
+    fs.mkdirSync(amqRoot, { recursive: true });
+    const { task } = make(root, amqRoot);
+    const id = task.id;
+    const r = updateBoardTask(root, amqRoot, id, { status: "in_progress" }, { from: "worker", notify: false });
+    assert.equal(r.ok, true, "an ordinary claim must not be over-blocked");
+    assert.equal(getBoardTask(root, amqRoot, id).task.status, "in_progress");
+  });
+
+  test("D: a card can still be re-completed, and done_at is NOT silently refreshed", () => {
+    // The other half, and a real decision rather than an oversight.
+    //
+    // `done_at: existing || now` records the FIRST completion. So a card that was wrongly revived
+    // and then re-completed carries a done_at marking the first completion and a proof marking
+    // the second, and a reader cannot tell from done_at when the card was last actually
+    // completed. 11 of the 12 sweep hits are cards where that is now true.
+    //
+    // I am NOT changing it, and the reason is that the alternative destroys the evidence. The
+    // first completion is the truthful record of when the work finished; the second is the
+    // anomaly. Refreshing would make every one of those 11 cards look consistently done and
+    // erase the only field that distinguishes them - which is the same failure as nulling
+    // done_at, in the opposite direction: fixing the appearance by discarding the record.
+    //
+    // So this is a KNOWN, RECORDED divergence on historical cards, not a repair. What closes it
+    // is the guard above: no NEW card can reach this shape, because leaving done now requires a
+    // reopen, and a reopen clears done_at.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "done-revive-"));
+    const amqRoot = path.join(root, ".agent-mail");
+    fs.mkdirSync(amqRoot, { recursive: true });
+    const { task } = make(root, amqRoot);
+    const id = task.id;
+    updateBoardTask(root, amqRoot, id, { status: "done" }, { from: "o", proof: "first", notify: false });
+    const first = getBoardTask(root, amqRoot, id).task.done_at;
+    const again = updateBoardTask(root, amqRoot, id, { status: "done" }, { from: "o", proof: "second", notify: false });
+    assert.equal(again.ok, true, "completing an already-done card is not a revival, so it is allowed");
+    assert.equal(getBoardTask(root, amqRoot, id).task.done_at, first,
+      "and the FIRST completion is preserved - the divergence is deliberate and asserted here");
+  });
+});

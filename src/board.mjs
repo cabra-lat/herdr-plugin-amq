@@ -922,6 +922,28 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     };
   }
 
+  // The FIRST predicate only fires when LEAVING A CLEAN done card, so a card that is ALREADY
+  // contradictory - status not done while done_at is set - was unprotected, and could be written
+  // again with the contradiction intact. ballistics measured this rather than inferring it: a
+  // write of status -> blocked on an already-bad card was ACCEPTED and left done_at in place,
+  // violating the invariant in a new way.
+  //
+  // That is live card queued/task_1790452331402_0273c0, range's profiler card, and it is the one
+  // instance still standing after 11 others self-healed. The refusal is what stops anyone
+  // touching it further; the sweep is what finds it, and it will not prevent the next write.
+  //
+  // Keying on the PRESENCE of done_at rather than on the status field is the whole point: a
+  // contradictory card is precisely one where status and done_at disagree, so a predicate that
+  // reads status cannot see it.
+  if (existingTask.done_at && existingTask.status !== "done" && updates.status !== "done" && !opts.reopen) {
+    return {
+      ok: false,
+      error: `Task carries a completion record (done_at ${existingTask.done_at}) but is not ` +
+        `done (status ${existingTask.status}) - the card contradicts itself. Refusing to ` +
+        "write over it. Repair it explicitly: `task reopen` clears the stale record.",
+    };
+  }
+
   // REJECT WHAT WE CANNOT HONOUR, BY NAME.
   //
   // A write that reports ok:true and quietly does nothing is worse than one that fails:

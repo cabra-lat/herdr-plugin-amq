@@ -1,3 +1,5 @@
+import os from "node:os";
+import fs from "node:fs";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -68,4 +70,67 @@ test("the fixture no longer sends the field the real server omits", () => {
   const titleOnly = src.slice(src.indexOf("const titleOnlyAgent"));
   assert.ok(!/^\s*name:\s*"",?\s*$/m.test(titleOnly),
     "the title-only agent must omit `name`, exactly as the real server does");
+});
+
+// ─── stage directories vs the status field: two vocabularies, one card ─────────
+//
+// The live bus uses backlog/ blocked/ doing/ done/ queued/ for DIRECTORIES, and
+// backlog blocked in_progress done queued for the STATUS field inside the card. A card reads
+// `status: "in_progress"` while living in doing/. Coordinator measured all 433 live cards and
+// found the mapping one-to-one with no violations, and confirmed bus/in_progress does not exist.
+//
+// WHY THIS NEEDS AN ARM RATHER THAN A COMMENT. resolveStageDir() has a fallback: if a bus has
+// in_progress/ and lacks doing/, it returns in_progress. That fallback is what let MY OWN TEST
+// BOARD adopt in_progress/ without anyone noticing, so the divergence between fixture and
+// production was incidental rather than deliberate - and an incidental agreement is the state
+// where a fixture quietly stops being able to catch a class of bug.
+//
+// The hazard is concrete: any code or repair that builds a path by string-substituting the
+// status - bus/ + status - targets bus/in_progress, which does not exist and which nothing
+// reads. That does not fail loudly; the write lands in a path with no reader and appears to
+// have applied. Creating the directory on a miss is how a phantom stage appears and quietly
+// absorbs writes.
+test("the DIRECTORY vocabulary is doing/, and the status vocabulary is in_progress", async () => {
+  const { STAGE_DIRS, resolveStageDir } = await import("../src/board.mjs");
+  assert.equal(STAGE_DIRS.in_progress, "doing",
+    "the mapping is the contract: in_progress LIVES in doing/");
+  assert.ok(!("in_progress" in ["/"].concat(Object.values(STAGE_DIRS))),
+    "and no stage directory is ever spelled in_progress on the live board");
+});
+
+test("a live-shaped bus resolves in_progress to doing/", async () => {
+  const { resolveStageDir } = await import("../src/board.mjs");
+  const bus = fs.mkdtempSync(path.join(os.tmpdir(), "bus-live-"));
+  try {
+    for (const d of ["backlog", "blocked", "doing", "done", "queued"]) fs.mkdirSync(path.join(bus, d));
+    assert.equal(resolveStageDir(bus, "in_progress"), "doing",
+      "a bus laid out like production puts an in_progress card in doing/");
+  } finally {
+    fs.rmSync(bus, { recursive: true, force: true });
+  }
+});
+
+test("the in_progress/ fallback is asserted DELIBERATELY, not left incidental", async () => {
+  const { resolveStageDir } = await import("../src/board.mjs");
+  const bus = fs.mkdtempSync(path.join(os.tmpdir(), "bus-alt-"));
+  try {
+    fs.mkdirSync(path.join(bus, "in_progress"));
+    assert.equal(resolveStageDir(bus, "in_progress"), "in_progress",
+      "the fallback branch still works, and now it is a known behaviour with a name");
+  } finally {
+    fs.rmSync(bus, { recursive: true, force: true });
+  }
+});
+
+test("and a bus with BOTH directories prefers doing/, which is the production shape", async () => {
+  const { resolveStageDir } = await import("../src/board.mjs");
+  const bus = fs.mkdtempSync(path.join(os.tmpdir(), "bus-both-"));
+  try {
+    fs.mkdirSync(path.join(bus, "doing"));
+    fs.mkdirSync(path.join(bus, "in_progress"));
+    assert.equal(resolveStageDir(bus, "in_progress"), "doing",
+      "doing/ wins, so a stray empty in_progress/ cannot absorb writes");
+  } finally {
+    fs.rmSync(bus, { recursive: true, force: true });
+  }
 });
