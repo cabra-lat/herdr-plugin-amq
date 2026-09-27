@@ -227,6 +227,17 @@ function parseTaskArgs(args = []) {
   return { flags, positional };
 }
 
+// STAGE ALIASES AT MODULE SCOPE, BECAUSE TWO VERBS NOW NEED THEM.
+//
+// This table was a `const` inside the unblock handler, so `reopen` could not honour its own
+// documented --stage without either duplicating it or reaching into another handler-scope. Two
+// copies of a stage table is two places for them to disagree, and they would disagree SILENTLY:
+// one verb accepts a stage the other rejects, and the only evidence is a card in a column nobody
+// expected. It is also why the first attempt at honouring --stage failed with "STAGE_ALIASES is
+// not defined" - the declaration was still in the other handler.
+const STAGE_ALIASES = { doing: "in_progress", in_progress: "in_progress", queued: "queued", backlog: "backlog" };
+const STAGE_CHOICES = "doing, queued, backlog";
+
 const TASK_FLAGS = {
   list: new Set(["owner", "status", "json", "me", "from", "help"]),
   ls: new Set(["owner", "status", "json", "me", "from", "help"]),
@@ -250,10 +261,14 @@ const TASK_FLAGS = {
   drain: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
   next: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
   comment: new Set(["id", "text", "note", "me", "from", "help"]),
+  // `--stage` is honoured, not inert. It was declared here, accepted by the parser and read
+  // nowhere - the handler hardcoded `status: "doing"` - so a caller passing `--stage queued` got
+  // a card in `doing` and a success message. The comment on this entry used to CLAIM the
+  // capability and cite `unblock` as the verb that has it; it now describes what the handler
+  // does, which is the only comment worth having.
+  //
   // `--reason` is REQUIRED, not optional. Reopen is the one write that DELETES a completion
-  // record, so the reason is the only record of why the record went away. `--stage` lets the
-  // caller say where the card lands instead of leaving that to a default, for the same reason
-  // `unblock` has no default stage: defaulting invents a decision the caller did not make.
+  // record, so the reason is the only record of why the record went away.
   //
   // THIS ENTRY IS WHAT MAKES THE VERB EXIST. The `case "reopen"` in the switch below was
   // written and tested at the library level, and then UNREACHABLE from the CLI, because
@@ -293,6 +308,8 @@ function taskUsage() {
     "                                             non-done card). --reason is REQUIRED: this is the",
     "                                             one write that DELETES a completion record, so",
     "                                             the reason is the only record of why it went away.",
+    "                                             --stage defaults to `doing`; pass backlog/queued",
+    "                                             to file it instead of picking it back up.",
     "                                             Not the same as `done`: use this when a card was",
     "                                             legitimately revived and the stamp is out of date.",
     "  block <id> --reason <r> [--next-actor <h>] [--depends-on <id,...>]",
@@ -746,14 +763,40 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       }
       let res;
       try {
+        // `--stage` is HONOURED, and the default is stated rather than implied.
+        //
+        // It was declared in TASK_FLAGS, accepted by the parser, and read NOWHERE: the handler
+        // hardcoded `{ status: "doing" }`. So `task reopen <id> --stage queued --reason ...`
+        // succeeded, printed a success message, and put the card in `doing` - a flag that parses
+        // and does nothing, which is the failure mode a parser table cannot see.
+        //
+        // Worse, the TASK_FLAGS comment for this verb CLAIMED the capability: it said --stage
+        // "lets the caller say where the card lands instead of leaving that to a default, for
+        // the same reason `unblock` has no default stage" - and `unblock` genuinely honours it
+        // through STAGE_ALIASES with a required-and-rejected-if-missing guard. So the comment
+        // documented a capability the handler did not have and pointed at a sibling verb that
+        // had it. A claim in the artifact about what the artifact does.
+        //
+        // The default stays `doing` rather than becoming required, because making it required
+        // would break the no---stage form that shipped tonight and that coordinator used to
+        // repair a real card. The honest fix is to DO what the comment said and to say plainly
+        // what the default is, not to remove a working invocation in the name of a principle.
+        // A reopened card is being picked back up rather than filed, and `backlog`/`queued` are
+        // one flag away for anyone who means otherwise.
+        const stageArg = String(flags.stage || "").trim();
+        const stage = stageArg ? STAGE_ALIASES[stageArg] : "in_progress";
+        if (stageArg && !stage) {
+          console.error(`❌ Unknown --stage ${JSON.stringify(stageArg)}. Legal values: ${STAGE_CHOICES}.`);
+          process.exit(1);
+        }
         res = updateBoardTask(repoRoot, amqRoot, taskId,
-          { status: "doing", done_at: null },
+          { status: stage, done_at: null },
           { from: me, reopen: true, reason, notify: flags.notify !== "false" });
       } catch (error) {
         return failTask(`Failed to reopen task: ${error.message}`);
       }
       if (res.ok) {
-        console.log(`\n♻️  Task ${taskId} REOPENED - done_at cleared.\nReason: ${reason}\n`);
+        console.log(`\n♻️  Task ${taskId} REOPENED into ${stage} - done_at cleared.\nReason: ${reason}\n`);
       } else {
         console.error(`❌ Failed to reopen task: ${res.error}`);
         process.exit(1);
@@ -779,7 +822,6 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
         );
         process.exit(1);
       }
-      const STAGE_ALIASES = { doing: "in_progress", in_progress: "in_progress", queued: "queued", backlog: "backlog" };
       const stage = STAGE_ALIASES[stageArg];
       if (!stage) {
         console.error(`❌ Unrecognised --stage ${JSON.stringify(stageArg)}. Legal values: doing, queued, backlog.`);
