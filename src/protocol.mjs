@@ -304,6 +304,9 @@ export function serializeMessage({
   labels = [],
   attachments = [],
   context = null,
+  needs_reply = null,
+  answers_ask = null,
+  asks_reply = null,
   created = new Date().toISOString(),
 }) {
   const recipients = Array.isArray(to) ? to : [to];
@@ -326,8 +329,43 @@ export function serializeMessage({
   if (labels && labels.length) header.labels = labels;
   if (attachments && attachments.length) header.attachments = attachments;
   if (context && typeof context === "object") header.context = context;
+  // `needs_reply` is a FIELD AND NOT A GATE, and the default is the whole design.
+  //
+  // The rule it replaces - "every action-requesting message must say so" - was PROSE IN A
+  // DOCUMENT AN AGENT READS, and it was not enforced anywhere: a message arrived that did not
+  // state what it wanted, got an acknowledgement-only answer, and was caught by a human reading
+  // the mail. This is the same failure six blocked cards wore in a different costume, where a
+  // card waiting on a person looked identical to a card nobody came back to.
+  //
+  // ABSENT MEANS UNKNOWN, WHICH IS THE SAFE DIRECTION. It does not mean false. A sender who
+  // forgets the field is treated as possibly needing a reply, because the failure being prevented
+  // is the silent one - and a field that is only ever set by disciplined senders is a field that
+  // will be absent exactly when it is needed. So the value is written only when a sender states
+  // it, and every consumer must read absent as "may need a reply", never as "does not".
+  if (needs_reply === true || needs_reply === false) header.needs_reply = needs_reply;
+  // The reply's verdict on the ask it answers, and what that ask said. Both are written only when
+  // present, so a plain send carries neither and stays exactly as it was before this field existed.
+  if (answers_ask && typeof answers_ask === "object") header.answers_ask = answers_ask;
+  if (asks_reply === true || asks_reply === false) header.asks_reply = asks_reply;
 
   return `---json\n${JSON.stringify(header, null, 2)}\n---\n${body || ""}\n`;
+}
+
+/**
+ * Read `needs_reply` the only way it may be read.
+ *
+ * Returns true, false, or null for UNKNOWN. There is deliberately no function anywhere that turns
+ * an absent key into a boolean, because that is precisely the bug this replaces: a consumer that
+ * wrote `card.needs_reply || false` would manufacture a "definitely no reply needed" out of a
+ * message that simply never said, and a field that manufactures confident answers from silence is
+ * worse than no field at all.
+ */
+export function readNeedsReply(header) {
+  if (!header || typeof header !== "object") return null;
+  const v = header.needs_reply;
+  if (v === true) return true;
+  if (v === false) return false;
+  return null; // absent, or a value we do not recognise - both are UNKNOWN, not false
 }
 
 /**
@@ -395,7 +433,7 @@ export function ensureAgentMailbox(amqRoot, handle) {
  */
 export function sendMaildirMessage(amqRoot, options = {}) {
   if (!amqRoot) throw new Error("amqRoot is required");
-  const { from, to, subject, body, priority, kind, thread, refs, labels, context, attachments = [] } = options;
+  const { from, to, subject, body, priority, kind, thread, refs, labels, context, needs_reply = null, answers_ask = null, asks_reply = null, attachments = [] } = options;
 
   if (!from) throw new Error("Sender 'from' is required");
   if (!isSafeMailIdentifier(from, 128)) throw new Error("Invalid sender handle");
@@ -434,6 +472,12 @@ export function sendMaildirMessage(amqRoot, options = {}) {
     labels: labels || [],
     attachments: processedAttachments,
     context: context || null,
+    needs_reply,
+    // The reply's own verdict on the ask it is answering. Recorded so an UNANSWERED ask stops
+    // being invisible: today a thread with "ack, looking" in it looks handled, because a reply
+    // exists. The default is unanswered, and only an explicit `answers_ask` says otherwise.
+    answers_ask: answers_ask || null,
+    asks_reply,
     created,
   });
 
@@ -614,7 +658,7 @@ export function findMessageById(amqRoot, msgId) {
  * Reply to an existing message using RFC 5322 In-Reply-To / References chaining.
  */
 export function replyMaildirMessage(amqRoot, options = {}) {
-  const { from, replyToId, body, subject, priority, kind, labels, attachments } = options;
+  const { from, replyToId, body, subject, priority, kind, labels, attachments, needs_reply = null, answersAsk = false } = options;
   if (!replyToId) throw new Error("replyToId is required");
   if (!from) throw new Error("Sender 'from' is required");
 
@@ -649,6 +693,17 @@ export function replyMaildirMessage(amqRoot, options = {}) {
     kind: kind || origHeader.kind || null,
     labels: labels || origHeader.labels || [],
     attachments: attachments || [],
+    // The reply's answer to the ask, recorded mechanically rather than judged.
+    //
+    // An UNANSWERED ask is invisible today: a message asks for something, gets "ack, looking",
+    // and the thread looks handled because a reply exists. So the reply now says whether it
+    // carried an answer, and the default is the honest one - UNANSWERED until something says
+    // otherwise. `--answers` is how a sender declares the reply actually answered; a reply with
+    // a substantive body does not get to assume it did, because "substantive" is a judgement
+    // this code is not in a position to make and guessing it is how the silent case returns.
+    needs_reply: needs_reply === undefined ? null : needs_reply,
+    answers_ask: answersAsk ? { asked: readNeedsReply(origHeader), answered: true } : null,
+    asks_reply: readNeedsReply(origHeader),
   });
 }
 
@@ -737,4 +792,115 @@ export function commitMaildirMessages(amqRoot, handle, waiting, { now = new Date
  */
 export function drainMaildir(amqRoot, handle) {
   return commitMaildirMessages(amqRoot, handle, readMaildirMessages(amqRoot, handle));
+}
+
+/**
+ * Every ask in an agent's mail that has not been answered.
+ *
+ * This is the function that makes `needs_reply` worth having. A field nobody queries is a
+ * convention; a field a tool can ask about is a mechanism, and the difference is the whole
+ * difference between "agents should reply to questions" as prose and as something checkable.
+ *
+ * The rule for what counts as an ask, and it is deliberately WIDE:
+ *
+ *   needs_reply === true     an ask, declared
+ *   needs_reply === null     UNKNOWN, and treated as MAYBE an ask
+ *   needs_reply === false    explicitly not an ask
+ *
+ * Wide, because the failure being prevented is the silent one. A message that never mentioned
+ * needing an answer is exactly the message whose sender forgot the field, so "absent" has to
+ * mean "possibly needs a reply" - the same direction the field's default takes everywhere else.
+ * A narrow reading would make the field a reward for remembering it, which means it would be
+ * absent precisely when it mattered.
+ *
+ * An ask is ANSWERED only by a reply in the same thread that carries an explicit `answers_ask`.
+ * A reply with a body is not enough: "ack, looking" is a body, and treating its existence as an
+ * answer is the exact failure this is here to catch. Deciding whether prose counts as an answer
+ * is a judgement this code is not entitled to make, so the answer has to be declared.
+ *
+ * Returns one entry per unresolved ask, newest last, with enough context to act on it.
+ */
+export function findUnansweredAsks(amqRoot, handle) {
+  const agentDir = resolveAgentDirectory(amqRoot, handle, true);
+  const out = [];
+  const answeredMsgIds = new Set();
+  const all = [];
+
+  const readMailbox = (dir) => {
+    const found = [];
+    // readdirSync + parseMessage, NOT listMaildirMessageFiles/readMaildirMessageFile. Those are
+    // written for the store's on-disk envelope and, against a mailbox written by
+    // sendMaildirMessage, the lister returns a list of ASCII offsets ('80','81',...) rather than
+    // file names - which made this function return [] for a mailbox that demonstrably contained
+    // the message. An empty result from a query over a populated directory is the exact shape of
+    // a false green, so the reader is chosen because it was observed to parse the real bytes.
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return found;
+    }
+    for (const file of names) {
+      const filePath = path.join(dir, file);
+      try {
+        const header = parseMessage(fs.readFileSync(filePath, "utf8")).header;
+        if (header && header.id) found.push({ header, filePath, folder: path.basename(dir) });
+      } catch {
+        continue;
+      }
+    }
+    return found;
+  };
+
+  for (const folder of ["cur", "new"]) {
+    for (const { header, filePath, folder: f } of readMailbox(path.join(agentDir, "inbox", folder))) {
+      all.push({ header, filePath, folder: f });
+    }
+  }
+
+  // THE ANSWER LIVES IN THE ASKER'S MAILBOX, NOT THE ANSWERED ONE. A reply is delivered back to
+  // the sender of the message it answers, so scanning only `handle`'s own inbox can never observe
+  // that its ask was answered - which is what the first version of this function did, and it
+  // reported every declared ask as open forever, including ones answered correctly. An ask
+  // detector that cannot see its own answers is worse than none, because it trains people to
+  // ignore it. So the asks come from this mailbox and the DECLARED answers are collected from
+  // every mailbox, keyed by the refs the answer carries.
+  let agentsDir;
+  try {
+    agentsDir = fs.readdirSync(path.join(amqRoot, "agents"));
+  } catch {
+    agentsDir = [];
+  }
+  for (const other of agentsDir) {
+    for (const folder of ["cur", "new"]) {
+      for (const { header } of readMailbox(path.join(amqRoot, "agents", other, "inbox", folder))) {
+        if (header.answers_ask?.answered !== true) continue;
+        for (const ref of Array.isArray(header.refs) ? header.refs : []) answeredMsgIds.add(ref);
+      }
+    }
+  }
+
+  for (const { header, filePath, folder } of all) {
+    if (readNeedsReply(header) === false) continue;
+    if (answeredMsgIds.has(header.id)) continue;
+    // A reply is not itself an ask unless it says so; otherwise every thread self-perpetuates.
+    if (Array.isArray(header.refs) && header.refs.length) {
+      if (header.needs_reply === true) { /* an explicit ask is still an ask even in a thread */ }
+      else continue;
+    }    out.push({
+      id: header.id,
+      from: header.from,
+      subject: header.subject,
+      thread: header.thread,
+      created: header.created,
+      // The distinction the whole card turns on, surfaced rather than flattened.
+      needs_reply: readNeedsReply(header),
+      declared: readNeedsReply(header) === true,
+      file: filePath,
+      folder,
+    });
+  }
+
+  out.sort((a, b) => String(a.created).localeCompare(String(b.created)));
+  return out;
 }
