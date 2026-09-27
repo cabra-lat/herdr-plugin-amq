@@ -1135,6 +1135,24 @@ export function buildCoordinatorMetrics({
 export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...options } = {}) {
   const { board = { columns: {} }, now = Date.now() } = options;
   const activeCards = activeBoardTasks(board, { stallEligible: true });
+  // WORK-AGE NOW COVERS THE WHOLE BOARD, NOT THE STALL-ELIGIBLE SUBSET.
+  //
+  // It did not always, and the exclusion was NOT a scope anyone chose: the loop below sat on
+  // `activeCards`, which is `activeBoardTasks(board, { stallEligible: true })`, so work-age
+  // consumed the stall map by accident of construction - the second clock bolted onto the same
+  // array. Nothing in the payload key or the alert text said "active only", and a deliberate
+  // scope is one a reader could discover from the artifact. Coordinator's test, and it is the
+  // right one.
+  //
+  // THE COST OF WIDENING `activeCards` IN PLACE WOULD HAVE BEEN NINE SIGNALS. Inside
+  // buildCoordinatorMetrics that one array feeds blocked_oldest, backlog_idle, stalled_work,
+  // queue_age, blocked_cards, blocked_age, person_queued_oldest, stale_heartbeat and
+  // retry_failure_trend - and stalled_work is defined AFTER the array is built, in the same
+  // function. Widening it would have silently widened the STALL ALERT, which is a different
+  // product entirely. So this is a SIBLING loop over the board's full task set and
+  // `activeBoardTasks` is left exactly as it was: the scope is now a decision, recorded here,
+  // instead of an accident of which array the code happened to sit on.
+  const allBoardTasks = Object.values(board.columns || {}).flat().filter(Boolean);
   // This module's own repository is always in scope, and a caller-supplied list is additive
   // rather than authoritative - so a caller that names only the game repo still gets plugin
   // citations dated, which is the defect this fixes. A caller CAN still narrow it by passing
@@ -1143,7 +1161,7 @@ export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...option
   const { used, skipped } = partitionRepos(requested);
   const resolveDate = makeGitDateResolver({ repos: used });
   const workAgeById = new Map();
-  await Promise.all(activeCards.map(async (task) => {
+  await Promise.all(allBoardTasks.map(async (task) => {
     try {
       const work = await buildWorkAge(task, now, { resolveDate });
       // The second clock. Both are read here so the pair can be labelled in one place
@@ -1164,10 +1182,21 @@ export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...option
     }
   }));
   const metrics = buildCoordinatorMetrics({ ...options, workAgeById });
-  // The limitation travels WITH THE METRICS. Every work-age figure above is "as of these
-  // repositories", and a reader told only the number cannot know whether an undated citation is
-  // undated because the commit is unknown or because the repository was never on the list. Five
-  // cards' plugin evidence read UNDATED for the second reason, invisibly.
+  // The limitation travels WITH THE METRICS, AND SO DOES THE SCOPE.
+  //
+  // Every work-age figure above is "as of these repositories", and a reader told only the number
+  // cannot know whether an undated citation is undated because the commit is unknown or because
+  // the repository was never on the list. Five cards' plugin evidence read UNDATED for the
+  // second reason, invisibly.
+  //
+  // The scope note is here for the opposite reason: now that work-age covers DONE cards a reader
+  // could reasonably assume it covers EVERYTHING, and the remaining boundary is the per-card
+  // catch below - a card whose resolution throws is recorded as an explicit null rather than
+  // being silently absent, because "absent" and "failed" need different responses.
+  metrics.workAgeScope = {
+    cards: allBoardTasks.length,
+    note: "Work-age covers EVERY card on the board, including done ones. It is no longer limited to the stall-eligible set; that was an accident of which array the loop sat on, not a chosen scope. A card whose evidence cannot be resolved is recorded as an explicit null entry rather than omitted, so absence and failure stay distinguishable.",
+  };
   metrics.workAgeRepos = {
     used,
     skipped,

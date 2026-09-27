@@ -184,9 +184,20 @@ test("the async wrapper resolves dates and covers exactly the active cards", asy
     thresholds: { stalledWorkMs: 5 * 60 * 1000 },
     repos: [],
   });
-  // Active scope is backlog/doing/review: the blocked card is not covered, because the
-  // state and queue signals do not cover it either.
-  assert.deepEqual([...workAgeById.keys()].sort(), ["b1", "d1"]);
+  // THE SCOPE IS NOW THE WHOLE BOARD, and this assertion used to encode the opposite.
+  //
+  // It said: "Active scope is backlog/doing/review: the blocked card is not covered, because
+  // the state and queue signals do not cover it either." That was not a scope - it was
+  // work-age's coverage justified by ANOTHER SIGNAL'S coverage. Which is exactly how the
+  // exclusion happened: the loop sat on `activeCards`, so it inherited whatever that array
+  // happened to contain, and a test then described the accident as the design. A test that
+  // pins an inherited scope makes the inheritance look deliberate forever.
+  //
+  // Coordinator's test for deliberateness is the one worth keeping: A DELIBERATE SCOPE IS ONE A
+  // READER COULD DISCOVER FROM THE ARTIFACT. Nothing in the payload said "active only". The
+  // blocked card is now covered, and the separate test/work-age-full-board.test.mjs proves that
+  // widening this did NOT widen the stall alert, which is what the old coupling was protecting.
+  assert.deepEqual([...workAgeById.keys()].sort(), ["b1", "d1", "x1"]);
   assert.equal(workAgeById.get("b1").state, "undated", "no repo configured, so nothing can be dated");
   assert.equal(workAgeById.get("d1").state, "no-claims");
   assert.equal(metrics.workAge.reportOnly, true);
