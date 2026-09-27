@@ -36,9 +36,13 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wacache-"));
 
 // A child process: resolves against REPO, in a FRESH module registry with a FRESH state dir.
 const child = `
-  import { makeGitDateResolver } from ${JSON.stringify(path.join(REPO, "src", "work-age.mjs"))};
+  import { makeGitDateResolver, flushPersistentDates } from ${JSON.stringify(path.join(REPO, "src", "work-age.mjs"))};
   const r = makeGitDateResolver({ repos: [${JSON.stringify(REPO)}] });
   const out = await r([${JSON.stringify(SHORT)}]);
+  // The write happens at the BUILD BOUNDARY, not inside the resolver: the resolver runs once per
+  // card, so persisting there made the cost a function of the caller's shape. This is the same
+  // flush buildCoordinatorMetrics calls after its loop, so the child runs the real sequence.
+  await flushPersistentDates();
   process.stdout.write(JSON.stringify({ hit: out.has(${JSON.stringify(SHORT)}), date: out.get(${JSON.stringify(SHORT)}) || null }));
 `;
 function runChild(tag) {

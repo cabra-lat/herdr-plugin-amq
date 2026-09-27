@@ -1,11 +1,17 @@
+// ISOLATED STATE DIR, set before the module under test loads - see the note in the sibling
+// file. The persisted date cache is process-independent by design, so without this a
+// negative assertion can be answered by a positive some earlier test wrote to disk.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { buildCoordinatorMetricsWithWorkAge } from "../src/metrics.mjs";
 import { makeGitDateResolver, __resetWorkAgeCache } from "../src/work-age.mjs";
+
+process.env.HERDR_PLUGIN_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-"));
 
 /**
  * A CITATION IN EITHER REPOSITORY MUST DATE, AND A TOKEN IN NEITHER MUST NOT.

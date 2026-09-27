@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildWorkAge, makeGitDateResolver, classifyTwoClocks } from "./work-age.mjs";
+import { buildWorkAge, makeGitDateResolver, classifyTwoClocks , flushPersistentDates } from "./work-age.mjs";
 
 // WHERE THIS CODE LIVES IS A REPOSITORY TOO.
 //
@@ -1181,6 +1181,8 @@ export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...option
       workAgeById.set(task.id, null);
     }
   }));
+  // ONCE per build, after the loop - see flushPersistentDates for why it is not in the resolver.
+  await flushPersistentDates();
   const metrics = buildCoordinatorMetrics({ ...options, workAgeById });
   // The limitation travels WITH THE METRICS, AND SO DOES THE SCOPE.
   //

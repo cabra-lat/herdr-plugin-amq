@@ -230,7 +230,15 @@ async function loadPersistentDates() {
   } catch { return {}; }   // absent or unreadable is the normal first-run case, not an error
 }
 
+let lastPersistedCount = -1;
 async function savePersistentDates() {
+  // WRITE ONLY WHEN SOMETHING NEW WAS LEARNED. The resolver is invoked ONCE PER CARD, so
+  // 457 calls per build; persisting unconditionally meant 457 JSON.stringify + write + rename
+  // cycles per build, and it cost ~480ms of the ~3s build - I shipped a performance fix that was
+  // itself the largest single regression of the evening. The cache is only ever ADDITIVE inside a
+  // build, so size is sufficient to detect change and a build that learns nothing writes nothing.
+  if (dateCache.size === lastPersistedCount) return;
+  lastPersistedCount = dateCache.size;
   // DECLARED, NOT ASSIGNED. My first version wrote
   //   [{ writeFileSync, ... }, path] = await Promise.all([...])
   // which is a destructuring ASSIGNMENT with no declaration, so the names must already exist.
@@ -259,6 +267,20 @@ async function savePersistentDates() {
     if (process.env.HERDR_PLUGIN_DEBUG_CACHE) console.error(`[work-age] date cache not written: ${err.message}`);
   }
 }
+
+/**
+ * Persist the positives ONCE, at the end of a build.
+ *
+ * This was originally called from INSIDE the resolver, which is invoked once per card - 457
+ * calls per build on the live board. Persisting there cost roughly 480ms per build. Guarding it
+ * with "did the cache grow" helped only a little, because the cache DOES grow during a build,
+ * one newly resolved SHA at a time, so it still wrote ~249 times.
+ *
+ * The write belongs at the boundary where the work ends, not inside the unit of work: a caller
+ * that resolves once and a caller that resolves per card must cost the SAME to persist, or the
+ * persistence is a function of the caller's shape rather than of what was learned.
+ */
+export async function flushPersistentDates() { await savePersistentDates(); }
 
 const missKey = (repos, sha) => `${repos.map((r) => String(r)).sort().join("|")}\n${sha}`;
 
@@ -340,10 +362,6 @@ export function makeGitDateResolver({ repos = [] } = {}) {
       const hit = dateCache.get(sha);
       if (hit) out.set(sha, hit);
     }
-    // PERSIST AFTER RESOLVING, not before, so a build that learned nothing writes nothing.
-    // This is the whole point of the file: the daemon restarts every couple of minutes, so the
-    // cold cost is what is actually paid, over and over.
-    await savePersistentDates();
     return out;
   };
 }
