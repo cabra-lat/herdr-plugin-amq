@@ -944,6 +944,44 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     };
   }
 
+  // AN EDGE MUST POINT AT WORK THAT IS NOT ALREADY FINISHED.
+  //
+  // A block is a claim about what a card is waiting for, and the edge is the claim - the prose
+  // reason is narration, never the claim. So when a caller authors an edge, the target's actual
+  // status has to agree that there is something left to wait for. Coordinator adopted this after
+  // the fourth occurrence of the same failure, phrased as: resolve the target and read its status
+  // in the same command, because a plausible-looking id is not a status.
+  //
+  // IT WAS A MIS-ENCODED EDGE, NOT A MISSING AUTO-RELEASE. No policy released coordinator's false
+  // block; they wrote an edge pointing at an already-done card, from an id they remembered
+  // instead of read, and the board honoured it because no guard existed. An auto-release would
+  // not have fixed that - it would have ACTED on the mis-encoding, which is strictly worse: the
+  // bad edge stays invisible until something silently opens a card someone is still waiting on.
+  // Refusing a bad edge is loud and costs a retry; releasing on a good-looking edge is silent
+  // and costs a wait. That asymmetry is the whole ruling.
+  //
+  // This is a DIFFERENT guard from the done-card one. That refuses a CLAIM against a finished
+  // card; this refuses an EDGE to one. Neither substitutes for the other.
+  if (Array.isArray(updates.depends_on) && updates.depends_on.length) {
+    const finished = [];
+    const unknown = [];
+    for (const dep of updates.depends_on) {
+      const depId = typeof dep === "string" ? dep : dep?.id;
+      if (!depId || depId === taskId) continue;
+      const target = getBoardTask(repoRoot, amqRoot, depId);
+      if (!target) { unknown.push(depId); continue; }
+      if (target.task.status === "done") finished.push(depId);
+    }
+    if (finished.length) {
+      return {
+        ok: false,
+        error: `Edge points at already-completed card(s): ${finished.join(", ")}. ` +
+          "A dependency is a claim that there is work left to wait for; this one has none. " +
+          "Re-point the edge at the real blocker, or drop it and say so in the reason.",
+      };
+    }
+  }
+
   // REJECT WHAT WE CANNOT HONOUR, BY NAME.
   //
   // A write that reports ok:true and quietly does nothing is worse than one that fails:
@@ -1222,6 +1260,23 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
         notifyTaskEvent(amqRoot, "done", updatedTask, { from: sender, actor: actor || null, proof: updatedTask.proof || updates.description });
       }
     } catch {}
+  }
+
+  // An edge to an id that does not resolve is NOT refused - a legitimate workflow creates a
+  // dependency on a card that does not exist yet, and refusing that would break ordering rather
+  // than catch a mistake. But it is REPORTED rather than silent, because the most likely cause of
+  // an unresolvable id is exactly coordinator's: an id remembered instead of read. A warning nobody
+  // receives is the same as no warning, and the point of the ruling is that the bad edge should be
+  // visible rather than acted upon.
+  if (Array.isArray(updates.depends_on)) {
+    const unresolved = updates.depends_on
+      .map((d) => (typeof d === "string" ? d : d?.id))
+      .filter((id) => id && id !== taskId && !getBoardTask(repoRoot, amqRoot, id));
+    if (unresolved.length) {
+      console.warn(`⚠️  edge target(s) not found on the board: ${unresolved.join(", ")} — ` +
+        "written anyway, because a dependency may legitimately precede its target. " +
+        "If the id was remembered rather than read, that is the false-block signature.");
+    }
   }
 
   return { ok: true, taskId, updates, task: updatedTask };
