@@ -250,8 +250,30 @@ test("a heartbeat by a non-owner is recorded as such", async () => {
     // conflating them was the loop.
     assert.equal(result.stalledWork.length, 1);
     const lease = result.livenessLease.find((entry) => entry.id === byOther.task.id);
-    assert.equal(lease.state, "live", "a fresh attributed heartbeat is a fresh lease");
-    assert.equal(lease.by, "coordinator");
+    // RETARGETED 2026-09-27, and the reason is worth recording because this arm used to
+    // assert the opposite. The beat here is by `coordinator` on a card OWNED by `worker`,
+    // and it asserted `state === "live"` -- i.e. that someone else's beat makes the owner's
+    // lease fresh. That IS the defect coordinator routed on 2026-09-27: a lease is the
+    // OWNER's, and reading another lane's ping as the owner's presence is how a dead lane
+    // reads healthy. The arm's actual purpose is unchanged and still asserted below -- the
+    // beat is RECORDED with its author and flagged as a non-owner's -- so this weakens
+    // nothing; it stops the arm from pinning the bug it was named after.
+    assert.equal(lease.by, "coordinator", "the record keeps WHO beat, so a reader can discount it");
+    assert.equal(lease.byIsOwner, false, "and says plainly that the beat is not the owner's");
+    assert.notEqual(lease.state, "live", "a NON-OWNER's fresh beat is not a fresh owner lease");
+    // The property this arm was really covering -- a fresh LEASE does not move the card --
+    // is kept, on the only fixture that can produce it: the OWNER's own beat.
+    const byOwner = { ...byOther.task, last_heartbeat_at: "2026-09-24T10:10:00.000Z", last_heartbeat_by: "worker" };
+    const ownerBeat = buildCoordinatorMetrics({
+      handles: ["coordinator", "worker"],
+      agentStatuses: { coordinator: "idle", worker: "idle" },
+      board: { columns: { backlog: [], in_progress: [byOwner], blocked: [], done: [] } },
+      now: new Date("2026-09-24T10:12:00.000Z"),
+      thresholds: { stalledWorkMs: 5 * 60 * 1000 },
+    });
+    const ownerLease = ownerBeat.livenessLease.find((entry) => entry.id === byOwner.id);
+    assert.equal(ownerLease.state, "live", "the OWNER's fresh beat is a fresh lease");
+    assert.equal(ownerBeat.stalledWork.length, 1, "and it still does not move the card -- lease is not progress");
 
     const stale = { ...byOther.task, last_heartbeat_at: "2026-09-24T10:00:30.000Z" };
     const stalled = buildCoordinatorMetrics({

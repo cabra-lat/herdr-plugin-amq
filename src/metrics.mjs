@@ -261,26 +261,49 @@ function cardLivenessState(task, now, stalledWorkMs) {
   const heartbeatAt = timestamp(task?.last_heartbeat_at ?? task?.heartbeatAt ?? task?.lastHeartbeat);
   const updatedAt = timestamp(task?.updated);
   const createdAt = timestamp(task?.created);
-  const via = heartbeatAt === null ? "activity" : "heartbeat";
-  const at = heartbeatAt === null
+  const owner = task?.owner || null;
+  const beatBy = task?.last_heartbeat_by || null;
+  // A heartbeat is a LEASE, and a lease is a claim about the OWNER's presence. A beat from
+  // anyone else is a fact about THEM -- the coordinator pinging a lane it does not own, a
+  // peer checking in -- and reading it as the owner's liveness is how a dead lane looks
+  // healthy: the lease is renewed by someone who cannot move the card, and the one case
+  // this instrument exists for becomes indistinguishable from health. Two live instances
+  // on 2026-09-27: 811261 (range beating player-rig's card) and ea055c (the coordinator
+  // beating agsuite-dev's). The beat is still RECORDED and still reported in `by`; only
+  // its use as the owner's liveness evidence goes, because the record is the product and
+  // this was the bug.
+  // Tri-state, and the third state is load-bearing. A card with NO owner cannot be
+  // heartbeated by a non-owner, so its beat is not demoted -- demoting it would change
+  // behaviour for every legacy ownerless card, which is a different change from the one
+  // being made here and would have broken seven existing tests that are correct. Only a
+  // card that NAMES an owner and was beaten by somebody else is cross-lane.
+  //   null  -> no owner recorded: the author cannot be the wrong one, keep the old reading
+  //   true  -> the owner beat it: a lease
+  //   false -> an owner is recorded and somebody else beat it: not a lease
+  const byIsOwner = beatBy === null ? null : (owner === null ? null : beatBy === owner);
+  // A beat naming NOBODY is left exactly as it was: unattributed, therefore UNKNOWN.
+  // Only a beat that names the WRONG person changes behaviour here.
+  const ownerBeatAt = byIsOwner === false ? null : heartbeatAt;
+  const via = heartbeatAt === null ? "activity" : (byIsOwner === false ? "non-owner-heartbeat" : "heartbeat");
+  const at = ownerBeatAt === null
     ? (updatedAt === null ? createdAt : Math.max(updatedAt ?? -Infinity, createdAt ?? -Infinity))
-    : heartbeatAt;
+    : ownerBeatAt;
   if (at === null || !Number.isFinite(at)) {
-    return { state: LIVENESS_STATES.UNKNOWN, via, at: null, ageMs: null, by: null };
+    return { state: LIVENESS_STATES.UNKNOWN, via, at: null, ageMs: null, by: beatBy, byIsOwner };
   }
   const ageMs = Math.max(0, now - at);
-  const by = task?.last_heartbeat_by || null;
   // Only a clock that names nobody is unattributable. A card with no heartbeat at
   // all falls back to its own state clock, which no one has fabricated an author for.
-  if (via === "heartbeat" && !by) {
-    return { state: LIVENESS_STATES.UNKNOWN, via, at, ageMs, by: null };
+  if (via === "heartbeat" && !beatBy) {
+    return { state: LIVENESS_STATES.UNKNOWN, via, at, ageMs, by: null, byIsOwner: false };
   }
   return {
     state: ageMs > stalledWorkMs ? LIVENESS_STATES.STALE : LIVENESS_STATES.LIVE,
     via,
     at,
     ageMs,
-    by,
+    by: beatBy,
+    byIsOwner,
   };
 }
 
@@ -557,22 +580,45 @@ export function buildCoordinatorMetrics({
     if (task.status !== "in_progress" && task.stage !== "in_progress") continue;
     const owner = task.owner || null;
     if (!owner) continue;
-    const beat = timestamp(task.last_heartbeat_at);
-    if (beat === null) continue;                       // never heartbeated: a different question
-    const leaseAgeMs = Math.max(0, now - beat);
-    if (leaseAgeMs <= limits.ownerLeaseMs) continue;
+    const anyBeatAt = timestamp(task.last_heartbeat_at);
+    if (anyBeatAt === null) continue;                       // never heartbeated: a different question
+    // THE LEASE IS THE OWNER'S. A beat from anyone else is kept, and it is precisely the
+    // evidence that the OWNER is not beating: the card sits in_progress, someone who cannot
+    // move it keeps pinging, and the lease the owner is not renewing is the thing to report.
+    // Before this, a cross-lane beat aged the lease to zero and the card left this list
+    // ENTIRELY -- not "looked healthy", absent -- so the genuinely dead lane the alert
+    // exists for produced no row at all.
+    const leaseBeatBy = task.last_heartbeat_by || null;
+    // CROSS-LANE is the only thing that changes behaviour, and it is the one thing we can
+    // actually know. A beat by somebody who is not the owner is positive evidence that the
+    // owner is NOT renewing, so the lease is reported however recent the ping is. A beat by
+    // the owner, and a beat that names nobody, are both aged normally: for the second we
+    // cannot prove it is cross-lane, and guessing either way would be worse than ageing it.
+    // That split is load-bearing rather than tidier: a FRESH unattributed beat must stay
+    // silent and an OLD one must still be reported, and only ageing it gives both.
+    const leaseCrossLane = Boolean(leaseBeatBy && leaseBeatBy !== owner);
+    // No owner-attributed beat means there is no owner beat to age. That is reported as
+    // null rather than as a number, because a fabricated age is a confident statement
+    // about a clock that does not exist.
+    const leaseAgeMs = leaseCrossLane ? null : Math.max(0, now - anyBeatAt);
+    if (!leaseCrossLane && leaseAgeMs <= limits.ownerLeaseMs) continue;
     lapsedLeases.push({
       id: task.id,
       owner,
       title: task.title || "",
       leaseAgeMs,
+      leaseHeartbeatBy: leaseBeatBy,
+      leaseCrossLane,
       // QUOTED IN THE PROMPT. This is the whole mechanism: the agent reads what it owes instead
       // of reconstructing a conversation it no longer has. Null is reported as null and NEVER
       // invented - a fabricated resume line is a confident instruction to do the wrong work,
       // which is strictly worse than admitting the card does not say.
       resumeLine: task.resume_line || null,
       leaseEpoch: task.lease_epoch ?? null,
-      reassignmentSuggested: leaseAgeMs > limits.ownerLeaseReassignMs,
+      // A lease no owner has ever renewed is not "young", so it must not read as though it
+      // were inside the reassignment window either. `null > n` is false, which would quietly
+      // downgrade the strongest signal in this block, so it is stated rather than derived.
+      reassignmentSuggested: leaseCrossLane ? true : leaseAgeMs > limits.ownerLeaseReassignMs,
     });
   }
 
@@ -591,6 +637,7 @@ export function buildCoordinatorMetrics({
       state: liveness.state,
       via: liveness.via,
       by: liveness.by,
+      byIsOwner: liveness.byIsOwner ?? null,
       lastActivityAt: liveness.at === null ? null : new Date(liveness.at).toISOString(),
     });
     if (projected.kind === "unknown") {
