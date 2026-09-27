@@ -890,6 +890,12 @@ export function buildCoordinatorMetrics({
       severity: "warning",
       message: `${cardsByStage.backlog} backlog card(s) are waiting while no agent is working.`,
       recommendedAction: "Assign or claim a ready backlog card; escalate only if product intent is ambiguous.",
+      // The SAME missing key as retry_failure_trend, found by that card's own red arm rather than
+      // reported: with no fingerprint, coordinatorAlertKey returns a bare id and
+      // isCoordinatorAlertPending falls through to the cooldown, so this re-announced itself every
+      // cooldown expiry for as long as the condition held. A condition that persists is the case a
+      // condition key exists for.
+      fingerprint: conditionFingerprint({ id: "backlog_idle", severity: "warning", backlog: cardsByStage.backlog }),
     });
   }
   if (stalledCards.length > 0) {
@@ -1040,6 +1046,45 @@ export function buildCoordinatorMetrics({
       severity: retryCount >= limits.retryCriticalCount || retryDelayMaxMs > limits.retryDelayWarnMs ? "critical" : "warning",
       message: `Observed ${retryCount} doorbell retry/retries across ${retriedItemCount} item(s) retried in the last ${Math.round(retryWindowMs / 1000)}s, and ${retryDelayMaxMs}ms maximum retried-delivery age.`,
       recommendedAction: "Review the affected delivery evidence before creating a bounded retry.",
+      // THIS ALERT HAD NO FINGERPRINT, and that is the whole defect.
+      //
+      // coordinatorAlertKey (bridge.mjs:680) is `id:fingerprint` when a fingerprint exists and a
+      // BARE id when it does not, and isCoordinatorAlertPending then falls through to a COOLDOWN
+      // check. So an unchanged condition re-announced itself every time the cooldown expired. The
+      // observed sequence was 7/6 then the same 7/6 with only the age moved, then 1/1, then the
+      // same 1/1 with only the age moved - one real transition and three re-announcements.
+      //
+      // Worth being precise about the cause, because the two obvious guesses are both wrong in
+      // different ways. The age was never hashed, because there was no hash. Nothing was being
+      // "recomputed and re-hashed with the age included" - there was no re-hashing at all, and the
+      // age in the message is display only. The fault is the ABSENCE of a condition key.
+      //
+      // The key covers the CONDITION - severity, the counts, and the identity of the retried
+      // items - and deliberately EXCLUDES retryDelayMaxMs. Including it would re-announce on age
+      // growth, which is the reported bug. Excluding it entirely would swallow a real escalation,
+      // because the alert also fires on retryDelayMaxMs alone: a card that keeps getting older
+      // with no new retries goes warning -> critical. Severity is in the key for exactly that
+      // reason, the same shape the sibling alerts use. Unchanged condition plus unchanged severity
+      // is now silent; a genuine escalation still announces.
+      fingerprint: conditionFingerprint({
+        id: "retry_failure_trend",
+        severity: retryCount >= limits.retryCriticalCount || retryDelayMaxMs > limits.retryDelayWarnMs ? "critical" : "warning",
+        retryCount,
+        retriedItemCount,
+        // WHICH incidents, sorted - not the computed age, and not the last-attempt time.
+        //
+        // `retriedItems` is a NUMBER (retryEntries.length), not a list; my first version called
+        // .map on it and threw on every build, which is why no arm of this test ever ran green.
+        // The delivery entries carry no stable id of their own - they are Object.values of a map
+        // keyed by message id - so the honest identity available here is each incident FIRST
+        // attempt. That value is FIXED for as long as the incident is the same incident, which is
+        // the property the whole fix depends on: the derived age grows every pass, this does not.
+        // Sorting keeps a set that arrives in a different order from reading as a new condition.
+        incidents: retriedRecently
+          .map((entry) => entry?.firstAttemptAt || entry?.firstDeliveredAt || null)
+          .filter(Boolean)
+          .sort(),
+      }),
       retryWindowMs,
       retriedItems,
       retryCount,

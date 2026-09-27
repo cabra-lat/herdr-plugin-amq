@@ -115,7 +115,15 @@ test("coordinator metrics doorbell prompts an idle coordinator once per cooldown
   }
 });
 
-test("non-fingerprinted alerts use cooldown and can recur", () => {
+// RETARGETED, not deleted. This test used to assert that `backlog_idle` re-announced itself once
+// its cooldown expired, on a condition that had not changed. That was pinning the DEFECT as the
+// invariant: the card task_1790523985916_487b69 was filed because an alert fired three times on an
+// unchanged condition, and this test is why the absence of a condition key survived - it named the
+// cooldown fallback as the expected mechanism for a condition that is still exactly true.
+// `backlog_idle` now carries a condition fingerprint, so the same unchanged condition is silent
+// and the old rationale ("legacy id:null state must not suppress forever") is still served by the
+// arm below, which uses a genuinely fingerprint-less alert.
+test("a fingerprinted alert does NOT re-announce an unchanged condition once its cooldown expires", () => {
   const { root, amqRoot } = makeFixture();
   try {
     assert.ok(addBoardTask(root, amqRoot, {
@@ -138,11 +146,54 @@ test("non-fingerprinted alerts use cooldown and can recur", () => {
     };
     assert.equal(runDoorbellPass(options).coordinatorDoorbell.alert, "backlog_idle");
     assert.equal(runDoorbellPass(options).coordinatorDoorbell.prompted, false);
-    const alertKey = Object.keys(state.coordinatorAlerts).find((key) => key === "backlog_idle");
+
+    // The key must be `id:fingerprint` now, not a bare id.
+    const alertKey = Object.keys(state.coordinatorAlerts).find((key) => key.startsWith("backlog_idle:"));
+    assert.ok(alertKey, "the alert must be keyed by id:fingerprint, not a bare id");
+
+    // Age the record out of cooldown. The condition is identical - same board, same counts - so
+    // this must stay SILENT. Under the old behavior this line produced a second prompt, and that
+    // second prompt is precisely what the coordinator has now answered three times.
     state.coordinatorAlerts[alertKey].at = "2000-01-01T00:00:00.000Z";
-    assert.equal(runDoorbellPass(options).coordinatorDoorbell.prompted, true);
-    assert.equal(prompts.length, 2);
-    assert.equal(prompts[1].text.includes("backlog_idle"), true);
+    assert.equal(runDoorbellPass(options).coordinatorDoorbell.prompted, false,
+      "an unchanged condition must not re-announce just because its cooldown expired");
+    assert.equal(prompts.length, 1, "exactly one prompt for one condition");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a genuinely fingerprint-less alert still falls back to cooldown and can recur", () => {
+  // The old rationale, preserved and still load-bearing: isCoordinatorAlertPending keeps a bare
+  // id on a cooldown path precisely so an alert that can never produce a fingerprint cannot be
+  // suppressed forever. Fingerprinting the two alerts that were missing one must not have removed
+  // that safety net for alerts that legitimately have no condition to hash.
+  const { root, amqRoot } = makeFixture();
+  try {
+    assert.ok(addBoardTask(root, amqRoot, {
+      title: "Ready work",
+      owner: "worker",
+      description: "Waiting for an idle coordinator to assign it.",
+      notify: false,
+    }).ok);
+    const prompts = [];
+    const state = { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {} };
+    const options = {
+      amqRoot,
+      handles: ["coordinator"],
+      state,
+      getStatus: () => "idle",
+      prompt: (handle, text) => { prompts.push({ handle, text }); return true; },
+      allowPrompt: true,
+      persistState: true,
+      coordinatorDoorbell: { enabled: true, cooldownMs: 60000 },
+    };
+    // Seed the fallback path directly: a bare `some_legacy_alert` key with no fingerprint suffix.
+    state.coordinatorAlerts.some_legacy_alert = { at: "2000-01-01T00:00:00.000Z" };
+    runDoorbellPass(options);
+    const stillThere = state.coordinatorAlerts.some_legacy_alert !== undefined;
+    assert.equal(stillThere, true,
+      "a bare-id legacy key must survive a pass rather than being pruned - that is the anti-amnesty guarantee");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
