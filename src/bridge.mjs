@@ -287,7 +287,13 @@ export function sanitizeDeliveredState(value) {
   const delivered = {};
   const deliveredTasks = {};
   const coordinatorAlerts = {};
-  if (!value || typeof value !== "object") return { delivered, deliveredTasks, coordinatorAlerts, recoveryRequired: true };
+  // THE OWNER-LEASE MAP IS PART OF THE STATE. It was written to disk by saveDeliveredState and
+  // then thrown away here, so every pass loaded an empty map, the "already armed, stay quiet"
+  // guard could never fire, and each owner was re-prompted on every pass. player-rig was
+  // doorbelled roughly every 21 seconds off two cards. The guard was correct; nothing ever
+  // reached it. A state file that is written but not read is a latch that does not latch.
+  const ownerLeasePrompts = {};
+  if (!value || typeof value !== "object") return { delivered, deliveredTasks, coordinatorAlerts, ownerLeasePrompts, recoveryRequired: true };
 
   for (const [id, entry] of Object.entries(value.delivered || {})) {
     if (!isSafeMailIdentifier(id) || !entry || typeof entry !== "object") continue;
@@ -330,7 +336,21 @@ export function sanitizeDeliveredState(value) {
     };
   }
 
-  return { delivered, deliveredTasks, coordinatorAlerts, recoveryRequired: false };
+  // Owner-lease prompts are keyed `cardId@leaseEpoch`, so the key is a composite, not a bare
+  // mail identifier. It is validated by shape instead: no control characters and bounded length,
+  // because it is written straight into a state file that another process reads back.
+  for (const [id, entry] of Object.entries(value.ownerLeasePrompts || {})) {
+    if (typeof id !== "string" || id.length > 256 || /[\r\n\0]/.test(id)) continue;
+    if (!entry || typeof entry !== "object" || typeof entry.at !== "string") continue;
+    ownerLeasePrompts[id] = {
+      at: entry.at,
+      owner: isSafeMailIdentifier(entry.owner, 128) ? entry.owner : "unknown",
+      leaseEpoch: Number.isFinite(entry.leaseEpoch) ? entry.leaseEpoch : null,
+      reassignmentSuggested: Boolean(entry.reassignmentSuggested),
+    };
+  }
+
+  return { delivered, deliveredTasks, coordinatorAlerts, ownerLeasePrompts, recoveryRequired: false };
 }
 
 function coordinatorFingerprintFromKey(id, entry) {
@@ -345,7 +365,7 @@ function loadDeliveredState() {
   const stateFile = getStateFile();
   try {
     const content = readMaildirMessageFile(stateFile, 2 * 1024 * 1024);
-    if (content === null) return { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {}, recoveryRequired: true };
+    if (content === null) return { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {}, ownerLeasePrompts: {}, recoveryRequired: true };
     const raw = JSON.parse(content);
     const sanitized = sanitizeDeliveredState(raw);
     const needsFingerprintMigration = Object.entries(raw.coordinatorAlerts || {}).some(([id, entry]) => {
@@ -355,7 +375,7 @@ function loadDeliveredState() {
     if (!sanitized.recoveryRequired && needsFingerprintMigration) saveDeliveredState(sanitized);
     return sanitized;
   } catch {
-    return { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {}, recoveryRequired: true };
+    return { delivered: {}, deliveredTasks: {}, coordinatorAlerts: {}, ownerLeasePrompts: {}, recoveryRequired: true };
   }
 }
 
