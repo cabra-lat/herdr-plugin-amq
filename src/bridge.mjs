@@ -854,8 +854,17 @@ export function runDoorbellPass({
 
   let coordinatorDoorbellResult = { attempted: false, prompted: false, alert: null, fingerprint: null };
   const alerts = coordinatorMetrics.alerts || [];
+  // `person_queued_oldest` is in this list because of HOW IT WAS FOUND: the bridge selects a
+  // single alert from a hardcoded id set, so an alert id that is not in it is invisible to the
+  // human-facing view no matter how good its message is. Mine was `warning` by design - a person
+  // waiting must never page - which also meant it could never win the `severity === "critical"`
+  // find above, so it was technically delivered and practically unseen. That is the same class as
+  // a claim in the artifact about what the artifact does, one layer up: a signal in the payload
+  // that nobody is shown. It is a doorbell CANDIDATE, not a page: the coordinator is prompted to
+  // look, and the prompt is what a ranked "oldest decision" is for.
+  const DOORBELL_ALERT_IDS = ["backlog_idle", "retry_failure_trend", "blocked_cards", "blocked_age", "person_queued_oldest"];
   const coordinatorAlert = alerts.find((alert) => alert.severity === "critical")
-    || alerts.find((alert) => ["backlog_idle", "retry_failure_trend", "blocked_cards", "blocked_age"].includes(alert.id));
+    || alerts.find((alert) => DOORBELL_ALERT_IDS.includes(alert.id));
   const coordinatorHandle = "coordinator";
   const coordinatorStatus = statusByHandle[coordinatorHandle] || (validHandles.includes(coordinatorHandle) ? getStatus(coordinatorHandle) : "missing");
   const alertKey = coordinatorAlert ? coordinatorAlertKey(coordinatorAlert) : null;

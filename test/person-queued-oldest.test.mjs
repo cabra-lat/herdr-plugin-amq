@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildCoordinatorMetrics } from "../src/metrics.mjs";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * QUEUED CARDS POINTED AT A PERSON WERE AGED BY NOTHING.
@@ -101,4 +106,21 @@ test("A DEPENDENCY CYCLE TERMINATES rather than recursing forever", () => {
     queued: [q("c1", { next_actor: null, depends_on: ["c2"] }), q("c2", { next_actor: null, depends_on: ["c1"] })],
   });
   assert.equal(alert(m), undefined, "a cycle is not a person-gated chain, and must not hang the metrics build");
+});
+
+test("THE SIGNAL REACHES A HUMAN: the bridge doorbell list must name it", () => {
+  // Found by reading the bridge after shipping the alert, which is the wrong order - this arm
+  // should have existed first. The bridge selects ONE alert by a hardcoded id set, and mine was
+  // `warning` so it could never win the `severity === "critical"` find. The alert existed, was
+  // correct, passed every test above, and would never have been shown to anybody.
+  //
+  // A signal in the payload that no reader is shown is the same failure as the TASK_FLAGS comment
+  // that described a capability the handler did not have: a claim in the artifact about what the
+  // artifact does, one layer up. Tests on the producer cannot catch it - the producer was right.
+  const bridge = fs.readFileSync(path.join(HERE, "..", "src", "bridge.mjs"), "utf8");
+  const list = bridge.slice(bridge.indexOf("DOORBELL_ALERT_IDS = ["), bridge.indexOf("];", bridge.indexOf("DOORBELL_ALERT_IDS = [")));
+  assert.ok(list.includes("person_queued_oldest"),
+    "an alert nobody is shown is not delivered, however correct the payload is");
+  assert.ok(bridge.includes('alert.severity === "critical"'),
+    "and it must still lose to a genuine critical, or a person-wait outranks real work");
 });
