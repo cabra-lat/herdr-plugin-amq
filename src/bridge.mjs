@@ -785,6 +785,9 @@ export function runDoorbellPass({
   allowPrompt = false,
   persistState = false,
   state: injectedState = null,
+  // Supplied by the daemon, which resolves the root once at its own lifetime. Undefined for
+  // every other caller, which then resolves it here.
+  repoRoot: givenRepoRoot = null,
   // Precomputed full-board work age. INJECTED rather than built here because this function is
   // SYNCHRONOUS and is called from a synchronous CLI path - making it await would either break
   // that path or make it pay a ~2.9s first build. The daemon builds this once, ahead of the tick.
@@ -807,7 +810,13 @@ export function runDoorbellPass({
     return { ok: true, checked: 0, doorbelled: 0, doorbelledTasks: 0, message: "No registered agents found." };
   }
 
-  const repoRoot = getRepoRootFromAmq(amqRoot);
+  // Resolved ONCE per pass, and the daemon passes the value it already holds. Two independent
+  // resolutions of a pure function agree today and nothing forces them to: a second call site
+  // that half-implements getRepoRootFromAmq, or a cwd that differs between the two, would make
+  // the tick load one board and the pass load another, and the symptom would be citations that
+  // silently resolve against nothing. The fallback keeps the standalone CLI path working, where
+  // there is no daemon to hand a value down.
+  const repoRoot = givenRepoRoot || getRepoRootFromAmq(amqRoot);
   const doorbellTemplate = loadLocalTemplate(amqRoot, "doorbell");
   const validHandles = agentList.filter((handle) => typeof handle === "string" && /^[a-z0-9_-]{1,128}$/.test(handle));
   const statusByHandle = Object.fromEntries(validHandles.map((handle) => [handle, getStatus(handle)]));
@@ -1047,9 +1056,17 @@ export function startDaemonLoop({ interval = 3000, dryRun = false } = {}) {
   // "repoRoot is not defined". The try/catch around the tick swallowed it and continued, so the
   // daemon looked alive, filled the log with a repeating error, and delivered nothing at all.
   //
-  // Resolved once here, beside the other daemon-lifetime bindings, because the tick needs it and
-  // this is the scope it actually lives in. Deliberately NOT threaded through runDoorbellPass as a
-  // parameter: that would change a signature used by other call sites to fix a one-line defect.
+  // Resolved ONCE, here at daemon lifetime, and PASSED DOWN to each pass, because an earlier
+  // version left runDoorbellPass resolving its own copy: two independent resolutions of a pure
+  // function, which agree today and nothing forces them to.
+  //
+  // Scoped correctly, because I first overclaimed here: this does NOT mean the tick and the pass
+  // could load DIFFERENT BOARDS. getBusDirectory prefers amqRoot/bus, so the board always comes
+  // from amqRoot; repoRoot only selects the repository used to date citations. The real exposure
+  // is narrower and still real - two calls could disagree about where the git history lives, and
+  // citations would quietly resolve against nothing.
+  //
+  // The parameter is optional, so the standalone CLI path resolves its own and is unaffected.
   const repoRoot = getRepoRootFromAmq(amqRoot);
   console.log(`[bridge] Repo: ${repoRoot}`);
 
@@ -1073,7 +1090,7 @@ export function startDaemonLoop({ interval = 3000, dryRun = false } = {}) {
         board: loadBoard(repoRoot, amqRoot),
         repos: [],
       }).then((r) => r.workAgeById ?? null).catch(() => null);
-      const res = runDoorbellPass({ amqRoot, handles, dryRun, allowPrompt: true, persistState: true, workAgeById });
+      const res = runDoorbellPass({ amqRoot, handles, dryRun, allowPrompt: true, persistState: true, workAgeById, repoRoot });
       if (res.doorbelled > 0) {
         console.log(`[bridge] Doorbelled ${res.doorbelled} message(s)`);
       }
