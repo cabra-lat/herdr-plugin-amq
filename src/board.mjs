@@ -1215,9 +1215,28 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   updatedTask.updated = cardStateChanged(existingTask, updatedTask) ? now : (existingTask.updated || now);
 
   // Record the write as an EVENT. A card keeps only its latest `updated`, so the history
-  // of how it moves is destroyed on the first write - which is why the interval the
-  // stall threshold depends on has never been measurable. This is the instrument that
-  // makes it measurable; without it any threshold is read off a proxy.
+  // of how it moves is destroyed on the first write.
+  //
+  // WHAT THIS IS, precisely, because the previous version of this comment was false and
+  // false in a way that matters: it said "This is the instrument that makes it measurable",
+  // which claimed a consumer that does not exist. The stall path does NOT read this store -
+  // `readCardWrites` and `cardTransitionIntervals` are exported and called from nothing in
+  // src/ or bin/ except their own test - so the interval the stall threshold depends on is
+  // still not measurable, and this write does not change that.
+  //
+  // It is a WRITE-SIDE TRACE for post-hoc inspection: capped at MAX_EVENTS_PER_CARD and
+  // MAX_TOTAL_CARDS, evicted oldest-first, and read by nobody in production. Raising the
+  // cap would make the trace more durable without making it more true.
+  //
+  // THE RETENTION BIAS IS THE PART TO KNOW BEFORE RELYING ON IT. Oldest-mtime-first eviction
+  // means a log survives for cards that are STILL MOVING and disappears first for cards that
+  // have STOPPED - which is precisely the population whose history you want afterwards. That
+  // is why the proof-erasure question had to be deduced from card state rather than read
+  // from here: 12 of 12 logs were already evicted, and the instrumentation was shaped so it
+  // could not answer the question it was built to answer.
+  //
+  // If a consumer is ever wired up, THIS comment is where the claim becomes true, and it
+  // should be written then - not asserted now by a mechanism that has no reader.
   try {
     recordCardWrite(getStateDir(), taskId, existingTask, updatedTask, {
       actor: String(updates.from || opts.from || "") || null,
