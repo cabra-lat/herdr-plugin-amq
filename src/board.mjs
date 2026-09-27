@@ -590,6 +590,66 @@ export function loadBoard(repoRoot, amqRoot) {
 /**
  * Dispatch automailing notification via AMQ for task life-cycle events
  */
+/**
+ * THE MACHINE FIELDS, EMITTED NEXT TO THE PROSE THAT MAY CONTRADICT THEM.
+ *
+ * A card's description is re-emitted verbatim in every state-change notice, and there is no verb
+ * to edit it, so a description written at creation time can permanently advertise a next actor
+ * that is no longer correct - while owner, next_actor, depends_on and status have all moved on.
+ * A coordinator sweep on 2026-09-27 found 53 open cards whose prose mentioned a next actor, of
+ * which three genuinely contradicted the field: 0273c0 said "range" where the field said
+ * "verifier", and 6c7b53 and 3fdb93 both said "agsuite-dev" where the field said "user".
+ *
+ * THE FIX IS RENDERING, not an edit-description verb, because the cheaper fix is the correct one:
+ * put the authoritative field adjacent to the prose, so a stale claim is VISIBLY stale rather
+ * than silently authoritative. A reader who sees "Next actor: range" in the description and
+ * "next actor: verifier" in the field two lines below is not misled; a reader who sees only the
+ * description is.
+ *
+ * The field is the authority and the prose is not - the same rule as an edge: the machine field
+ * is the claim, and text written at creation time is narration that has since aged.
+ */
+function machineFieldLines(task) {
+  return [
+    `• Next actor (FIELD, authoritative): ${task.next_actor ?? "unset"}`,
+    `• Card owner (field): ${task.owner || "unassigned"}`,
+    Array.isArray(task.depends_on) && task.depends_on.length
+      ? `• Depends on (field): ${task.depends_on.join(", ")}`
+      : `• Depends on (field): none`,
+    `  (The Details above are written once at creation and never rewritten. Where they`,
+    `   disagree with the fields here, the fields are right.)`,
+  ];
+}
+
+/**
+ * A DESCRIPTION THAT NAMES A NEXT ACTOR.
+ *
+ * Used at re-point time, where the contradiction becomes detectable for the first time: until
+ * now the two were only visible by sweeping every card. A sweep finds yesterday's drift; this
+ * catches the write that CAUSES it, which is the only version that can be prevented.
+ *
+ * The pattern is deliberately narrow, and my first version of it was NOT - the test caught both
+ * failures. It missed `next_actor = verifier`, because `\s+` does not match the underscore, so
+ * the machine field's own spelling was invisible to a guard about the machine field. And it
+ * MATCHED the sweep's false positive: "The old card said AS NEXT ACTOR: range" returns "range",
+ * which would have flagged a card for correctly describing a correction it had already made.
+ * Naming requires a label that is not being QUOTED or REPORTED, so a reporting verb in front of
+ * it disqualifies the match.
+ */
+const REPORTING_BEFORE_LABEL = /\b(said|says|stated|states|previously|formerly|old|older|was|were|as|called|used\s+to)\b[^.]{0,40}$/i;
+
+export function describedNextActor(description) {
+  if (typeof description !== "string") return null;
+  const re = /next[\s_]*actor\s*[:=-]\s*([A-Za-z][\w-]*)/gi;
+  let m;
+  while ((m = re.exec(description)) !== null) {
+    const before = description.slice(Math.max(0, m.index - 48), m.index);
+    if (REPORTING_BEFORE_LABEL.test(before)) continue;
+    return m[1];
+  }
+  return null;
+}
+
 export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
   if (!amqRoot || !task) return { ok: false, error: "Missing amqRoot or task" };
 
@@ -639,7 +699,9 @@ export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
         `• Status: in_progress`,
         `• Changed by: ${opts.actor || "not recorded (no actor supplied with the change)"}`,
         `• Card owner: ${task.owner || "unassigned"}`,
-        task.description ? `• Details: ${task.description}` : "",
+        task.description ? `• Details (written at creation, never rewritten):` : "",
+        task.description ? `${task.description}` : "",
+        task.description ? machineFieldLines(task).join("\n") : "",
         ``,
         `Track or complete via:`,
         `  herdr-amq task done ${task.id} --me ${task.owner} --proof "<evidence>"`,
@@ -686,7 +748,9 @@ export function notifyTaskEvent(amqRoot, eventType, task, opts = {}) {
         `• Changed by: ${opts.actor || "not recorded (no actor supplied with the change)"}`,
         `• Card owner: ${task.owner || "unassigned"}`,
         opts.proof ? `• Evidence / Proof: ${opts.proof}` : "",
-        task.description ? `• Details: ${task.description}` : "",
+        task.description ? `• Details (written at creation, never rewritten):` : "",
+        task.description ? `${task.description}` : "",
+        task.description ? machineFieldLines(task).join("\n") : "",
       ].filter(Boolean).join("\n");
       break;
     }
@@ -1295,6 +1359,30 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
       console.warn(`⚠️  edge target(s) not found on the board: ${unresolved.join(", ")} — ` +
         "written anyway, because a dependency may legitimately precede its target. " +
         "If the id was remembered rather than read, that is the false-block signature.");
+    }
+  }
+
+  // A RE-POINT THAT LEAVES THE DESCRIPTION NAMING SOMEBODY ELSE.
+  //
+  // The fields and the prose drift apart silently: there is no verb to edit a description, so a
+  // card keeps advertising whoever it named at creation while next_actor moves on. A sweep finds
+  // that drift afterwards; this catches the WRITE THAT CAUSES IT, which is the only version that
+  // can be prevented, and it is the same write-time guard shape as the edge-to-finished-card
+  // refusal.
+  //
+  // A WARNING, NOT A REFUSAL. The field is authoritative and the description is narration, so
+  // changing the next actor is never wrong - the prose is simply now visibly wrong, and refusing
+  // would force people to delete the sentence instead of correcting the field. The message names
+  // both values so the reader knows which one to believe.
+  if (updates.next_actor !== undefined && updates.next_actor !== existingTask.next_actor) {
+    const described = describedNextActor(existingTask.description || "");
+    if (described && described !== updates.next_actor) {
+      console.warn(
+        `⚠️  ${taskId}: next_actor is now "${updates.next_actor}", but the card description still ` +
+        `says "Next actor: ${described}". The description is written once and never rewritten, ` +
+        `so notices will show both. The FIELD is authoritative - act on "${updates.next_actor}". ` +
+        `There is no verb to edit a description; coordinator has that as a known gap.`
+      );
     }
   }
 
