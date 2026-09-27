@@ -122,7 +122,14 @@ You own ballistics.
     }
   });
 
-  await t.test("fleet up replaces a mismatched kind and launches the named OpenCode persona", async () => {
+  await t.test("fleet up replaces a mismatched kind ONLY when asked, and launches the named OpenCode persona", async () => {
+    // The contract changed on 2026-09-27 and this test is the record of it. It used to be called
+    // "fleet up replaces a mismatched kind..." and relied on the DEFAULT: a plain `fleet up`
+    // closed a running agent's pane. That is how the user lost a fleet's in-flight context, and
+    // they chose to make replacement opt-in after confirming no scripts rely on it. So
+    // `replace: true` is now passed EXPLICITLY below, and test/fleet-replace-opt-in.test.mjs
+    // carries the arms for the new default - including the preview, which used to promise a
+    // replacement the command would then refuse.
     const worktree = path.join(repoDir, ".worktrees", "coordinator");
     fs.mkdirSync(worktree, { recursive: true });
     const calls = [];
@@ -130,6 +137,7 @@ You own ballistics.
       kind: "opencode",
       agents: "coordinator",
       timeout: 1,
+      replace: true,
       prepopulate: () => [{ handle: "coordinator", worktree }],
       getLiveAgents: async () => [{
         name: "coordinator",

@@ -340,7 +340,12 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
   const fleetDefaultKind = options.kind || "agy";
   const dryRun = Boolean(options.dryRun);
   const timeoutMs = options.timeout || 25000;
-  const replace = options.replace !== false;
+  // The default lives HERE, not only at the CLI, because this function is what every caller
+  // goes through and a safe default that lives in one door is a default that gets walked around
+  // the same evening it was written - the reason the blocked-edge guard was moved into the board
+  // layer rather than left in the CLI. Replacement closes a running agent's pane, so it is
+  // `=== true` and nothing else. The user's fleet lost in-flight context to the old default.
+  const replace = options.replace === true;
   const prepopulate = options.prepopulate || prepopulateFleet;
   const getLiveAgents = options.getLiveAgents || getHerdrAgents;
   const execHerdr = options.execHerdr || null;
@@ -419,12 +424,28 @@ export async function launchFleet(amqRoot, repoRoot, options = {}) {
       }
 
       if (panes.length > 0) {
-        if (dryRun) {
-          result.wouldReplace.push(handle);
+        // THE REFUSAL COMES BEFORE THE PREVIEW, and the order is the bug I am fixing.
+        //
+        // `dryRun` used to be checked first, so `fleet up --dry-run` reported `wouldReplace`
+        // for an agent the real run would then REFUSE to touch. A preview that misreports what
+        // the command will do is worse than no preview: it is the instrument people trust
+        // precisely when they are about to be destructive, and here it said "this will replace"
+        // about a run that would replace nothing. The user's own report - that `fleet up` closed
+        // their agents and lost their context - is what makes a preview worth believing, so it
+        // has to tell the truth in both directions.
+        //
+        // Replacement is opt-in now (`--replace`). The user chose this explicitly on
+        // 2026-09-27 and confirmed no scripts rely on the implicit behaviour, so nothing breaks
+        // and the destructive direction is never reached by omission.
+        if (!replace) {
+          result.blocked.push({
+            handle,
+            reason: `already running as ${panes.map((pane) => pane.agent).join(", ")}; nothing was closed. Re-run with --replace to replace it.`,
+          });
           continue;
         }
-        if (!replace) {
-          result.blocked.push({ handle, reason: `already running as ${panes.map((pane) => pane.agent).join(", ")}` });
+        if (dryRun) {
+          result.wouldReplace.push(handle);
           continue;
         }
         try {

@@ -150,9 +150,13 @@ describe("per-agent kind", () => {
     // The control for the arm above: matching must be because the kinds agree, not because
     // matching stopped happening. Not a dry run, so the mismatch is acted on - through the
     // INJECTED execHerdr, which records instead of closing anything.
+    // `replace: true` is explicit: this arm is about a mismatch being DETECTED and acted on when
+    // asked. Whether it happens by default is a different question, answered in
+    // test/fleet-replace-opt-in.test.mjs, and the answer there is no.
     const calls = [];
     const res = await launchFleet("/tmp/unused", "/tmp/unused", {
       ...baseOpts,
+      replace: true,
       prepopulate: () => [{ handle: "mkt", kind: "pi" }],
       getLiveAgents: async () => [{ name: "mkt", agent: "agy", pane_id: "p-mkt" }],
       execHerdr: fakeHerdr(calls),

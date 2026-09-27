@@ -560,8 +560,8 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
 
       // A claim that would take a card another lane is actually holding is a REASSIGNMENT
       // wearing a claim's clothes, and the board will happily overwrite the owner. It refuses
-      // unless the operator says so explicitly, for the same reason `fleet up --no-replace`
-      // exists: the destructive direction is opt-in, never inferred.
+      // unless the operator says so explicitly, for the same reason `fleet up --replace` is
+      // opt-in: the destructive direction is never inferred.
       if (held && !heldByMe && currentOwner && !flags.force) {
         console.error(`❌ Task ${taskId} is already claimed by ${currentOwner} (status: ${existing.status}).`);
         console.error(`   Nothing was written and no notification was sent. A claim does not take a card from another lane.`);
@@ -1389,7 +1389,7 @@ Commands:
 Options:
   --kind <kind>    Agent kind (default: agy for up, required for down)
   --agents <list>  Comma-separated handles to target (default: all)
-  --no-replace     Refuse to replace agents running as another kind
+  --replace         Replace agents running as another kind (destructive, opt-in)
   --dry-run        Preview actions without changing panes
   --help, -h       Show this help message
 `);
@@ -1510,7 +1510,16 @@ Options:
     const agentsIdx = rawArgs.indexOf("--agents");
     const agents = agentsIdx !== -1 && rawArgs[agentsIdx + 1] ? rawArgs[agentsIdx + 1] : null;
     const dryRun = rawArgs.includes("--dry-run");
-    const replace = !rawArgs.includes("--no-replace");
+  // Replacement is OPT-IN. It used to be the default, which meant a plain `fleet up` closed
+  // running agents - how the user lost a fleet's in-flight context on 2026-09-26, with the
+  // command reporting success while it happened. The user chose this on 2026-09-27 and confirmed
+  // no scripts rely on the old behaviour.
+  //
+  // `--no-replace` is still accepted and now means the same as omitting `--replace`, i.e. the
+  // default. It is kept so an old invocation does not become an unknown-flag failure and so the
+  // flag people already reach for keeps working - but it is no longer what makes the command
+  // safe, because the safe direction no longer needs a flag.
+  const replace = rawArgs.includes("--replace");
 
     console.log(`\n🚀 \x1b[1mLaunching Fleet via Herdr (kind: ${kind})\x1b[0m`);
     console.log("──────────────────────────────────────────────");
