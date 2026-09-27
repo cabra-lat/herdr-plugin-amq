@@ -64,9 +64,27 @@ const newCard = (root, title) => {
 // other is a field nobody wrote, and conflating them is how a missing proof passes for a cleared
 // one. My first version of this helper returned the string "null" for a written null, so the
 // control arm below failed while the card was in fact correct - a broken harness, not a defect.
+// Searches EVERY stage, not just done/, because the arms below end with a REFUSED command and a
+// card is not in done/ once it has been reopened - reading done/ alone made this helper throw
+// ENOENT on a card that was perfectly readable one directory over.
+//
+// It was worse than a crash before that. This helper was hardcoded to done/ while the erasure
+// arm called `task reopen`, which did not exist: the reopen printed "Unknown task subcommand",
+// the card stayed done, and the assertions passed for the wrong reason - nothing had reopened,
+// so "the proof survived" was trivially true. The arm named a verb it never exercised, and the
+// only reason it went red is that the verb now works. A guard that passes because the thing it
+// tests silently did not happen is worse than no guard, because it looks like coverage.
+const cardIn = (root, id) => {
+  const bus = path.join(root, ".agent-mail", "bus");
+  for (const stage of fs.readdirSync(bus)) {
+    const file = path.join(bus, stage, `${id}.md`);
+    if (fs.existsSync(file)) return { stage, text: fs.readFileSync(file, "utf8") };
+  }
+  throw new Error(`card ${id} is in no stage under ${bus}`);
+};
+
 const proofOf = (root, id) => {
-  const file = path.join(root, ".agent-mail", "bus", "done", `${id}.md`);
-  const raw = fs.readFileSync(file, "utf8").match(/^proof: (.*)$/m)?.[1];
+  const raw = cardIn(root, id).text.match(/^proof: (.*)$/m)?.[1];
   if (raw === undefined) return undefined;
   return raw === "null" ? null : raw;
 };
@@ -100,7 +118,13 @@ test("there is NO flag that erases the evidence", () => {
   const root = workspace();
   const id = newCard(root, "card");
   cli(root, ["task", "done", id, "--proof", "THE ORIGINAL PROOF: measured 45/0"]);
+  // The reopen must ACTUALLY reopen, or this arm proves nothing. It could not, until the verb
+  // was registered - see the note on cardIn above. I dropped this call while rewriting the arm,
+  // which is the same mistake in a new place: the assertion below then described a card that
+  // had never been reopened, and it failed for that reason rather than for the one it names.
   cli(root, ["task", "reopen", id, "--reason", "x"]);
+  const afterReopen = cardIn(root, id);
+  assert.notEqual(afterReopen.stage, "done", "the reopen really moved the card out of done/");
   const out = cli(root, ["task", "done", id, "--clear-proof"]);
   assert.match(proofOf(root, id), /ORIGINAL PROOF/, "the evidence is untouched");
   assert.match(out, /unknown option|clear-proof/i, "and the attempt is refused by name");

@@ -250,6 +250,20 @@ const TASK_FLAGS = {
   drain: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
   next: new Set(["claim", "autoClaim", "json", "notify", "me", "from", "help"]),
   comment: new Set(["id", "text", "note", "me", "from", "help"]),
+  // `--reason` is REQUIRED, not optional. Reopen is the one write that DELETES a completion
+  // record, so the reason is the only record of why the record went away. `--stage` lets the
+  // caller say where the card lands instead of leaving that to a default, for the same reason
+  // `unblock` has no default stage: defaulting invents a decision the caller did not make.
+  //
+  // THIS ENTRY IS WHAT MAKES THE VERB EXIST. The `case "reopen"` in the switch below was
+  // written and tested at the library level, and then UNREACHABLE from the CLI, because
+  // TASK_FLAGS gates every subcommand at the top of this function and "reopen" was never
+  // added to it. So the contradiction guard refused with "Repair it explicitly: `task reopen`
+  // clears the stale record", the reader ran it, and got Unknown task subcommand "reopen" -
+  // a confident, specific, wrong instruction naming a command that did not exist. That is a
+  // capability that exists in the source and not in the product, which is the same class as
+  // the missing repair verb I reported as absent: it was never absent, it was shadowed.
+  reopen: new Set(["id", "reason", "stage", "notify", "me", "from", "help"]),
   note: new Set(["id", "text", "note", "me", "from", "help"]),
 };
 
@@ -275,6 +289,12 @@ function taskUsage() {
     "  comment <id> --text <text> [--me <h>]         Add a durable note without changing activity",
     "                                             NOT --body. The --body @file habit used for mail",
     "                                             send does NOT transfer here and fails unknown-option.",
+    "  reopen <id> --reason <r> [--stage <s>]         Clear a STALE completion record (done_at on a",
+    "                                             non-done card). --reason is REQUIRED: this is the",
+    "                                             one write that DELETES a completion record, so",
+    "                                             the reason is the only record of why it went away.",
+    "                                             Not the same as `done`: use this when a card was",
+    "                                             legitimately revived and the stamp is out of date.",
     "  block <id> --reason <r> [--next-actor <h>] [--depends-on <id,...>]",
     "  unblock <id> --stage <doing|queued|backlog> --reason <r>",
     "                                            Leave `blocked`. --stage has NO default:",
