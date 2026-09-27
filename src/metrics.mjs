@@ -1,5 +1,47 @@
 import { createHash } from "node:crypto";
+import fsSync from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildWorkAge, makeGitDateResolver, classifyTwoClocks } from "./work-age.mjs";
+
+// WHERE THIS CODE LIVES IS A REPOSITORY TOO.
+//
+// The server asked the resolver to date commits against two repositories: the game repo it was
+// handed, and `path.join(repoRoot, "..", "herdr-plugin-amq")`. That second path is a GUESS about
+// the filesystem, and on this machine it is wrong - the game repo is .../coding/godot/fps-basegame,
+// so the guess resolves to .../coding/godot/herdr-plugin-amq, which does not exist. The plugin
+// repo is .../coding/herdr-plugin-amq, a sibling of `godot` rather than of the game repo.
+//
+// The failure was SILENT, which is the part that matters. execFile with a non-existent cwd simply
+// fails, the resolver finds nothing, and every plugin citation reads UNDATED - so the board looks
+// like it cites no tooling work when in fact it cites five cards' worth. Coordinator hit exactly
+// this from the other end earlier tonight, searching for this repository and reporting absence
+// from a path that was not there; the same wrong root was hardcoded in our own production code.
+//
+// The fix is not another guess. The running code IS the plugin, so its root is knowable from the
+// module's own location - no configuration, no layout assumption, and it cannot rot when someone
+// moves a directory. Guessing a sibling twice would just be a second thing to be wrong.
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// A REPO PATH THAT DOES NOT EXIST IS REPORTED, NOT IGNORED.
+//
+// `makeGitDateResolver` filters `repos.filter(Boolean)`, which keeps a non-empty string that
+// points nowhere and silently resolves nothing. A caller cannot tell "I searched two
+// repositories" from "I searched one, and one of them is fiction", and the difference is the whole
+// finding: five cards' evidence was invisible and the tool reported no reason. So the used and
+// skipped lists travel with the metrics, which puts the limitation in the artifact a reader
+// actually looks at rather than in a commit message nobody opens.
+function partitionRepos(repos) {
+  const used = [];
+  const skipped = [];
+  for (const repo of repos) {
+    if (!repo) continue;
+    let ok = false;
+    try { ok = fsSync.statSync(repo).isDirectory(); } catch { ok = false; }
+    (ok ? used : skipped).push(repo);
+  }
+  return { used, skipped };
+}
 
 // The columns the queue/stall/work-age signals consider "active". One list, so the
 // async work-age wrapper and the sync builder cannot drift into covering different
@@ -1010,7 +1052,13 @@ export function buildCoordinatorMetrics({
 export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...options } = {}) {
   const { board = { columns: {} }, now = Date.now() } = options;
   const activeCards = activeBoardTasks(board, { stallEligible: true });
-  const resolveDate = makeGitDateResolver({ repos });
+  // This module's own repository is always in scope, and a caller-supplied list is additive
+  // rather than authoritative - so a caller that names only the game repo still gets plugin
+  // citations dated, which is the defect this fixes. A caller CAN still narrow it by passing
+  // `repos: []` explicitly if it wants a board resolved against nothing.
+  const requested = repos.length > 0 ? [...repos, PLUGIN_ROOT] : [PLUGIN_ROOT];
+  const { used, skipped } = partitionRepos(requested);
+  const resolveDate = makeGitDateResolver({ repos: used });
   const workAgeById = new Map();
   await Promise.all(activeCards.map(async (task) => {
     try {
@@ -1032,7 +1080,19 @@ export async function buildCoordinatorMetricsWithWorkAge({ repos = [], ...option
       workAgeById.set(task.id, null);
     }
   }));
-  return { metrics: buildCoordinatorMetrics({ ...options, workAgeById }), workAgeById };
+  const metrics = buildCoordinatorMetrics({ ...options, workAgeById });
+  // The limitation travels WITH THE METRICS. Every work-age figure above is "as of these
+  // repositories", and a reader told only the number cannot know whether an undated citation is
+  // undated because the commit is unknown or because the repository was never on the list. Five
+  // cards' plugin evidence read UNDATED for the second reason, invisibly.
+  metrics.workAgeRepos = {
+    used,
+    skipped,
+    note: skipped.length > 0
+      ? `${skipped.length} configured repository path(s) do not exist and were NOT searched, so citations that live only there read as undated rather than absent.`
+      : "All configured repository paths exist and were searched.",
+  };
+  return { metrics, workAgeById };
 }
 
 function nowMsOf(now) {

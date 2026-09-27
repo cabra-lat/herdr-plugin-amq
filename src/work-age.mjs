@@ -164,10 +164,28 @@ export function extractClaimedArtifacts(task = {}, { isKnownCommit = null } = {}
   return { shas: seen, runIds: uniq(runIds), citations };
 }
 
-// Commit dates are immutable, so a resolved SHA is cached for the life of the process.
-// There is no TTL here on purpose: re-asking git about a commit that cannot change is
-// pure cost, and the cardinality is bounded by the SHAs a board has ever cited.
+// Commit dates are immutable, so a RESOLVED SHA is cached for the life of the process. There is
+// no TTL here on purpose: re-asking git about a commit that cannot change is pure cost, and the
+// cardinality is bounded by the SHAs a board has ever cited.
+//
+// AN ABSENCE IS NOT A FACT ABOUT THE COMMIT. It is a fact about the REPOSITORIES SEARCHED, so it
+// cannot live in this map keyed by SHA alone.
+//
+// The bug: a resolver built with a narrower repository list - or with a path that does not exist,
+// which is exactly what server.mjs passed - cached every plugin SHA as `null` FOREVER. Any later,
+// correctly-configured resolver in the same process inherited that absence and reported the
+// citation undated while a fresh process resolved it. I hit this while measuring the fix for
+// dcec35's follow-up: three resolver probes in one process, the first narrow, the third correct,
+// and the third reported nothing. The cause was this cache, not the configuration I was testing.
+//
+// That is the whole class in one line: an absence produced by a reader that did not look, made
+// durable and invisible so that fixing the reader changes nothing. Absences are therefore keyed by
+// the repository set that produced them, and a wider search is never poisoned by a narrower one.
 const dateCache = new Map();
+const missCache = new Map();
+// `path` is imported lazily-by-value at the top of the module; this is the only use, and it
+// normalises the repo list so `[a, b]` and `[b, a]` are the same search and share a miss.
+const missKey = (repos, sha) => `${repos.map((r) => String(r)).sort().join("|")}\n${sha}`;
 
 /**
  * Default resolver: one `git log --no-walk` per repository for the whole batch.
@@ -176,7 +194,10 @@ const dateCache = new Map();
  */
 export function makeGitDateResolver({ repos = [] } = {}) {
   return async (shas) => {
-    const wanted = uniq(shas).filter((sha) => !dateCache.has(sha));
+    const unresolved = (sha) => missCache.get(missKey(repos, sha)) === true;
+    // A SHA already known to be absent FROM THIS REPOSITORY SET is not re-queried. A SHA absent
+    // from a DIFFERENT set is, deliberately - that is the whole point of keying misses by repos.
+    const wanted = uniq(shas).filter((sha) => !dateCache.has(sha) && !unresolved(sha));
     if (wanted.length > 0) {
       const { execFile } = await import("node:child_process");
       await Promise.all(repos.filter(Boolean).map(async (repo) => {
@@ -223,9 +244,12 @@ export function makeGitDateResolver({ repos = [] } = {}) {
           }
         }
       }));
-      // A SHA nobody could resolve is remembered as unknown, so a card citing a commit
-      // from another repository is not re-queried on every board render.
-      for (const sha of wanted) if (!dateCache.has(sha)) dateCache.set(sha, null);
+      // A SHA nobody could resolve is remembered as unknown FOR THIS REPOSITORY SET, so a card
+      // citing a commit from another repository is not re-queried on every board render - while
+      // a later search over a different or larger set still gets to answer for itself.
+      for (const sha of wanted) {
+        if (!dateCache.has(sha)) missCache.set(missKey(repos, sha), true);
+      }
     }
     const out = new Map();
     for (const sha of uniq(shas)) {
@@ -353,6 +377,10 @@ export async function buildWorkAge(task, now, { resolveDate = nullDateResolver, 
 
 export function __resetWorkAgeCache() {
   dateCache.clear();
+  // Misses too, or a test that resolved nothing against one repository set would poison the
+  // next test in the same process - which is the very bug this split exists to remove, and it
+  // would then be reintroduced by the test harness.
+  missCache.clear();
 }
 
 // ── Two-clock classification ───────────────────────────────────────────────────
