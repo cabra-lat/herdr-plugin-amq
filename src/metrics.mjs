@@ -612,10 +612,12 @@ export function buildCoordinatorMetrics({
     // real warning and it keeps alerting. This is the same actor-or-owner distinction
     // the notification path already draws; it is not a new state, and it deliberately
     // does not exempt any card by name.
-    const owned = blockedWork.filter((task) => task.nextActor);
-    const unowned = blockedWork.filter((task) => !task.nextActor);
+    // `owned` and `unowned` are derived from the dependency CHAIN below, not from the pointer
+    // on the card. They used to be defined here as "has a next_actor" / "has none", which is the
+    // load-bearing read this change removes.
     // A HUMAN-GATED WAIT IS NOT A COORDINATION FAILURE, and ranking it as one is what made
-    // this alert permanently pinned.
+    // this alert permanently pinned. See the chain-walk above for why the decision is made by
+    // the dependency chain rather than by next_actor.
     //
     // next_actor=user means the card resolves ONLY through a person acting, and when a person
     // acts the card leaves blocked. So the oldest such card is the one the alert will name on
@@ -627,19 +629,88 @@ export function buildCoordinatorMetrics({
     //
     // THIS IS A CHANGE OF RANKING, NOT A SUPPRESSION, and the difference is the whole point.
     // Suppressing on age would hide a genuinely stale edge, because a card blocked on a
-    // finished dependency lands in the same bucket as a card blocked on a person and only
-    // next_actor tells them apart. Ranking the non-human population keeps the real defects
+    // finished dependency lands in the same bucket as a card blocked on a person and only the
+    // chain tells them apart. Ranking the non-human population keeps the real defects
     // visible and demotes the human waits to a count.
-    const humanGated = owned.filter((task) => task.nextActor === "user");
-    const actionable = owned.filter((task) => task.nextActor !== "user");
-    if (unowned.length > 0) {
+    // next_actor is a DISPLAY FIELD. Actionability is decided by whether the card's DEPENDENCY
+    // CHAIN TERMINATES IN A USER-GATED CARD, and never by the pointer on the card itself.
+    //
+    // The convention is now settled and it is a good one - next_actor means WHO MUST ACT FOR THE
+    // CARD TO ADVANCE, owner means who does the work - but settling a convention does not make
+    // the field RELIABLE, and the two are independent failure modes. A human can misread
+    // next_actor, and `task reassign` does not maintain it: it moved owner without touching
+    // next_actor, so a re-pointed card kept pointing at whoever it used to wait for. An alert
+    // that reads the pointer therefore pages on a card no lane can move, which is the exact
+    // false signal that pinned this alert earlier tonight.
+    //
+    // The chain is the honest question. A card blocked behind a card that waits on a person
+    // cannot be cleared by a lane no matter what its own pointer says, and that stays true when
+    // the pointer is stale, wrong, or absent. So the walk decides, and next_actor is printed
+    // for the human without being load-bearing - which is the belt-and-braces coordinator asked
+    // for, and it is not redundancy: the pointer can be wrong while the chain is right, and the
+    // chain can be right while the pointer misleads a reader.
+    //
+    // AN UNKNOWN DEPENDENCY DOES NOT PROVE HUMAN-GATED. A dependency may legitimately precede
+    // its target and not exist yet, so a missing card leaves the chain unresolved and the card
+    // stays lane-actionable. Assuming "blocked on a person" because a link dangles would demote
+    // real defects into a count, which is the failure mode this whole split exists to avoid.
+    const nextActorById = new Map(allCards.map((t) => [t.id, t.next_actor ?? t.nextActor ?? null]));
+    const depsOf = (t) => (Array.isArray(t.depends_on) ? t.depends_on
+      : Array.isArray(t.dependency) ? t.dependency
+        : (t.depends_on || t.dependency) ? [t.depends_on || t.dependency] : []);
+    const chainTerminatesAtUser = (task, seen = new Set()) => {
+      if (!task || !task.id || seen.has(task.id)) return false;   // seen = cycle guard
+      seen.add(task.id);
+      if (nextActorById.get(task.id) === "user") return true;
+      return depsOf(task).some((dep) => {
+        const depTask = statusById.get(dep)?.task;
+        return depTask ? chainTerminatesAtUser(depTask, seen) : false;
+      });
+    };
+
+    const resolved = blockedWork.map((task) => ({
+      task,
+      human: chainTerminatesAtUser(task),
+      deps: depsOf(task).length,
+    }));
+    // Human-gated is now a property of the CHAIN, so a card whose own pointer is a lane but
+    // which waits behind a person-gated card is correctly demoted to the count - and a card
+    // whose pointer says `user` while its chain reaches nothing is correctly kept actionable.
+    const humanGated = resolved.filter((r) => r.human).map((r) => r.task);
+    // "Blocked on nobody" is now narrower than "no next_actor": a card with a LANE dependency is
+    // movable by moving that dependency, so calling it blocked-on-nobody would report a real
+    // defect as nobody's problem.
+    const unowned = resolved.filter((r) => !r.human && !r.task.nextActor && r.deps === 0).map((r) => r.task);
+    const owned = resolved.filter((r) => !r.human && (r.task.nextActor || r.deps > 0)).map((r) => r.task);
+    const actionable = owned;    if (unowned.length > 0) {
       unownedBlocked.push({
         count: unowned.length,
         oldestId: unowned.reduce((a, b) => ((a?.ageMs ?? 0) > (b?.ageMs ?? 0) ? a : b), null)?.id || null,
         oldestAgeMs: unowned.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0),
       });
     }
-    if (owned.length > 0 && owned.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0) >= limits.blockedWarnMs) {
+    // The gate fires on ANY reportable blocked card, not only on lane-actionable ones.
+    //
+    // It used to require `owned.length > 0`, and `owned` used to mean "has a next_actor" - which
+    // INCLUDED the human-gated cards, so a board whose only blocked cards waited on a person
+    // still produced an alert, saying good news. Now that human-gated cards are correctly
+    // excluded from `owned`, the old gate silently stopped firing on exactly that board, and the
+    // "good news, not a broken alert" branch became UNREACHABLE. Three existing tests caught it,
+    // which is the argument for keeping them: the branch was not new, but its only path was.
+    //
+    // A silent disappearance is the dangerous shape here. The alert that says everything is
+    // waiting on a person is the one that tells a reader no lane is being neglected, and losing
+    // it leaves a healthy board indistinguishable from a board nobody is watching.
+    // `unowned` is deliberately NOT part of the gate. A card with neither a next actor nor any
+    // dependency is blocked on nobody: it is REPORTED inside the message when some other card
+    // legitimately fires this alert, and it never pages on its own at any age. Letting it into
+    // the gate would turn "reported, not paged" back into a page, and an existing test for
+    // exactly that failed when I first wrote this too wide.
+    const reportableOldestMs = Math.max(
+      owned.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0),
+      humanGated.reduce((m, t) => Math.max(m, t.ageMs ?? 0), 0),
+    );
+    if ((owned.length > 0 || humanGated.length > 0) && reportableOldestMs >= limits.blockedWarnMs) {
     // EVERYTHING THIS ALERT SAYS MUST COME FROM `owned`, not from blockedWork.
     // The gate above correctly pages only on cards someone can move, but the headline,
     // the quoted age, the severity, the fingerprint and the triage counts were all still
@@ -675,8 +746,8 @@ export function buildCoordinatorMetrics({
         cards: cardCondition(actionable),
       }),
       message: actionable.length === 0
-        ? `No blocked card is waiting on anything a lane can move: all ${humanGated.length} owned blocked card(s) are waiting on a person (next_actor=user), oldest ${humanOldestAgeMs}ms. That is good news, not a broken alert.${unowned.length > 0 ? ` ${unowned.length} further blocked card(s) have no next actor and are reported, not paged: they are blocked on nobody.` : ""}`
-        : `Oldest blocked card a LANE can move has been blocked for ${ownedOldestAgeMs}ms (${ownedOldestCard?.id || "unknown"}). ${triaged} of ${actionable.length} carry a triage reason, which stops the untriaged alert but not this one.${humanGated.length > 0 ? ` Separately, ${humanGated.length} blocked card(s) are waiting on a person (next_actor=user), oldest ${humanOldestAgeMs}ms - reported as a count, not ranked, because a human-gated wait resolves only through a person acting and cannot clear while an alert names it.` : ""}${unowned.length > 0 ? ` ${unowned.length} further blocked card(s) have no next actor and are reported, not paged: they are blocked on nobody.` : ""}`,
+        ? `No blocked card is waiting on anything a lane can move: all ${humanGated.length} blocked card(s) have a dependency chain that terminates in a person-gated card, oldest ${humanOldestAgeMs}ms. That is good news, not a broken alert.${unowned.length > 0 ? ` ${unowned.length} further blocked card(s) have neither a next actor nor any dependency, and are reported, not paged: they are blocked on nobody.` : ""}`
+        : `Oldest blocked card a LANE can move has been blocked for ${ownedOldestAgeMs}ms (${ownedOldestCard?.id || "unknown"}). ${triaged} of ${actionable.length} carry a triage reason, which stops the untriaged alert but not this one.${humanGated.length > 0 ? ` Separately, ${humanGated.length} blocked card(s) have a dependency chain terminating in a person-gated card, oldest ${humanOldestAgeMs}ms - reported as a count, not ranked, because a human-gated wait resolves only through a person acting and cannot clear while an alert names it. That determination comes from the CHAIN, not from each card's next_actor: reassign does not maintain next_actor, so a stale pointer cannot page the fleet. next_actor still means who must act for the card to advance, and owner still means who does the work.` : ""}${unowned.length > 0 ? ` ${unowned.length} further blocked card(s) have neither a next actor nor any dependency, and are reported, not paged: they are blocked on nobody.` : ""}`,
       recommendedAction: "Resolve it, re-scope it, or record why it is still blocked; a triage reason alone does not close an old blocker.",
       oldestCardId: ownedOldestCard?.id || null,
       oldestAgeMs: ownedOldestAgeMs,

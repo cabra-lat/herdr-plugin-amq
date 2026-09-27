@@ -41,7 +41,11 @@ test("a human-gated card does NOT take the headline from a lane-actionable one",
   const a = alert(m);
   assert.equal(a.oldestCardId, "lane", "the 38-minute lane item is the real one");
   assert.equal(a.oldestAgeMs, mins(38));
-  assert.match(a.message, /1 blocked card\(s\) are waiting on a person/);
+  // The wording changed when actionability moved from the pointer to the dependency CHAIN. The
+  // card below still has next_actor=user, so it is still human-gated - but the alert now says
+  // WHY it is human-gated in terms a reader can check, and the assertion checks the new words so
+  // a revert to pointer-based gating fails here rather than passing on a stale regex.
+  assert.match(a.message, /1 blocked card\(s\) have a dependency chain terminating in a person-gated card/);
   assert.match(a.message, /reported as a count, not ranked/);
 });
 
