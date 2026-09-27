@@ -1094,6 +1094,34 @@ export function handleMailCommand(subcmd, args = []) {
     return values;
   }
 
+  // A SUCCESS SIGNAL THAT DOES NOT DEPEND ON THE THING IT REPORTS, third instance in this
+  // codebase after godot-lock.sh's "lock acquired" and a gate printing "bot_direction ? checks".
+  // The cost is always the same: the sender concludes the payload went, and the recipient has a
+  // subset. So the count is stated, and a file that is not there stops the send.
+  function attachmentCountLabel(count) {
+    return `${count} attachment${count === 1 ? "" : "s"}`;
+  }
+
+  // Validated BEFORE anything is sent, because a partial send that reports success is the exact
+  // failure: the other files arrive, the missing one does not, and the sender is told it worked.
+  // A file that cannot be read is a caller error, and like the valueless-flag case above it exits
+  // non-zero rather than delivering a bundle with a hole in it.
+  function requireReadableAttachments(attach) {
+    const missing = attach.filter((p) => {
+      try {
+        return !fs.statSync(p).isFile();
+      } catch {
+        return true;
+      }
+    });
+    if (missing.length === 0) return;
+    console.error(
+      `❌ ${missing.length} of ${attach.length} attached file(s) could not be read, so NOTHING was sent:\n` +
+      missing.map((p) => `     ${p}`).join("\n")
+    );
+    process.exit(1);
+  }
+
   switch (action) {
     case "send": {
       // NO FALLBACK TO ANOTHER HANDLE. This used to be
@@ -1135,6 +1163,7 @@ export function handleMailCommand(subcmd, args = []) {
         console.error("❌ Missing required --to recipient.");
         process.exit(1);
       }
+      requireReadableAttachments(attach);
 
       try {
         const res = sendMaildirMessage(amqRoot, {
@@ -1146,7 +1175,10 @@ export function handleMailCommand(subcmd, args = []) {
           priority,
           attachments: attach,
         });
-        console.log(`✉️  Sent ${res.id} to ${to.join(", ")} (from: ${from}) [maildir native]`);
+        // The count is part of the receipt, not a nicety: "Sent" alone is what let a dropped file
+        // pass for a delivered one.
+        console.log(`✉️  Sent ${res.id} to ${to.join(", ")} (from: ${from}) [maildir native]` +
+          (attach.length ? ` [${attachmentCountLabel(attach.length)}]` : ""));
       } catch (err) {
         console.error(`❌ Send failed: ${err.message}`);
         process.exit(1);
@@ -1173,6 +1205,7 @@ export function handleMailCommand(subcmd, args = []) {
         console.error("❌ Missing required --from / --me handle.");
         process.exit(1);
       }
+      requireReadableAttachments(attach);
 
       try {
         const res = replyMaildirMessage(amqRoot, {
@@ -1181,7 +1214,8 @@ export function handleMailCommand(subcmd, args = []) {
           body,
           attachments: attach,
         });
-        console.log(`✉️  Replied ${res.id} to ${res.to.join(", ")} (in-reply-to: ${id}) [maildir native]`);
+        console.log(`✉️  Replied ${res.id} to ${res.to.join(", ")} (in-reply-to: ${id}) [maildir native]` +
+          (attach.length ? ` [${attachmentCountLabel(attach.length)}]` : ""));
       } catch (err) {
         console.error(`❌ Reply failed: ${err.message}`);
         process.exit(1);
