@@ -347,6 +347,13 @@ function isTriagedBlocked(task) {
  * well be remembered rather than read, which is the false-block signature, so it is reported
  * rather than credited.
  */
+function dependencyList(task) {
+  const raw = task?.depends_on ?? task?.dependency ?? null;
+  if (Array.isArray(raw)) return raw;
+  if (raw === null || raw === undefined || raw === "") return [];
+  return [raw];
+}
+
 function isUnexplainedBlock(task, dependencyStates) {
   const nextActor = task?.next_actor ?? task?.nextActor ?? null;
   if (typeof nextActor === "string" && nextActor.trim().length > 0) return false;
@@ -559,9 +566,7 @@ export function buildCoordinatorMetrics({
       // The STATES are read from the lookup, never assumed, for the same reason the blocked
       // projection reads them from a lookup: a dependency id that is not in the table is
       // UNKNOWN, and treating unknown as done would report a correctly-gated card as free.
-      const deps = Array.isArray(task.depends_on) ? task.depends_on
-        : Array.isArray(task.dependency) ? task.dependency
-          : (task.depends_on || task.dependency) ? [task.depends_on || task.dependency] : [];
+      const deps = dependencyList(task);
       const dependencyStates = deps.map((d) => {
         const id = typeof d === "string" ? d : d?.id;
         return { id, status: statusById.get(id)?.status ?? "unknown" };
@@ -637,7 +642,7 @@ export function buildCoordinatorMetrics({
         title: task.title,
         owner: task.owner || null,
         nextActor: task.next_actor ?? task.nextActor ?? null,
-        dependency: task.depends_on || task.dependency || null,
+        dependency: dependencyList(task).length ? dependencyList(task) : null,
         // The dependency STATES, so a block can be told apart from a stale block.
         //
         // A blocked card whose dependencies are ALL DONE is unambiguously a defect in the BOARD
@@ -650,13 +655,13 @@ export function buildCoordinatorMetrics({
         // the table is UNKNOWN rather than done - and treating unknown as done would label a
         // correctly-blocked card as stale, which is the false positive that would make this label
         // worthless on its first day.
-        dependencyStates: (task.depends_on || task.dependency || []).map?.((d) => ({
+        dependencyStates: dependencyList(task).map((d) => ({
           id: typeof d === "string" ? d : d?.id,
           status: statusById.get(typeof d === "string" ? d : d?.id)?.status ?? "unknown",
         })) ?? [],
         reason: task.block_reason || task.reason || null,
         triaged: isTriagedBlocked(task),
-        unexplained: isUnexplainedBlock(task, (task.depends_on || task.dependency || []).map?.((d) => ({
+        unexplained: isUnexplainedBlock(task, dependencyList(task).map((d) => ({
           id: typeof d === "string" ? d : d?.id,
           status: statusById.get(typeof d === "string" ? d : d?.id)?.status ?? "unknown",
         })) ?? []),
