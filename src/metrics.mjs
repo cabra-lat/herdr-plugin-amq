@@ -122,7 +122,19 @@ export function projectCardStall(task, now, limits = DEFAULT_THRESHOLDS, workAge
       ageMs: progressAgeMs,
       lastActivityAt: new Date(progressAt).toISOString(),
       heartbeatAt: timestamp(task?.last_heartbeat_at) === null ? null : new Date(timestamp(task.last_heartbeat_at)).toISOString(),
-      heartbeatAgeMs: ageMs(task?.last_heartbeat_at, now),
+      // THE NAMES, DECLARED ONCE, BESIDE THE VALUE. One fact had three names and no reader
+      // could tell which surface used which: the card files and the board export carry
+      // last_heartbeat_at / last_heartbeat_by, this projection has carried heartbeatAt / heartbeatBy,
+      // and an analysis asked for `card.heartbeat` and got nothing. The mapping is written down
+      // here so the next reader does not have to infer it by trial, and so renaming one side is a
+      // visible edit rather than a silent break.
+      //
+      // unset is null and NEVER 0. A consumer that fell back to `|| 0` got Date.parse(0) =
+      // 946692000000 and reported an age of 14062699 minutes as a measurement. An absent key
+      // wearing a zero is worse than a wrong value, because a wrong value is checkable.
+      // EXPLICITLY null, never undefined and never 0. `ageMs` returns undefined for a missing
+      // timestamp, and an undefined key is one more shape a consumer can read as a value.
+      heartbeatAgeMs: ageMs(task?.last_heartbeat_at, now) ?? null,
       heartbeatBy: task?.last_heartbeat_by || null,
       heartbeatByNonOwner: Boolean(task?.last_heartbeat_by && task.owner && task.last_heartbeat_by !== task.owner),
       liveness: liveness.state,
@@ -411,6 +423,18 @@ export function buildCoordinatorMetrics({
   workAgeById = null,
 } = {}) {
   const limits = { ...DEFAULT_THRESHOLDS, ...thresholds };
+  // THE LIMIT, IN THE ARTIFACT. A heartbeat is a LEASE, not progress: a lane that heartbeats on a
+  // timer while doing nothing holds a lease forever and will never be paged by any keying we can
+  // construct on it. Presence and progress are different facts and this instrument measures
+  // presence. That is a limit of the instrument rather than a bug in the predicate, so any option
+  // that keys the alert on liveness inherits it - and it has to be read beside the numbers, not
+  // discovered from a mail thread after someone has already built on top of it.
+  const instrumentLimits = {
+    heartbeat: "A heartbeat is a LEASE, not progress. An agent that heartbeats on a timer while "
+      + "doing nothing holds a lease indefinitely and will never be paged by any liveness keying. "
+      + "This field measures PRESENCE, not progress; treat a fresh heartbeat as 'the lane is "
+      + "alive', never as 'the work moved'.",
+  };
   const statuses = {};
   const statusCounts = { working: 0, blocked: 0, stopped: 0, idle: 0, done: 0, unknown: 0 };
   const staleHeartbeats = [];
@@ -1127,6 +1151,8 @@ export function buildCoordinatorMetrics({
       retention: { historyLimit: 500, historyCount: 0, sampleCount: 0 },
     },
     alerts,
+    // Beside the numbers, not in a mail thread someone has to find later.
+    instrumentLimits,
   };
 }
 
