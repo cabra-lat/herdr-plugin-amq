@@ -183,8 +183,83 @@ export function extractClaimedArtifacts(task = {}, { isKnownCommit = null } = {}
 // the repository set that produced them, and a wider search is never poisoned by a narrower one.
 const dateCache = new Map();
 const missCache = new Map();
+
+// THE POSITIVE CACHE, PERSISTED. Only POSITIVES.
+//
+// A commit date is immutable - git will not change what date a commit was authored on - so a
+// resolved date is a fact that stays true for the life of the repository, which is why positives
+// were already process-wide and unbounded. The daemon, however, is NOT long-lived: coordinator
+// measured six lifetimes tonight at roughly one restart every 2.3 minutes, so a process-wide
+// cache is COLD on every start and the full-board work-age build pays its cold cost repeatedly -
+// 2005ms against a 3000ms tick, a 67% duty cycle, with delivery gaps up to 40s.
+//
+// So the positives are written to disk and read back at module load. NOT the misses, and that
+// asymmetry is the whole design: a miss means "this repository set did not contain it", which is
+// a fact about a SEARCH and is only valid for the repository set that ran it. Persisting misses
+// would reintroduce exactly the poisoning bug that was fixed earlier tonight - a stale absence
+// read back by a wider search and making it report nothing. An absence that outlives the process
+// that produced it is the defect, not an optimisation.
+// Loaded LAZILY, not at module scope: this module has no static imports, so `fs` and `path`
+// are not in scope at top level and `node --check` would not have caught it. The first
+// resolver call is async, which is where the load belongs.
+let persistentDates = null;
+let persistentLoadStarted = false;
 // `path` is imported lazily-by-value at the top of the module; this is the only use, and it
 // normalises the repo list so `[a, b]` and `[b, a]` are the same search and share a miss.
+function persistentCacheFile(path) {
+  try {
+    const dir = process.env.HERDR_PLUGIN_STATE_DIR
+      || path.join(process.env.HOME || "/tmp", ".herdr-amq-state");
+    return path.join(dir, "work-age-dates.json");
+  } catch { return null; }
+}
+
+async function loadPersistentDates() {
+  const [{ readFileSync }, path] = await Promise.all([import("node:fs"), import("node:path")]);
+  const file = persistentCacheFile(path);
+  if (!file) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    // Validated on read, not trusted: a truncated or hand-edited file must not be able to
+    // introduce a date that was never resolved. Only ISO-looking strings for 7-40 hex SHAs.
+    const out = {};
+    for (const [k, v] of Object.entries(parsed || {})) {
+      if (/^[0-9a-f]{7,40}$/i.test(k) && typeof v === "string" && /^\d{4}-\d{2}-\d{2}T/.test(v)) out[k] = v;
+    }
+    return out;
+  } catch { return {}; }   // absent or unreadable is the normal first-run case, not an error
+}
+
+async function savePersistentDates() {
+  // DECLARED, NOT ASSIGNED. My first version wrote
+  //   [{ writeFileSync, ... }, path] = await Promise.all([...])
+  // which is a destructuring ASSIGNMENT with no declaration, so the names must already exist.
+  // This is an ES module and therefore STRICT MODE, so it threw
+  // "ReferenceError: writeFileSync is not defined" - and the catch I had wrapped it in swallowed
+  // that, so the function silently returned and the whole feature looked like it did nothing.
+  // `node --check` passed throughout: it only parses.
+  let fsMod, pathMod;
+  try {
+    [fsMod, pathMod] = await Promise.all([import("node:fs"), import("node:path")]);
+  } catch { return; }
+  const { writeFileSync, renameSync, mkdirSync } = fsMod;
+  const path = pathMod;
+  const file = persistentCacheFile(path);
+  if (!file) return;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    // Atomic: a daemon killed mid-write must not leave a truncated file that the next start
+    // reads as "cache is empty" - or worse, as partially authoritative.
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(dateCache)));
+    renameSync(tmp, file);
+  } catch (err) {
+    // Reported rather than swallowed. A silent catch here is indistinguishable from the feature
+    // not existing, which is exactly how the bug above survived long enough to be interesting.
+    if (process.env.HERDR_PLUGIN_DEBUG_CACHE) console.error(`[work-age] date cache not written: ${err.message}`);
+  }
+}
+
 const missKey = (repos, sha) => `${repos.map((r) => String(r)).sort().join("|")}\n${sha}`;
 
 /**
@@ -197,6 +272,15 @@ export function makeGitDateResolver({ repos = [] } = {}) {
     const unresolved = (sha) => missCache.get(missKey(repos, sha)) === true;
     // A SHA already known to be absent FROM THIS REPOSITORY SET is not re-queried. A SHA absent
     // from a DIFFERENT set is, deliberately - that is the whole point of keying misses by repos.
+    // Seeded from the persisted positives, so a restart does not re-resolve what a previous
+    // process already proved. The board is unchanged between restarts, so this is the common case.
+    if (!persistentLoadStarted) {
+      persistentLoadStarted = true;
+      persistentDates = await loadPersistentDates();
+    }
+    if (persistentDates && Object.keys(persistentDates).length > 0) {
+      for (const [k, v] of Object.entries(persistentDates)) if (!dateCache.has(k)) dateCache.set(k, v);
+    }
     const wanted = uniq(shas).filter((sha) => !dateCache.has(sha) && !unresolved(sha));
     if (wanted.length > 0) {
       const { execFile } = await import("node:child_process");
@@ -256,6 +340,10 @@ export function makeGitDateResolver({ repos = [] } = {}) {
       const hit = dateCache.get(sha);
       if (hit) out.set(sha, hit);
     }
+    // PERSIST AFTER RESOLVING, not before, so a build that learned nothing writes nothing.
+    // This is the whole point of the file: the daemon restarts every couple of minutes, so the
+    // cold cost is what is actually paid, over and over.
+    await savePersistentDates();
     return out;
   };
 }
