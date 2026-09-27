@@ -37,6 +37,42 @@ function isShaLike(token) {
   return /[a-f]/.test(token);
 }
 
+/**
+ * IS THIS ALL-NUMERIC TOKEN ACTUALLY A COMMIT?
+ *
+ * `isShaLike` requires a letter a-f, which is a SHAPE heuristic standing in for "is this a SHA".
+ * It has a real false negative: git's minimum abbreviation is 7 characters and a valid commit
+ * hash can be entirely numeric. The plugin repo's HEAD happened to be 4824947, so every work-age
+ * citation in this repository's own cards silently read as "no claims" - the evidence scanner
+ * went blind on the busiest cards and reported them as having cited nothing.
+ *
+ * A bare number is usually a count or a timestamp and must NOT be promoted to a citation, so the
+ * shape filter stays. The resolution is that an all-numeric token is accepted when the caller can
+ * prove it is a commit, and the only thing that can prove it is the resolver itself. Shape
+ * decides what is PLAUSIBLE; the repository decides what is TRUE, and the second is the one that
+ * should decide.
+ */
+function isAllNumericShaCandidate(token) {
+  return /^[0-9]{7,40}$/.test(token);
+}
+
+/** Every all-numeric SHA-shaped token in the fields evidence lands in, deduplicated. */
+function collectAllNumericCandidates(task = {}) {
+  const texts = [];
+  if (task.description) texts.push(String(task.description));
+  if (task.proof) texts.push(String(task.proof));
+  for (const note of Array.isArray(task.notes) ? task.notes : []) {
+    texts.push(typeof note === "string" ? note : (note?.text ?? ""));
+  }
+  const found = new Set();
+  for (const text of texts) {
+    for (const token of text.match(SHA_RE) || []) {
+      if (isAllNumericShaCandidate(token)) found.add(token);
+    }
+  }
+  return [...found];
+}
+
 function uniq(list) {
   return [...new Set(list.filter(Boolean))];
 }
@@ -46,7 +82,7 @@ function uniq(list) {
  * The source of each citation is kept, because "cited in a proof" and "cited in a note"
  * are not the same claim and a reader should be able to tell them apart.
  */
-export function extractClaimedArtifacts(task = {}) {
+export function extractClaimedArtifacts(task = {}, { isKnownCommit = null } = {}) {
   const notes = Array.isArray(task.notes) ? task.notes : [];
   const sources = [];
   for (const note of notes) {
@@ -66,7 +102,7 @@ export function extractClaimedArtifacts(task = {}) {
   const citations = [];
   for (const { where, text } of sources) {
     for (const token of text.match(SHA_RE) || []) {
-      if (!isShaLike(token)) continue;
+      if (!isShaLike(token) && !(isKnownCommit && isAllNumericShaCandidate(token) && isKnownCommit(token))) continue;
       shas.push(token);
       citations.push({ kind: "sha", value: token, where });
     }
@@ -176,7 +212,27 @@ export const nullDateResolver = async () => new Map();
  * rather than an age of zero, which would read as "worked on right now".
  */
 export async function buildWorkAge(task, now, { resolveDate = nullDateResolver, thresholdMs = null } = {}) {
-  const { shas, runIds, citations } = extractClaimedArtifacts(task);
+  // The repository, not the token's shape, decides whether an all-numeric token is a commit.
+  // See `isAllNumericShaCandidate`: a bare number must not become a citation, and a numeric
+  // commit hash must not be invisible. Resolution is the only honest arbiter.
+  //
+  // The resolver's contract is `async (shas[]) -> Map<sha, date>` containing ONLY what
+  // resolves. My first version of this passed a per-token predicate and called it as though
+  // it were `(sha) -> date`; it returns a PROMISE, which is never null, so every all-numeric
+  // token in the corpus became a citation and the "1234567 is neither" arm broke. A predicate
+  // is not a resolver. So: collect the candidates, resolve them in ONE batch as the resolver
+  // intends, and only then decide - the same discipline the resolver already applies to
+  // unknown SHAs, where a miss costs that SHA and nothing else.
+  let isKnownCommit = null;
+  if (resolveDate) {
+    const candidates = collectAllNumericCandidates(task);
+    if (candidates.length > 0) {
+      const resolved = await resolveDate(candidates);
+      const known = new Set(resolved ? [...resolved.keys()] : []);
+      isKnownCommit = (token) => known.has(token);
+    }
+  }
+  const { shas, runIds, citations } = extractClaimedArtifacts(task, { isKnownCommit });
   // `buildCoordinatorMetrics` defaults `now` to Date.now(), a NUMBER. Only a Date and a
   // string were handled, so Date.parse(number) returned NaN and every ageMs became NaN,
   // which serialises as null - a live payload showing `latestAt` correctly and `ageMs: null`
