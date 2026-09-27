@@ -1155,6 +1155,27 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     isBlocked &&
     ((touches("next_actor") && canonicalizeOwner(updates.next_actor) !== canonicalizeOwner(existingTask.next_actor || "")) ||
       (touches("owner") && canonicalizeOwner(updates.owner) !== canonicalizeOwner(existingTask.owner || "")));
+
+  // A RE-ROUTE IS NOT A NEW WAIT, SO IT MUST NOT RESTART THE CLOCK.
+  //
+  // blocked_at used to be reset to now whenever reroutedWhileBlocked held, so ANY routine
+  // correction - re-pointing an owner or a next actor - silently removed the card from the
+  // oldest-blocked ranking. The fix for a stale field CAUSING the staleness. Coordinator lost 3,
+  // 54 and 113 minutes of wait age this way, caught by comparing two consecutive alerts: three
+  // cards at 3m/54m/113m became three cards at 28-29s in one command, while three untouched
+  // controls kept their original stamps.
+  //
+  // Two things make it worse than a cosmetic bug. blocked_total_ms did NOT absorb the lost time -
+  // it stayed 0 - so the wait was not banked, it was destroyed; and there is no verb to SET
+  // blocked_at, so those ages survive only as comments somebody happened to write down. And the
+  // `block` verb does the opposite: re-blocking an already-blocked card PRESERVES blocked_at. Two
+  // verbs disagreeing about the same field, where the destructive one is the one you reach for
+  // when you are FIXING something.
+  //
+  // A card re-pointed from "user" to "verifier" has been waiting the whole time. Restarting its
+  // clock because someone corrected the routing asserts the wait began now, which is false, and
+  // the only reader of that number is the alert whose job is to notice waits nobody resolves.
+  // Kept for the fingerprint and the unblock banking below, where the elapsed time IS credited.
   // `blocked_ms` used to be the TOTAL time a card had ever spent blocked, banked at the moment
   // the card LEFT the blocked column. That made a field named "blocked_ms" read as "how long has
   // this been blocked" while actually answering "how long has this been blocked across every
@@ -1204,8 +1225,11 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
     priority: updates.priority || existingTask.priority || "normal",
     claimed_at: enteringProgress ? now : (existingTask.claimed_at || null),
     next_actor: nextActor,
+    // A re-route preserves the stamp. `reroutedWhileBlocked` no longer restarts the clock; the
+    // time it covers is credited by the UNBLOCK path instead, which banks blocked_at -> now into
+    // blocked_total_ms, so nothing is discarded here and nothing is double-counted there.
     blocked_at: isBlocked
-      ? (wasBlocked ? (reroutedWhileBlocked ? now : existingTask.blocked_at) : now)
+      ? (wasBlocked ? existingTask.blocked_at : now)
       : existingTask.blocked_at,
     // An EXPLICIT null in the updates wins, and that is the reopen path. done_at is otherwise
     // preserved on every non-done transition, which is what let a claim leave a card asserting
