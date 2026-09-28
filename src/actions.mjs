@@ -36,6 +36,8 @@ import {
 } from "./board.mjs";
 import {
   sendMaildirMessage,
+  findMessageForRecipient,
+  findMessageById,
   replyMaildirMessage,
   drainMaildir,
   readMaildirMessages,
@@ -1142,6 +1144,7 @@ export function handleTaskCommand(subcommand = "list", rawArgs = []) {
       break;
     }
 
+
     case "drain": {
       const claim = Boolean(flags.claim || flags.autoClaim);
       let res;
@@ -1235,6 +1238,58 @@ function writeAllToStdout(text) {
     if (error && (error.code === "EAGAIN" || error.code === "EINTR")) return true;
     throw error;
   }
+}
+
+/**
+ * READ A DELIVERED MESSAGE BACK OFF DISK. This is the read-back the send path never had.
+ *
+ * WHY IT EXISTS, in someone's words rather than mine. spotter reported that a reply of theirs
+ * "reported success with an empty body because a shell redirect failed inside a chain, which the
+ * AMQ CLI cannot detect because it has no read-back command." I hit the same gap twice in one
+ * session: a reply to a message I had already consumed returned "Original message with ID ... not
+ * found" and I only knew because I read the exit instead of the log line, and a mail send printed
+ * a receipt whose body I never actually read.
+ *
+ * The asymmetry is the whole point. "Sent" is an exit code and a sentence the CLI wrote about
+ * itself, and both are produced by the same code that might have failed. Reading the delivered
+ * artifact is the only thing here that the sender does not control, which makes it the only
+ * evidence that a message exists anywhere except in the sender's own claim.
+ *
+ * It reports WHERE each copy is, because a message can legitimately have moved: a drained
+ * recipient has it in cur rather than new, and a message that is missing from a recipient who
+ * still holds it in the sender's outbox is a different situation from one that is nowhere.
+ */
+function verifyDelivery(amqRoot, msgId, recipients = []) {
+  const perRecipient = [];
+  for (const handle of recipients) {
+    const found = findMessageForRecipient(amqRoot, handle, msgId);
+    perRecipient.push({ handle, found: Boolean(found), filePath: found?.filePath || null, stage: found?.filePath ? path.basename(path.dirname(found.filePath)) : null });
+  }
+  const anywhere = findMessageById(amqRoot, msgId);
+  return {
+    id: msgId,
+    perRecipient,
+    anyCopyFound: perRecipient.some((r) => r.found) || Boolean(anywhere),
+    outboxCopy: anywhere?.filePath || null,
+  };
+}
+
+/** Print the read-back as lines a person can act on, and return true when it verified. */
+function reportDelivery(amqRoot, msgId, recipients = []) {
+  const result = verifyDelivery(amqRoot, msgId, recipients);
+  for (const r of result.perRecipient) {
+    if (r.handle === "board") continue;
+    console.log(r.found
+      ? `  \u2713 ${r.handle}: ${r.filePath}`
+      : `  \u2717 ${r.handle}: NOT FOUND in inbox/new or inbox/cur`);
+  }
+  if (result.anyCopyFound) {
+    console.log("  read-back VERIFIED against the delivered file, not the send's own report.");
+  } else {
+    console.log("  READ-BACK FAILED: no copy of this message exists on disk for any recipient.");
+    console.log("  The send reported success, so either the write was lost or the id is wrong.");
+  }
+  return result.anyCopyFound;
 }
 
 export function handleMailCommand(subcmd, args = []) {
@@ -1437,6 +1492,12 @@ export function handleMailCommand(subcmd, args = []) {
           (needsReply === true ? " [needs_reply: yes]"
             : needsReply === false ? " [needs_reply: explicitly no]"
               : " [needs_reply: undeclared]"));
+      // THE READ-BACK, right after the receipt and not behind a flag. The receipt is a
+      // sentence this program wrote about itself, and the file on disk is the only evidence here
+      // that the message exists anywhere the recipient can read it. Leaving this opt-in would
+      // keep the default reporting success on its own testimony, which is the shape of every
+      // false green this board has produced.
+      reportDelivery(amqRoot, res.id, to || []);
       } catch (err) {
         console.error(`❌ Send failed: ${err.message}`);
         process.exit(1);
@@ -1496,11 +1557,54 @@ export function handleMailCommand(subcmd, args = []) {
           (needsReply === true ? " [needs_reply: yes]"
             : needsReply === false ? " [needs_reply: explicitly no]"
               : " [needs_reply: undeclared]"));
+      // THE READ-BACK, right after the receipt and not behind a flag. This is the case spotter
+      // described from the other end: a reply reporting success with an empty body, which the
+      // CLI could not detect because it had no way to read the delivered file back.
+      reportDelivery(amqRoot, res.id, res.to || []);
       } catch (err) {
         console.error(`❌ Reply failed: ${err.message}`);
         process.exit(1);
       }
       break;
+    }
+
+    case "verify": {
+      // The read-back. Refusing to be a no-op is the whole point: if the id cannot be found, the
+      // answer is "not found", not an empty success.
+      const msgId = args.find((a) => !a.startsWith("--")) || getArg("--id");
+      if (!msgId) {
+        console.error("Usage: herdr-amq mail verify <message-id>");
+        return 2;
+      }
+      const found = findMessageById(amqRoot, msgId);
+      if (!found) {
+        console.error(`❌ No message with id ${msgId} exists in ${amqRoot}.`);
+        console.error("   Nothing was found to read. If something claimed to send this, that claim is unverified.");
+        return 1;
+      }
+      const recipients = Array.isArray(found.header.to) ? found.header.to : [found.header.to];
+      console.log(`Found ${msgId}`);
+      console.log(`  from:     ${found.header.from}`);
+      console.log(`  to:       ${recipients.join(", ")}`);
+      console.log(`  subject:  ${found.header.subject}`);
+      // REPORT THE RECIPIENT'S COPY, not whichever copy was found first. This verb exists to answer
+      // "did the message arrive where it was sent", and findMessageById returns the sender's outbox
+      // copy before it looks in a recipient inbox - so a drained message reported its location as
+      // the sender's outbox, which is a true statement about a file that was never in doubt and
+      // silent about the one that was. The recipient copy is the claim under test.
+      const recipientCopies = recipients
+        .map((handle) => ({ handle, hit: findMessageForRecipient(amqRoot, handle, msgId) }))
+        .filter((r) => r.hit);
+      if (recipientCopies.length) {
+        for (const c of recipientCopies) {
+          console.log(`  at ${c.handle}: ${c.hit.filePath}`);
+        }
+      } else {
+        console.log(`  at: NO RECIPIENT COPY - only the sender's outbox has it.`);
+        console.log("     The message exists, and no recipient can see it. That is not a delivery.");
+        console.log(`  sender copy: ${found.filePath}`);
+      }
+      return recipientCopies.length ? 0 : 1;
     }
 
     case "drain": {

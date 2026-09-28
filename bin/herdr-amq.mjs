@@ -114,9 +114,14 @@ switch (cmd) {
   case "task-drain":
     handleTaskCommand("drain", process.argv.slice(3));
     break;
-  case "mail":
-    handleMailCommand(process.argv[3], process.argv.slice(4));
+  case "mail": {
+    // The RETURN VALUE IS THE EXIT CODE, and dropping it is exactly how "no message with that id"
+    // came back reporting success: the handler returned 1 and this caller ignored it. A verb that
+    // cannot fail loudly is a verb people learn to run without reading.
+    const mailCode = handleMailCommand(process.argv[3], process.argv.slice(4));
+    if (typeof mailCode === "number" && mailCode !== 0) process.exitCode = mailCode;
     break;
+  }
   case "send":
     handleMailCommand("send", process.argv.slice(3));
     break;
@@ -126,6 +131,13 @@ switch (cmd) {
   case "drain":
     handleMailCommand("drain", process.argv.slice(3));
     break;
+    // THE READ-BACK VERB, and it needs its own arm. `mail` routes through the bare case above
+    // and every other subcommand is listed here explicitly, so without one `herdr-amq mail verify`
+    // fell through to the help text and reported nothing - the same class of failure as the gap it
+    // was added to close. A verifier that silently does not run is worse than no verifier.
+    case "verify":
+      handleMailCommand("verify", process.argv.slice(3));
+      break;
   case "--skill":
   case "-s":
   case "skill":
