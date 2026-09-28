@@ -27,6 +27,19 @@ const MAX_TOTAL_CARDS = 200;
 const TRANSITION_FIELDS = new Set(["status", "owner", "next_actor"]);
 
 function logDir(stateDir) {
+  // TEST RUNS WRITE SOMEWHERE ELSE, and the discriminator is the RUN rather than the writer.
+  //
+  // Three rounds of source-level guarding failed to stop the suite evicting real card history,
+  // because the writers are subprocesses that never import this module. Classifying by actor name
+  // - null, lane, alice, o - would work today and is a guess: worker, owner and legacy are
+  // ambiguous and a real lane could be named one of them. An environment variable is inherited by
+  // every child process, so it holds no matter which route produced the write, and a live bridge
+  // daemon never has it set.
+  //
+  // Test writes are KEPT, not dropped. They move to a sibling directory so they remain available
+  // for debugging while ceasing to compete for the 200 slots, which is what makes the cap mean 200
+  // real card histories instead of 200 mixed entries.
+  if (process.env.AMQ_TEST_RUN === "1") return path.join(stateDir, "card-writes-test");
   return path.join(stateDir, "card-writes");
 }
 

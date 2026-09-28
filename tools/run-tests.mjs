@@ -20,7 +20,11 @@ const files = args.length ? args : globSync("test/*.test.mjs");
 
 const child = spawn(process.execPath, ["--test", ...files], {
   stdio: ["ignore", "pipe", "inherit"],
-  env: { ...process.env, HERDR_DISABLE_PROMPT: "1" },
+  // AMQ_TEST_RUN is inherited by every child process, which is the entire point: the test runs
+  // write their card-write records to a sibling directory instead of competing for the 200 real
+  // slots. The previous attempts guarded WHICH FILES set the variable, and lost to subprocesses
+  // that never imported the guarded module. A property of the run cannot be routed around.
+  env: { ...process.env, HERDR_DISABLE_PROMPT: "1", AMQ_TEST_RUN: "1" },
 });
 
 let out = "";

@@ -11,6 +11,12 @@ import os from "node:os";
 import path from "node:path";
 import { recordCardWrite, readCardWrites, cardTransitionIntervals } from "../src/card-writes.mjs";
 import { addBoardTask, updateBoardTask } from "../src/board.mjs";
+// THESE TESTS EXERCISE THE PRODUCTION AUDIT PATH, so the run-level diversion is switched off
+// here on purpose. run-tests.mjs sets AMQ_TEST_RUN so the suite writes to a sibling directory
+// instead of evicting real card history; a test whose subject IS the real directory has to turn
+// that off deliberately rather than assert against the wrong place.
+delete process.env.AMQ_TEST_RUN;
+
 
 let stateDir;
 describe("card write log", () => {

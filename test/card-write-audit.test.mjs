@@ -6,6 +6,12 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { addBoardTask, appendBoardTaskNote } from "../src/board.mjs";
+// THESE TESTS EXERCISE THE PRODUCTION AUDIT PATH, so the run-level diversion is switched off
+// here on purpose. run-tests.mjs sets AMQ_TEST_RUN so the suite writes to a sibling directory
+// instead of evicting real card history; a test whose subject IS the real directory has to turn
+// that off deliberately rather than assert against the wrong place.
+delete process.env.AMQ_TEST_RUN;
+
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, "..", "bin", "herdr-amq.mjs");
