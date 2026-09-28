@@ -4,6 +4,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { addBoardTask, updateBoardTask, getBoardTask, heartbeatBoardTask } from "../src/board.mjs";
+// ISOLATION, and it is load-bearing rather than tidy. board.mjs records every card write to the
+// state dir RESOLVED AT CALL TIME, so a test that does not set this writes its fixture cards into
+// the real ~/.herdr-amq-state and evicts real card history: 194 of 200 audit slots are test
+// residue, and task_1790520029313_38a378's log was unlinked while its card survived. Set at module
+// scope, before any test runs, because the read happens when the write happens.
+//
+// `||=` so a file that already isolates keeps its own directory. The guard that keeps this true
+// is test/state-isolation-guard.test.mjs; it names any file that drifts back.
+process.env.HERDR_PLUGIN_STATE_DIR ||= fs.mkdtempSync(path.join(os.tmpdir(), "herdr-iso-done-card-revival-"));
+
 
 /**
  * A CARD IS EITHER DONE OR NOT, AND NO TRANSITION MAY LEAVE IT ASSERTING BOTH.
