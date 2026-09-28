@@ -480,10 +480,20 @@ test("an owner with a genuinely stalled card is told WHICH card, and to move it"
     // - it controlled three of the four clocks, which is the same defect as a fixture
     // narrower than the thing it polices.
     const old45 = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+    const leaseFresh = new Date(Date.now() - 60 * 1000).toISOString();
     const raw = fs.readFileSync(cardFile, "utf8")
       .replace(/^updated: .*$/m, `updated: ${old45}`)
       .replace(/^created: .*$/m, `created: ${old45}`)
-      .replace(/^last_heartbeat_at: .*$/m, `last_heartbeat_at: ${old45}`)
+      // The OWNER'S LEASE is deliberately held RECENT, and this is the fix. The test is called
+    // "an owner with a genuinely stalled card", which presumes somebody is there - but it
+    // backdated last_heartbeat_at by the SAME 45 minutes as every transition clock, and the
+    // live threshold is 10 (stalledWorkMs = 600 * 1000). So the fixture described a card whose
+    // owner had been gone 45 minutes while asserting they should be told to move it, which is
+    // the exact menu-with-no-truthful-exit this change exists to stop. The four transition
+    // clocks stay backdated - that is what makes the card stalled - and the lease is a separate
+    // RECENT timestamp, because presence and progress are different facts and a fixture that
+    // collapses them is narrower than the thing it polices.
+    .replace(/^last_heartbeat_at: .*$/m, `last_heartbeat_at: ${leaseFresh}`)
       .replace(/^status_at: .*$/m, `status_at: ${old45}`)
       .replace(/^owner_at: .*$/m, `owner_at: ${old45}`)
       .replace(/^next_actor_at: .*$/m, `next_actor_at: ${old45}`);

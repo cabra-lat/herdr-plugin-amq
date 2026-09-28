@@ -543,11 +543,38 @@ function buildRequiredDoorbellActions(handle, context) {
   // seconds ago and for one dead for an hour, so neither was actionable.
   const stalled = context.board.stalledCards || [];
   if (stalled.length > 0) {
-    const named = stalled.slice(0, 4).map((card) =>
-      `${card.id} ("${String(card.title || "").slice(0, 60)}", ${Math.round((card.ageMs || 0) / 60000)}m, clock=${card.livenessVia || "state"})`
-    ).join("; ");
-    const more = stalled.length > 4 ? ` and ${stalled.length - 4} more` : "";
-    actions.push(`STALLED: ${stalled.length} of your card(s) have not CHANGED STATE: ${named}${more}. Move the card - claim it, re-scope it, block it with a reason, or close it. This is measured on the card's own state clock, so a heartbeat will NOT clear it: \`herdr-amq task heartbeat <id> --me ${handle}\` declares you are present (a lease, not progress) and cannot move the number. Notes are narration, never liveness.`);
+    // ASK LIVENESS BEFORE ASKING FOR A TRANSITION. The stall clock is the PROGRESS clock and it
+    // is correct: a heartbeat does not clear it, which is right, because a beat is a lease and not
+    // progress. The defect was never in the measurement - it is that this prompt asked every
+    // reader for the same thing regardless of who was actually there.
+    //
+    // A card whose owner is NOT live is not a stall to triage. On 2026-07-01 a lane ran out of
+    // budget with its work correctly recorded and got "Move the card - claim it, re-scope it, block
+    // it with a reason, or close it." All four assert something it could not honestly assert:
+    // working, delivered, or waiting on someone. It fired ~340 times and every offered move was a
+    // lie, because the menu had no item for "present, recorded, not delivering, not waiting".
+    //
+    // The board already records that. liveness on this very projection is live / stale / unknown,
+    // computed from last_heartbeat_at separately from the progress clock and carried here
+    // unused. So the fix is to partition on data already present rather than to invent a verb:
+    // a card with no live owner needs a ROUTE or a WAKE, and only a card whose owner is present
+    // AND moving has a transition to be asked for.
+    const isLive = (card) => String(card.liveness || "").toLowerCase() === "live";
+    const unattended = stalled.filter((card) => !isLive(card));
+    const attended = stalled.filter((card) => isLive(card));
+    const label = (card) =>
+      `${card.id} ("${String(card.title || "").slice(0, 60)}", ${Math.round((card.ageMs || 0) / 60000)}m, clock=${card.livenessVia || "state"})`;
+
+    if (unattended.length > 0) {
+      const named = unattended.slice(0, 4).map(label).join("; ");
+      const more = unattended.length > 4 ? ` and ${unattended.length - 4} more` : "";
+      actions.push(`UNATTENDED: ${unattended.length} of your card(s) have not CHANGED STATE and you have not renewed your lease on them: ${named}${more}. You are not present on these, so the honest next step is to WAKE yourself or ROUTE the card to a lane that is - not to move it. Claiming it, completing it or blocking it would each assert something that is not true, which is why this alert has been so hard to answer truthfully.`);
+    }
+    if (attended.length > 0) {
+      const named = attended.slice(0, 4).map(label).join("; ");
+      const more = attended.length > 4 ? ` and ${attended.length - 4} more` : "";
+      actions.push(`STALLED: ${attended.length} of your card(s) have not CHANGED STATE while you ARE present: ${named}${more}. Move the card - claim it, re-scope it, block it with a reason, or close it. This is measured on the card's own state clock, so a heartbeat will NOT clear it: \`herdr-amq task heartbeat <id> --me ${handle}\` declares you are present (a lease, not progress) and cannot move the number. Notes are narration, never liveness.`);
+    }
     // THE CITATIONS A STALLED CARD IS CARRYING, AND WHERE EACH WAS READ FROM.
     //
     // `where` shipped as payload with no consumer: produced in work-age.mjs, read by two tests,
