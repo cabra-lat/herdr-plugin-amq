@@ -100,13 +100,18 @@ const COORDINATOR_DOORBELL_FILE = "coordinator-doorbell.json";
 
 export function getCoordinatorDoorbellConfig() {
   const file = path.join(getConfigDir(), COORDINATOR_DOORBELL_FILE);
-  const defaults = { enabled: true, cooldownMs: 300000 };
+  // escalationTo and deadlineMs back the alert deadline. BOTH DEFAULT TO OFF, and that is the
+  // point: a deadline with no named recipient would escalate to a default audience, and escalating to
+  // an audience that cannot act is a re-announcement with a timer on it. Absent, the feature is inert.
+  const defaults = { enabled: true, cooldownMs: 300000, escalationTo: null, deadlineMs: 0 };
   if (!fs.existsSync(file)) return defaults;
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     return {
       enabled: parsed.enabled !== false,
       cooldownMs: Number.isFinite(Number(parsed.cooldownMs)) && Number(parsed.cooldownMs) >= 0 ? Number(parsed.cooldownMs) : defaults.cooldownMs,
+      escalationTo: typeof parsed.escalationTo === "string" && parsed.escalationTo.trim() ? parsed.escalationTo.trim() : defaults.escalationTo,
+      deadlineMs: Number.isFinite(Number(parsed.deadlineMs)) && Number(parsed.deadlineMs) > 0 ? Number(parsed.deadlineMs) : defaults.deadlineMs,
     };
   } catch {
     return defaults;
@@ -118,6 +123,8 @@ export function saveCoordinatorDoorbellConfig(patch = {}) {
   const next = {
     enabled: patch.enabled === undefined ? current.enabled : Boolean(patch.enabled),
     cooldownMs: patch.cooldownMs === undefined ? current.cooldownMs : Math.max(0, Number(patch.cooldownMs) || 0),
+    escalationTo: patch.escalationTo === undefined ? current.escalationTo : (String(patch.escalationTo).trim() || null),
+    deadlineMs: patch.deadlineMs === undefined ? current.deadlineMs : Math.max(0, Number(patch.deadlineMs) || 0),
   };
   const file = path.join(getConfigDir(), COORDINATOR_DOORBELL_FILE);
   const tmp = `${file}.tmp-${process.pid}`;

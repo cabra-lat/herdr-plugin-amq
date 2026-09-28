@@ -1109,7 +1109,44 @@ export function runDoorbellPass({
   const alertPending = coordinatorAlert
     ? isCoordinatorAlertPending(state, coordinatorAlert, coordinatorDoorbell.cooldownMs, force)
     : false;
-  if (coordinatorDoorbell.enabled && coordinatorAlert && (coordinatorStatus === "idle" || coordinatorStatus === "done") && !alertPending) {
+
+  // THE DEADLINE, FAILING CLOSED. A deadline that expires but has nowhere to go is a
+  // re-announcement with a timer on it, which is the thing this card exists to prevent, so the
+  // escalation recipient is NOT defaulted. It is read from the same coordinator-doorbell config the
+  // rest of this path already uses, and when it is absent the feature is INERT and says so - which
+  // is the opposite of a default, and is why this can ship before anyone rules on the recipient.
+  const escalationTo = coordinatorDoorbell.escalationTo || null;
+  const deadlineState = coordinatorAlert && alertKey
+    ? coordinatorAlertDeadline(coordinatorAlert, state.coordinatorAlerts?.[alertKey] || null, coordinatorDoorbell.deadlineMs || 0, Date.now())
+    : { expired: false, reason: "no alert" };
+  let deadlineResult = { expired: false, reason: "not evaluated" };
+  if (deadlineState.expired) {
+    if (!escalationTo || !validHandles.includes(escalationTo)) {
+      // Loudly inert. The alternative - escalating to the coordinator by default - is the failure
+      // the coordinator named: the audience that cannot act gets the re-announcement instead.
+      deadlineResult = { expired: true, fired: false, reason: "deadline passed but no escalation recipient is configured, so nothing was sent" };
+    } else if (!escalationTo || !validHandles.includes(escalationTo)) {
+      deadlineResult = { expired: true, fired: false, reason: `escalation recipient ${escalationTo} is not a known handle, so nothing was sent` };
+    } else {
+      const escalateKey = alertKey;
+      const escalateText = `${buildCoordinatorAlertPrompt(coordinatorAlert)}\n\nDEADLINE: this condition has held (${deadlineState.reason}). It was not answered, so it is being raised ONCE to you as the escalation recipient. It will not be raised again for this condition.`;
+      const okEscalate = prompt(escalationTo, escalateText, dryRun || !allowPrompt);
+      const firedEscalate = Boolean(okEscalate && allowPrompt && !dryRun);
+      deadlineResult = { expired: true, fired: firedEscalate, to: escalationTo, reason: deadlineState.reason };
+      if (firedEscalate && state.coordinatorAlerts[alertKey]) {
+        // The one-shot mark, and it is set whether or not the state object existed, so a deadline
+        // cannot fire twice just because the state was missing the first time.
+        state.coordinatorAlerts[alertKey].deadlineFired = true;
+        state.coordinatorAlerts[alertKey].deadlineFiredAt = new Date().toISOString();
+        state.coordinatorAlerts[alertKey].deadlineFiredTo = escalationTo;
+      }
+    }
+  }
+  if (deadlineResult.fired) {
+    // The deadline owns this firing. Falling through would deliver the ordinary alert to the
+    // coordinator in the same pass, which is two announcements for one condition - the ordinary one
+    // and the escalation - and the ordinary one is the re-announcement the deadline exists to end.
+  } else if (coordinatorDoorbell.enabled && coordinatorAlert && (coordinatorStatus === "idle" || coordinatorStatus === "done") && !alertPending) {
     const promptText = buildCoordinatorAlertPrompt(coordinatorAlert);
     const ok = prompt(coordinatorHandle, promptText, dryRun || !allowPrompt);
     const prompted = Boolean(ok && allowPrompt && !dryRun);
