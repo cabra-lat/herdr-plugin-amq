@@ -1363,7 +1363,16 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
       ? updates.next_actor
       : (Object.hasOwn(opts, "next_actor") && opts.next_actor !== undefined ? opts.next_actor : (
         targetStatus === "done" ? null
-          : (targetStatus === "blocked" ? (existingTask.next_actor ?? null) : owner)
+          // Preserve, do not reassign. This branch used to be `owner`, which meant ANY write that did
+          // not mention next_actor - unblock, a stage change, a reason edit - silently moved a
+          // PERSON-GATED card onto a lane. The owner is a lane, so a wait only the user can clear quietly
+          // became that lane problem and stopped being anybody. The coordinator hit the identical thing:
+          // next_actor=user, then `unblock --stage queued`, and the card file read back agsuite-dev.
+          //
+          // `owner` survives only as the fallback for a card that has never had a next_actor, which keeps
+          // the sensible default for a lane-owned card while stopping an unrelated verb from taking the
+          // card away from the person who can act.
+          : (targetStatus === "blocked" ? (existingTask.next_actor ?? null) : (existingTask.next_actor ?? owner))
       )),
     // Transition stamps. These are what the stall metric reads as PROGRESS, as distinct
     // from `updated`, which only records that something was written. Without them a
