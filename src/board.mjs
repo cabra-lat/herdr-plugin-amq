@@ -1245,8 +1245,23 @@ export function updateBoardTask(repoRoot, amqRoot, taskId, updates = {}, opts = 
   // detector still honours it, so a heartbeat that cannot name its author must not
   // silently reset the clock. If there is no actor to name, the clock stays unset.
   const heartbeatActor = String(opts.from || updates.owner || existingTask.owner || "").trim();
-  const nextHeartbeatAt = enteringProgress ? now : (existingTask.last_heartbeat_at || null);
-  const nextHeartbeatBy = existingTask.last_heartbeat_by || (enteringProgress ? heartbeatActor || null : null);
+  // A FRESH CLOCK MUST NOT WEAR THE PREVIOUS HOLDER'S NAME, which is what the `||` ordering
+  // below used to do: `last_heartbeat_at` was reset to `now` on entry into progress while
+  // `last_heartbeat_by` kept `existingTask.last_heartbeat_by`. Observed on
+  // task_1790603680046_4742aa at 2026-09-28T16:34:47.885Z - the coordinator's own
+  // `task unblock --me coordinator` produced `last_heartbeat_at: 16:34:47.885Z` with
+  // `last_heartbeat_by: "meta"`, neither the caller nor the owner (agsuite-dev), meta idle for
+  // an hour. The pair is the defect: fresh in time, false in authorship, and `heartbeatByNonOwner`
+  // in metrics.mjs cannot discount it because a stale-author beat and a real non-owner beat are
+  // the same field. So on entry into progress the author is ALWAYS the actor who entered, and
+  // with no actor to name the clock stays unset - which is what the comment above asks for.
+  const canNameActor = Boolean(heartbeatActor);
+  const nextHeartbeatAt = enteringProgress
+    ? (canNameActor ? now : null)
+    : (existingTask.last_heartbeat_at || null);
+  const nextHeartbeatBy = enteringProgress
+    ? (canNameActor ? heartbeatActor : null)
+    : (existingTask.last_heartbeat_by || null);
   const updatedTask = {
     ...existingTask,
     ...updates,
