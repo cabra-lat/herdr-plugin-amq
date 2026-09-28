@@ -851,9 +851,25 @@ export function buildCoordinatorAlertPrompt(alert) {
  *     claim and age growth alone never re-delivers.
  */
 function buildOwnerResumePrompt(card) {
+  // THE AGE MUST NOT BE INVENTED, AND IT WAS. metrics.mjs sets leaseAgeMs to NULL for a
+  // cross-lane beat and says so in a comment: "a fabricated age is a confident statement about a
+  // clock that does not exist." This line then did Math.round(null / 60000), which is 0, and told
+  // the owner their lease "last showed a heartbeat 0 minute(s) ago" when the beat was somebody
+  // ELSE'S and the owner has never renewed at all.
+  //
+  // It surfaced on me: my own lease prompt said 0 minutes ago, and the card's heartbeat was recorded
+  // by another lane entirely. The conclusion - your lease has lapsed - was RIGHT, and the number
+  // quoted to justify it was about a different person's clock. That is the worst combination: a
+  // correct verdict resting on a misleading surface, which is what the projection refused to emit
+  // and the prompt invented.
+  const ageLine = card.leaseCrossLane
+    ? `Your lease has NOT been renewed by you. Somebody else (${card.leaseHeartbeatBy || "an unattributed sender"}) has been beating this card, which is positive evidence that you are not here rather than a measure of how long you have been gone - so there is no age to quote and I am not going to invent one.`
+    : card.leaseAgeMs === null
+      ? "Your lease has no owner-attributed heartbeat to age, so there is no recency to quote."
+      : `Your lease last showed a heartbeat ${Math.round(card.leaseAgeMs / 60000)} minute(s) ago. This usually means a CONTEXT COMPACTION dropped your working context, not that you stopped.`;
   const lines = [
     `You still own ${card.id}${card.title ? ` ("${card.title}")` : ""} and it is still in_progress.`,
-    `Your lease last showed a heartbeat ${Math.round(card.leaseAgeMs / 60000)} minute(s) ago. This usually means a CONTEXT COMPACTION dropped your working context, not that you stopped.`,
+    ageLine,
   ];
   if (card.resumeLine) {
     // The mechanism: a read of the card, not a reconstruction of a conversation.
