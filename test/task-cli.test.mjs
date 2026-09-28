@@ -5,6 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+// ISOLATION, added AFTER the first fix. board.mjs records every card write to the state dir
+// resolved at CALL TIME, and this file reaches it by SPAWNING the CLI rather than by importing
+// the board, so the first guard - which only knew about files importing updateBoardTask and
+// friends - could not see it. A full suite run still filled audit slots with residue after that
+// fix shipped, and the five newest were all test ids. The file is the second route to the same
+// behaviour, and a guard that knows one route has a hole where the behaviour is easiest to hide.
+process.env.HERDR_PLUGIN_STATE_DIR ||= fs.mkdtempSync(path.join(os.tmpdir(), "herdr-iso-task-cli-"));
+
+
 const BIN = path.resolve("bin/herdr-amq.mjs");
 
 function makeFixture() {

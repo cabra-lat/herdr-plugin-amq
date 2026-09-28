@@ -31,11 +31,28 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 /** Writes that make board.mjs record a card-write entry. */
 const BOARD_WRITES = /\b(updateBoardTask|addBoardTask|appendBoardTaskNote|heartbeatBoardTask)\b/;
 
+/**
+ * The same thing done from OUTSIDE the process. A test that spawns bin/herdr-amq.mjs and asks it to
+ * create or move a card writes the same audit entries, and it never imports a single board
+ * function, so the first version of this guard could not see it.
+ *
+ * That blind spot was mine and it survived the fix it was written for: after I isolated 17 files,
+ * a full suite run STILL added residue and the five newest slots were all test ids. Twelve further
+ * files spawn the CLI without isolating, and three of those write cards. A guard that only knows
+ * one route to the behaviour is a guard with a hole exactly where the behaviour is easiest to hide.
+ */
+const CLI_CARD_WRITE =
+  /(bin\/herdr-amq\.mjs|herdr-amq")[\s\S]*?["']task["']\s*(?:[^"']*?["' ])?(create|claim|done|comment|block|unblock|assign|reopen|heartbeat|next)\b/;
+
+function writesCardState(src) {
+  return BOARD_WRITES.test(src) || CLI_CARD_WRITE.test(src);
+}
+
 test("no board-writing test writes into the real state dir", () => {
   const offenders = [];
   for (const f of fs.readdirSync(testDir).filter((n) => n.endsWith(".test.mjs"))) {
     const src = fs.readFileSync(path.join(testDir, f), "utf8");
-    if (!BOARD_WRITES.test(src)) continue;
+    if (!writesCardState(src)) continue;
     if (/HERDR_PLUGIN_STATE_DIR/.test(src)) continue;
     offenders.push(f);
   }
@@ -56,8 +73,28 @@ test("the guard itself would notice a new offender", () => {
   try {
     fs.writeFileSync(sample, 'import { updateBoardTask } from "../src/board.mjs";\ntest("noop", () => {});\n');
     const src = fs.readFileSync(sample, "utf8");
-    const wouldFlag = BOARD_WRITES.test(src) && !/HERDR_PLUGIN_STATE_DIR/.test(src);
-    assert.equal(wouldFlag, true, "the sweep must flag a board-writing file that does not isolate");
+    const wouldFlag = writesCardState(src) && !/HERDR_PLUGIN_STATE_DIR/.test(src);
+    assert.equal(wouldFlag, true, "the sweep must flag a card-writing file that does not isolate");
+  } finally {
+    fs.rmSync(sample, { force: true });
+  }
+});
+
+test("a test that spawns the CLI to write a card is flagged, not only one that imports the board", () => {
+  // The regression that motivated widening the pattern, as an executable shape. A file that only
+  // ever shells out to `herdr-amq task create` never mentions updateBoardTask, and under the
+  // first pattern it was invisible while writing real audit entries.
+  const sample = path.join(testDir, "zz-guard-cli-shape_tmp.test.mjs");
+  try {
+    fs.writeFileSync(
+      sample,
+      'import { execFileSync } from "node:child_process";\n' +
+        'const BIN = "bin/herdr-amq.mjs";\n' +
+        'execFileSync("node", [BIN, "task", "create", "--title", "x"]);\n',
+    );
+    const src = fs.readFileSync(sample, "utf8");
+    assert.equal(BOARD_WRITES.test(src), false, "the old pattern genuinely cannot see this shape");
+    assert.equal(writesCardState(src), true, "the widened pattern must");
   } finally {
     fs.rmSync(sample, { force: true });
   }
@@ -75,7 +112,7 @@ test("a file that isolates in a before-hook is isolated for every test in it", (
   const missing = [];
   for (const f of fs.readdirSync(testDir).filter((n) => n.endsWith(".test.mjs"))) {
     const src = fs.readFileSync(path.join(testDir, f), "utf8");
-    if (!BOARD_WRITES.test(src)) continue;
+    if (!writesCardState(src)) continue;
     (src.includes("HERDR_PLUGIN_STATE_DIR") ? ok : missing).push(f);
   }
   assert.deepEqual(
