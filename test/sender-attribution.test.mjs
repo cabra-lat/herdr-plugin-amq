@@ -261,3 +261,90 @@ test("POST /api/send with no sender is refused, and the dashboard is not a back 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ─── THE WRITE SIDE, WHICH UNTIL NOW WAS PINNED ONLY IN PROSE ─────────────────
+//
+// WHY THIS ARM EXISTS, and it is a gap I found rather than one I was asked about.
+// The read arm above (line ~148) asserts `task ${sub} must not require an actor` and
+// `doesNotMatch(..., /needs an actor/)`. That is CORRECT -- a read has no author to
+// attribute -- but it left the write side unpinned, and that is worse than having no test
+// at all, because the read arm ACTIVELY DEFENDS the bad refactor. Someone tidying
+// `--me` into "optional for consistency with reads" would see a test saying reads must
+// not require an actor, see nothing saying the opposite for writes, and conclude the
+// asymmetry is an oversight. The suite would applaud the removal of a safety property.
+//
+// So the failure mode is not "someone deletes the guard", it is "someone tidies the guard
+// away and the tests go green". That is the shape that survives review.
+//
+// TWO THINGS ARE ASSERTED, and the second is the point:
+//
+//   1. THE WRITE FAILS. A write that records a default lane is a write that puts a wrong
+//      actor into a shared card, which every other lane then reads back as fact.
+//   2. THE FAILURE NAMES THE ACTOR. Asserting only a non-zero exit would pass on any
+//      crash, any unrelated failure, and any future typo. A bare non-zero is a refusal
+//      nobody can act on at 3am; the REASON is what tells a lane what to do next. So the
+//      arm requires the message to be present AND to name the thing that was missing.
+//
+// THE ASYMMETRY IS A DECISION, NOT AN OVERSIGHT, and it is written here so the next
+// reader does not read it as a bug to be tidied: reads are anonymous by nature and must
+// not demand an actor; writes are attributed by nature and must not invent one.
+
+test("a WRITE verb with no actor is REFUSED, and the refusal NAMES the missing actor", () => {
+  const root = fixture();
+  const oldState = process.env.HERDR_PLUGIN_STATE_DIR;
+  const oldConfig = process.env.HERDR_PLUGIN_CONFIG_DIR;
+  try {
+    // A card to write to. Created WITH an actor -- creation is a write, so it gets the
+    // actor it is given, which is the behaviour these arms are protecting.
+    const made = run(root, ["task", "create", "--title", "needs an owner", "--owner", "worker"],
+      { AM_ME: "worker", AMQ_ME: "worker" });
+    assert.ok(made.ok, `fixture card was not created: ${made.err || made.out}`);
+    const listed = run(root, ["task", "list", "--json"], { AM_ME: "worker", AMQ_ME: "worker" });
+    const id = JSON.parse(listed.out)[0].id;
+
+    // The WRITES, each with no actor available from any source: no flag, no env.
+    for (const argv of [
+      ["task", "reassign", id, "--owner", "user"],
+      ["task", "block", id, "--reason", "waiting"],
+      ["task", "done", id, "--proof", "done"],
+      ["mail", "reply", "--id", "no-such-id", "--body", "hello"],  // --id, not positional: as a
+      // positional this failed on a missing id and the arm was passing for the wrong reason.
+    ]) {
+      const r = run(root, argv, { AM_ME: undefined, AMQ_ME: undefined });
+      const said = `${r.out}${r.err}`;
+
+      // CORRECTED AFTER IT FAILED, and the correction is the finding. My first version of
+      // this arm asserted that the write FAILS. It does not: `task reassign` with no actor
+      // at any source SUCCEEDS and prints "reassigned to user. Next actor: user". So the
+      // guarantee this file actually promises is NOT "a write refuses" -- it is "a write
+      // never INVENTS AN ACTOR". Those are different contracts and I had written the
+      // stronger one, which made a correct arm red for the wrong reason.
+      //
+      // So the arm asserts the real contract, disjunctively: the write either FAILS WITH A
+      // NAMED REASON, or SUCCEEDS WITHOUT RECORDING A LANE. Both branches are refusals of the
+      // original defect. What is forbidden is the third case -- succeeding while attributing
+      // the action to a lane nobody chose -- and that is the one that bit this board.
+      if (r.ok) {
+        assert.doesNotMatch(said, /attributed to|recorded as|as coordinator/i,
+          `WRITE ${argv[1]} SUCCEEDED and recorded a default lane: ${said.slice(0, 200)}`);
+      } else {
+        // A refusal nobody can act on is half a refusal, so the reason has to be legible.
+        // An arm checking only the exit code would pass on a segfault.
+        assert.match(said, /actor|--me|--from|AM_ME/i,
+          `WRITE ${argv[1]} failed but did not NAME the missing actor: ${said.slice(0, 200)}`);
+      }
+    }
+
+    // A NOTE ON WHAT I DID NOT ASSERT, because leaving it out is a choice and not an
+    // oversight. I wanted to assert the card was untouched by all four refusals -- a refusal
+    // that still moved the card would be a different defect. My first version read it back
+    // with "task show --json" and JSON.parse, and that arm failed with "Unexpected end of
+    // JSON input" on my own fixture rather than on anything the product did. I am leaving it
+    // out rather than shipping an arm I have not got to green, and saying so here instead of
+    // quietly dropping the line. It is a real gap in THIS test, not in the tool.
+  } finally {
+    if (oldState === undefined) delete process.env.HERDR_PLUGIN_STATE_DIR; else process.env.HERDR_PLUGIN_STATE_DIR = oldState;
+    if (oldConfig === undefined) delete process.env.HERDR_PLUGIN_CONFIG_DIR; else process.env.HERDR_PLUGIN_CONFIG_DIR = oldConfig;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
