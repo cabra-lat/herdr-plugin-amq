@@ -516,8 +516,14 @@ test("an owner with a genuinely stalled card is told WHICH card, and to move it"
     assert.match(text, /STALLED:/, "a genuinely stalled card must be announced");
     // A count with no id is unfalsifiable: the agent cannot act on "1 of your cards".
     assert.ok(text.includes(task.task.id), `the prompt must name the card: ${text}`);
-    assert.match(text, /Move the card/i, "and say what to do about it");
-    assert.match(text, /heartbeat will NOT clear it/i,
+    // It must SAY what to do about it, and what it says is no longer "Move the card". Two
+    // versions of this prompt went out ninety seconds apart on one card with the same clock giving
+    // opposite instructions, and the demanding one was wrong: a present owner is not necessarily an
+    // owner with something to transition. The moves are offered and none is required, and the honest
+    // alternative is named. Asserting the demand here would pin the defect the pair exposed.
+    assert.match(text, /AVAILABLE and none of them is REQUIRED/i, "and offer the moves without demanding one");
+    assert.match(text, /route the card, or leave it/i, "and name the honest alternative");
+    assert.match(text, /heartbeat will NOT clear/i,
       "heartbeat is still declared a lease, not a remedy");
     assert.match(text, /herdr-amq task heartbeat <id> --me worker/);
   } finally {

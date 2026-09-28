@@ -573,7 +573,15 @@ function buildRequiredDoorbellActions(handle, context) {
     if (attended.length > 0) {
       const named = attended.slice(0, 4).map(label).join("; ");
       const more = attended.length > 4 ? ` and ${attended.length - 4} more` : "";
-      actions.push(`STALLED: ${attended.length} of your card(s) have not CHANGED STATE while you ARE present: ${named}${more}. Move the card - claim it, re-scope it, block it with a reason, or close it. This is measured on the card's own state clock, so a heartbeat will NOT clear it: \`herdr-amq task heartbeat <id> --me ${handle}\` declares you are present (a lease, not progress) and cannot move the number. Notes are narration, never liveness.`);
+      // THIS TEXT USED TO DEMAND A MOVE, AND THAT WAS THE SAME LIE IN A NEW COSTUME. A present
+      // owner is not necessarily an owner with something to transition, and the coordinator hit
+      // exactly this: two versions of this same alert ninety seconds apart on one card with the
+      // same clock and the same number, giving opposite instructions, because the lease had been
+      // renewed in between. The UNATTENDED branch was right - it declines to demand a move and says
+      // why - and this branch was still demanding one. So the honest instruction is the same
+      // refusal with a different recommendation, and the move stays a genuine OPTION rather than the
+      // only sentence in the prompt.
+      actions.push(`STALLED: ${attended.length} of your card(s) have not CHANGED STATE while you ARE present: ${named}${more}. You are here, so this is yours to resolve - and if you have nothing true to say about it, that is a real state: route the card, or leave it and let the clock keep asking. Claiming, re-scoping, blocking and completing are all AVAILABLE and none of them is REQUIRED, because each asserts something and you may have nothing to assert. A heartbeat will NOT clear this: \`herdr-amq task heartbeat <id> --me ${handle}\` declares you are present (a lease, not progress) and cannot move the number. Notes are narration, never liveness.`);
     }
     // THE CITATIONS A STALLED CARD IS CARRYING, AND WHERE EACH WAS READ FROM.
     //

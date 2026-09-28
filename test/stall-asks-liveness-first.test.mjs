@@ -116,16 +116,27 @@ test("an UNATTENDED stall says wake or route, and does NOT ask for a transition"
   );
 });
 
-test("an ATTENDED stall - owner present, work not moving - still asks for a transition", async () => {
-  // The other half, so the change is not "stop asking everyone to move cards". A present owner
-  // with a stalled card is the one case where a transition is the true next step.
+test("an ATTENDED stall offers the moves without demanding one", async () => {
+  // The other half. This branch used to be the loud one - it is the text the coordinator received
+  // ninety seconds after the honest one, on the same card with the same clock, demanding a move they
+  // had nothing true to say about. So it now offers and does not demand, which is the same refusal
+  // as the unattended branch with a different recommendation.
   const id = await stalledCard(new Date(Date.now() - 60 * 1000).toISOString());
   const text = await prompt();
 
   assert.match(text, /STALLED:/, `an attended stall must still be announced:\n${text}`);
   assert.ok(text.includes(id), `and named: ${text}`);
-  assert.match(text, /Move the card/i, "and the transition instruction belongs here");
-  assert.match(text, /heartbeat will NOT clear it/i, "and the lease-is-not-progress note is retained");
+  // The DEMAND is what had to go. Two versions of this alert ninety seconds apart gave opposite
+  // instructions on one card with the same clock, and the wrong one was this branch.
+  assert.doesNotMatch(
+    text,
+    /STALLED:[^\n]*Move the card/i,
+    "a present owner is not necessarily an owner with something to transition, so the prompt must " +
+    "not demand a move here either - that is the same lie the unattended branch stopped telling",
+  );
+  assert.match(text, /AVAILABLE and none of them is REQUIRED/i, "the moves must be offered, not demanded");
+  assert.match(text, /route the card, or leave it/i, "and the honest alternative must be named");
+  assert.match(text, /heartbeat will NOT clear/i, "and the lease-is-not-progress note is retained");
 });
 
 test("liveness is read from the projection, not recomputed by the prompt", async () => {
