@@ -736,6 +736,39 @@ function coordinatorAlertKey(alert) {
   return alert.fingerprint ? `${alert.id}:${alert.fingerprint}` : alert.id;
 }
 
+// WHICH ALERTS MAY CARRY A DEADLINE AT ALL, and the test is the coordinator's: a deadline is
+// admissible IFF the alert is right AND its recommended action is UNEXECUTABLE by the audience it
+// is addressed to. stalled_work is deliberately NOT on this list. It looks like the obvious
+// candidate - it fired roughly 150 times in four hours and produced zero transitions - and it is
+// precisely the case a deadline would have HIDDEN rather than solved. Its action was not
+// unexecutable; it was untruthful, because every verb it offered asserted something the reader
+// could not assert. A timer on that alert would have ended the noise while leaving the lie
+// intact, and the reader would have concluded the lane had gone quiet when in fact nobody had been
+// able to answer anything. The liveness dimension fixed it instead, by making the action
+// executable. An alert earns a deadline by being RIGHT and UNANSWERABLE, not by being LOUD.
+const DEADLINE_ADMISSIBLE = new Set(["retry_failure_trend"]);
+
+//
+// Decide whether a held condition has run out of road.
+//
+// The clock is firstAttemptAt, which the state already records as a MONOTONIC stamp, and the
+// coordinator's distinction is the whole design: age is INADMISSIBLE for SUPPRESSION and
+// ADMISSIBLE for a DEADLINE. Freezing conditionFingerprint against age is not in tension with
+// bounding a deadline on it - the fingerprint answers "is this NEW?" and must stay age-free or
+// the dedup dies, while the deadline answers "how LONG?" and is the only place age belongs.
+//
+// Returns an object rather than a boolean so the caller can say WHY, and so a caller that
+// ignores the escalation cannot look like one that honoured it.
+function coordinatorAlertDeadline(alert, entry, deadlineMs, now) {
+  if (!DEADLINE_ADMISSIBLE.has(alert.id)) return { expired: false, reason: "alert is not deadline-admissible" };
+  if (!entry) return { expired: false, reason: "no prior state, so the clock has not started" };
+  if (entry.deadlineFired) return { expired: false, reason: "the deadline already fired once for this condition" };
+  const heldMs = now - Date.parse(entry.firstAttemptAt || entry.at || "");
+  if (!Number.isFinite(heldMs)) return { expired: false, reason: "no parseable start stamp" };
+  if (heldMs < deadlineMs) return { expired: false, heldMs, reason: "still inside the deadline" };
+  return { expired: true, heldMs, reason: "held " + formatAge(heldMs) + ", past the " + formatAge(deadlineMs) + " deadline" };
+}
+
 function isCoordinatorAlertPending(state, alert, cooldownMs, force = false) {
   if (force) return false;
   if (alert.fingerprint) {
