@@ -135,6 +135,120 @@ export function validateTemplateSource(source, { name, context } = {}) {
   return { ok: problems.length === 0, problems, variables: [...new Set(referenced)] };
 }
 
+/**
+ * Where a template lives, and whether that location is safe to write to.
+ *
+ * The loader does its own version of this check on every read: it refuses a templates directory
+ * that is a symlink, and compares the realpath against the literal path so a link cannot redirect
+ * a write somewhere else. A writer MUST make the same judgement, in the same place, or the two
+ * halves disagree about where the file is - and the failure is a template saved in one directory
+ * and read from another, which looks exactly like the template silently not being there.
+ *
+ * Returns null when the location is unusable, with a reason, rather than throwing: the caller
+ * turns that into a 4xx with a sentence a person can act on.
+ */
+export function templateWriteTarget(amqRoot, name) {
+  if (!amqRoot) return { error: "no mailbox is selected" };
+  if (!ALLOWED_TEMPLATES.has(name)) {
+    return { error: `"${name}" is not an editable template`, allowed: [...ALLOWED_TEMPLATES] };
+  }
+  let root;
+  try {
+    root = fs.realpathSync(path.resolve(amqRoot));
+  } catch {
+    return { error: "the mailbox directory does not exist" };
+  }
+  const templateDir = path.join(root, "templates");
+  if (fs.existsSync(templateDir)) {
+    let stat;
+    try {
+      stat = fs.lstatSync(templateDir);
+    } catch {
+      return { error: "the templates directory could not be read" };
+    }
+    // A symlink here is refused for the same reason the loader refuses it: it is a way to make a
+    // write land outside the mailbox, and a write is more dangerous than a read.
+    if (stat.isSymbolicLink()) return { error: "the templates directory is a symlink and will not be written through" };
+    let realDir;
+    try {
+      realDir = fs.realpathSync(templateDir);
+    } catch {
+      return { error: "the templates directory could not be resolved" };
+    }
+    if (realDir !== templateDir) return { error: "the templates directory resolves elsewhere and will not be written to" };
+  } else {
+    try {
+      fs.mkdirSync(templateDir, { recursive: false });
+    } catch (e) {
+      return { error: `the templates directory could not be created: ${e.code || e.message}` };
+    }
+  }
+  return { templateDir, templatePath: path.join(templateDir, `${name}.md`) };
+}
+
+/**
+ * Validate and then write a template. Returns the validation problems instead of writing, so a
+ * refused template never reaches disk and never reaches a lane.
+ *
+ * The write is atomic: a temporary file in the same directory, then a rename. A doorbell can be
+ * emitted at any moment by the bridge, and a half-written template would be read as a broken one
+ * - which is a doorbell that fails to build for every lane, from a file that is briefly short.
+ */
+export function saveLocalTemplate(amqRoot, name, source) {
+  const validation = validateTemplateSource(source, { name });
+  if (!validation.ok) return { ok: false, written: false, ...validation };
+
+  const target = templateWriteTarget(amqRoot, name);
+  if (target.error) return { ok: false, written: false, problems: [{ kind: "unsafe_location", message: target.error }], allowed: target.allowed };
+
+  const tmp = `${target.templatePath}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, source, { mode: 0o644 });
+    fs.renameSync(tmp, target.templatePath);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* the temp file is best-effort cleanup */ }
+    return { ok: false, written: false, problems: [{ kind: "write_failed", message: e.message }] };
+  }
+  return { ok: true, written: true, path: target.templatePath, variables: validation.variables };
+}
+
+/** Read a template for editing. Returns null source when none is deployed yet. */
+export function readLocalTemplate(amqRoot, name) {
+  const loaded = loadLocalTemplate(amqRoot, name);
+  return {
+    name,
+    source: loaded?.source ?? null,
+    exists: Boolean(loaded?.source),
+    variables: TEMPLATE_VARIABLES[name] || [],
+  };
+}
+
+/**
+ * Remove a deployed template, restoring the built-in text.
+ *
+ * Removal is not the same as writing an empty file, and the difference matters. An empty template
+ * is REFUSED by the validator - correctly, because an empty doorbell is a doorbell that tells a
+ * lane nothing - so without a remove path an operator who disliked their template would have no
+ * way back to the default except deleting the file by hand. "I want the default back" is a normal
+ * request and it must not require a shell.
+ */
+export function removeLocalTemplate(amqRoot, name) {
+  const target = templateWriteTarget(amqRoot, name);
+  if (target.error) return { ok: false, removed: false, problems: [{ kind: "unsafe_location", message: target.error }] };
+  if (!fs.existsSync(target.templatePath)) {
+    // Already on the default. Reported as ok, because the caller wanted the default and the
+    // default is what they now have; an error here would make a UI show a failure for the state
+    // the user asked for.
+    return { ok: true, removed: false, reason: "no template was deployed" };
+  }
+  try {
+    fs.unlinkSync(target.templatePath);
+  } catch (e) {
+    return { ok: false, removed: false, problems: [{ kind: "remove_failed", message: e.message }] };
+  }
+  return { ok: true, removed: true, path: target.templatePath };
+}
+
 export function renderTemplate(source, context) {
   if (typeof source !== "string" || !source.trim()) throw new Error("Template is empty");
   if (Buffer.byteLength(source, "utf8") > MAX_TEMPLATE_BYTES) throw new Error("Template is too large");

@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findAmqRoot, getAgentHandles, getHerdrBin, getCoordinatorDoorbellConfig, saveCoordinatorDoorbellConfig } from "./config.mjs";
+import { readLocalTemplate, removeLocalTemplate, saveLocalTemplate } from "./templates.mjs";
 import { markMaildirMessageRead, readRawMaildirMessage } from "./protocol.mjs";
 import {
   loadAllMessages,
@@ -730,6 +731,51 @@ export function startWebServer({
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: `Brief not found for ${handle}` }));
       }
+      return;
+    }
+
+    // ─── Templates ──────────────────────────────────────────────────────────────────
+    // The loader in templates.mjs has always been able to READ a doorbell template; nothing
+    // could WRITE one, which is why the dashboard has nothing to show. These two routes are the
+    // whole of that gap, and both refuse rather than half-apply: a validation problem returns
+    // 400 with the problems, and an unsafe location returns 400 without touching disk.
+    //
+    // The name is checked against ALLOWED_TEMPLATES inside the writer rather than here, so this
+    // route cannot become a second and laxer gate. A route that validated on its own is exactly
+    // how a UI ends up reporting a save the loader will then refuse.
+    if (pathname.startsWith("/api/templates/")) {
+      const name = decodeURIComponent(pathname.slice("/api/templates/".length));
+      if (req.method === "GET") {
+        const current = readLocalTemplate(amqRoot, name);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...current }));
+        return;
+      }
+      if (req.method === "PUT" || req.method === "POST") {
+        const body = await parseJsonBody(req);
+        const source = typeof body?.source === "string" ? body.source : null;
+        if (source === null) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, written: false, problems: [{ kind: "no_source", message: "a `source` string is required" }] }));
+          return;
+        }
+        // An empty body means REMOVE the template, not "save an empty one". There is a real
+        // difference between a doorbell using the built-in text and a doorbell that is broken,
+        // and removal has to be expressible or an operator who dislikes their template has no
+        // way back to the default.
+        if (!source.trim()) {
+          const removed = removeLocalTemplate(amqRoot, name);
+          res.writeHead(removed.ok ? 200 : 400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(removed));
+          return;
+        }
+        const saved = saveLocalTemplate(amqRoot, name, source);
+        res.writeHead(saved.ok ? 200 : 400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(saved));
+        return;
+      }
+      res.writeHead(405, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "use GET to read or PUT to write" }));
       return;
     }
 
