@@ -321,6 +321,120 @@
   settingsBackdrop.addEventListener("click", (event) => {
     if (event.target === settingsBackdrop) closeSettings();
   });
+  // ─── Doorbell template editor ────────────────────────────────────────────
+  // The vocabulary comes from the SERVER, not from a copy here. This is the whole reason the GET
+  // returns it: a list written into this file would be a claim about templates.mjs that nothing
+  // checks, and it would go stale the first time someone added a variable. Asking means the
+  // editor can only ever offer placeholders that actually work, and the answer is the contract.
+  const templateName = "doorbell";
+  const templateStatusEl = document.getElementById("template-status");
+  const templateVocabularyEl = document.getElementById("template-vocabulary");
+  const templateTextEl = document.getElementById("doorbell-template");
+  const templateResetBtn = document.getElementById("template-reset-btn");
+  const templateSaveStateEl = document.getElementById("template-save-state");
+  let templateVocabulary = [];
+
+  function showTemplateStatus(message, tone) {
+    if (!templateStatusEl) return;
+    templateStatusEl.textContent = message;
+    templateStatusEl.hidden = !message;
+    templateStatusEl.className = "template-editor-status" + (tone ? " is-" + tone : "");
+  }
+
+  function setTemplateSaveState(message) {
+    if (templateSaveStateEl) templateSaveStateEl.textContent = message || "";
+  }
+
+  function renderTemplateVocabulary() {
+    if (!templateVocabularyEl) return;
+    templateVocabularyEl.replaceChildren();
+    for (const name of templateVocabulary) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "template-variable-chip";
+      chip.textContent = "{{" + name + "}}";
+      chip.title = "Insert " + name;
+      chip.addEventListener("click", () => {
+        if (!templateTextEl) return;
+        const token = "{{" + name + "}}";
+        const start = templateTextEl.selectionStart ?? templateTextEl.value.length;
+        const end = templateTextEl.selectionEnd ?? start;
+        templateTextEl.value = templateTextEl.value.slice(0, start) + token + templateTextEl.value.slice(end);
+        templateTextEl.focus();
+        templateTextEl.selectionStart = templateTextEl.selectionEnd = start + token.length;
+        showTemplateStatus("", "");
+        setTemplateSaveState("");
+      });
+      templateVocabularyEl.appendChild(chip);
+    }
+  }
+
+  async function loadTemplate() {
+    if (!templateTextEl) return;
+    try {
+      const res = await fetch("/api/templates/" + encodeURIComponent(templateName));
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const body = await res.json();
+      templateVocabulary = Array.isArray(body.variables) ? body.variables : [];
+      renderTemplateVocabulary();
+      templateTextEl.value = body.source || "";
+      showTemplateStatus(
+        body.exists
+          ? "A custom doorbell is in use. Every agent gets it."
+          : "Using the built-in doorbell.",
+        body.exists ? "info" : "",
+      );
+    } catch (e) {
+      // A settings panel that silently shows an empty box for a mailbox-wide setting is worse
+      // than one that says it could not read it, because an empty box reads as "use the default"
+      // and the truth might be "this mailbox is unreachable".
+      showTemplateStatus("Could not read the current template: " + e.message, "error");
+    }
+  }
+
+  async function saveTemplate(source) {
+    setTemplateSaveState("Saving…");
+    try {
+      const res = await fetch("/api/templates/" + encodeURIComponent(templateName), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) {
+        const problems = (body.problems || []).map((p) => p.message).join("; ");
+        showTemplateStatus("Not saved: " + (problems || body.error || "unknown problem"), "error");
+        setTemplateSaveState("");
+        return false;
+      }
+      showTemplateStatus(
+        body.written
+          ? "Saved. Every agent's next doorbell uses this."
+          : "Back to the built-in doorbell.",
+        "ok",
+      );
+      setTemplateSaveState("Saved");
+      return true;
+    } catch (e) {
+      showTemplateStatus("Could not save: " + e.message, "error");
+      setTemplateSaveState("");
+      return false;
+    }
+  }
+
+  if (templateTextEl) {
+    // Save on blur rather than on the modal's Save button. The rest of this form is a set of
+    // radios that apply on submit; this is a document, and a long template is not something
+    // anyone edits in one sitting and then submits once.
+    templateTextEl.addEventListener("change", () => saveTemplate(templateTextEl.value));
+    templateResetBtn?.addEventListener("click", () => {
+      templateTextEl.value = "";
+      saveTemplate("");
+    });
+    // Load when the modal opens, so the editor never shows stale content from a previous visit.
+    document.getElementById("open-settings-btn")?.addEventListener("click", loadTemplate, { once: false });
+  }
+
   settingsForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const readingLayout = readingLayoutInputs.find((input) => input.checked)?.value || "split";

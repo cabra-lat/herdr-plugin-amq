@@ -668,6 +668,27 @@
             </label>
           </div>
         </fieldset>
+          <!-- TEMPLATE EDITOR.
+               This is NOT a browser preference. Everything else in this modal is saved in this
+               browser and affects only the person looking at it; this group writes a file into
+               the MAILBOX and changes the doorbell every agent receives. The heading says so in
+               as many words, because a settings panel that silently mixes the two is how someone
+               changes every lane doorbell while thinking they changed their own layout. -->
+          <fieldset class="settings-group settings-template-group" id="template-editor-group">
+            <legend>Doorbell template (shared with every agent)</legend>
+            <p class="settings-intro">
+              This is a file in the mailbox, not a preference in this browser. Saving it changes
+              the doorbell every agent gets. Leave it empty to use the built-in text.
+            </p>
+            <div class="template-editor-status" id="template-status" role="status" hidden></div>
+            <textarea id="doorbell-template" class="template-editor-text" rows="5" spellcheck="false"
+              placeholder="Leave empty for the built-in doorbell. Use {{agent.handle}} and {{mail.count}}."></textarea>
+            <div class="template-editor-vocabulary" id="template-vocabulary" aria-label="Available variables"></div>
+            <div class="template-editor-actions">
+              <button type="button" class="btn btn-secondary" id="template-reset-btn">Use the built-in doorbell</button>
+              <span class="template-editor-save-state" id="template-save-state" role="status"></span>
+            </div>
+          </fieldset>
         <div class="agent-modal-actions">
           <button type="button" class="btn btn-secondary" id="cancel-settings-btn" data-i18n="action.cancel">Cancel</button>
           <button type="submit" class="btn btn-primary" id="save-settings-btn" data-i18n="action.save">Save preferences</button>

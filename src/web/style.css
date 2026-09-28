@@ -5208,3 +5208,72 @@ html[data-theme="dark"] ::placeholder {
 }
 
 
+
+/* ─── Doorbell template editor ───────────────────────────────────────────────
+   The group is visually SEPARATE from the preference groups above it on purpose.
+   Everything else in the settings modal is this browser; this is a file in the
+   mailbox. A left border in the warning colour is the cheapest honest signal that
+   this is a different KIND of setting, and it costs three lines. */
+.settings-template-group {
+  border-left: 3px solid var(--warn, #b26a00);
+  padding-left: 12px;
+}
+
+.template-editor-text {
+  width: 100%;
+  min-height: 5.5em;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #3a3f4b);
+  background: var(--bg-elevated, #1b1e24);
+  color: inherit;
+}
+
+.template-editor-vocabulary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.template-variable-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #3a3f4b);
+  background: var(--bg-elevated, #1b1e24);
+  color: var(--text-muted, #9aa0aa);
+  cursor: pointer;
+}
+
+.template-variable-chip:hover {
+  border-color: var(--accent, #4a8cff);
+  color: var(--text, #e6e8eb);
+}
+
+.template-editor-status {
+  font-size: 12px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.template-editor-status.is-error { background: rgba(200, 60, 60, 0.14); color: #ff9a9a; }
+.template-editor-status.is-ok    { background: rgba(60, 170, 90, 0.14);  color: #9fe0b0; }
+.template-editor-status.is-info  { background: rgba(70, 130, 220, 0.12); color: #a8c8ff; }
+
+.template-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.template-editor-save-state {
+  font-size: 11px;
+  color: var(--text-muted, #9aa0aa);
+}
