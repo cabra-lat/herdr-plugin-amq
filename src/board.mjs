@@ -137,6 +137,7 @@ export function serializeTaskFile(task) {
     // the first thing to fall out. A card that records its next action is recoverable by reading
     // the card; a card that relies on the agent remembering is not recoverable at all.
     `resume_line: ${JSON.stringify(task.resume_line || null)}`,
+    `resume_line_at: ${JSON.stringify(task.resume_line_at || null)}`,
     // A LEASE EPOCH, incremented on every entry into progress. The owner re-prompt is armed per
     // epoch, so re-claiming an agent that DID resume re-arms it exactly once instead of never.
     `lease_epoch: ${JSON.stringify(task.lease_epoch ?? null)}`,
@@ -233,6 +234,7 @@ export function parseTaskFile(filePath, defaultStage = "backlog") {
       updated: meta.updated || null,
       claimed_at: meta.claimed_at || null,
       resume_line: meta.resume_line || null,
+      resume_line_at: meta.resume_line_at || null,
       // Coerced at the parse boundary, not left to each reader - see the note at the writer.
       lease_epoch: (() => { const n = Number(meta.lease_epoch); return Number.isFinite(n) && n > 0 ? n : null; })(),
       lease_started_at: meta.lease_started_at || null,
@@ -823,6 +825,7 @@ export function addBoardTask(
     updated: now,
     claimed_at: null,
     resume_line: null,
+    resume_line_at: null,
     lease_epoch: null,
     lease_started_at: null,
     blocked_at: null,
@@ -899,7 +902,7 @@ export function addBoardTask(
 // could keep a stalled card alive forever by re-asserting an obligation it has not performed.
 // So a lease renewal is a change to the OBLIGATION and not to the work. A real claim still moves
 // `updated`, because status genuinely changes.
-const WRITE_METADATA = new Set(["filePath", "file_path", "resume_line", "lease_epoch", "lease_started_at"]);
+const WRITE_METADATA = new Set(["filePath", "file_path", "resume_line", "resume_line_at", "lease_epoch", "lease_started_at"]);
 
 // True when `next` differs from `previous` in any field that describes the card.
 // `updated` is excluded on both sides because it is the field being decided here.
@@ -1751,11 +1754,57 @@ export function listClaimableTasks(repoRoot, amqRoot, handle = null) {
  * owed; treating the restatement as progress would let an agent clear its own stall clock by
  * re-typing what it was already supposed to do, which is the same class of defect as heartbeating
  * your way out of a stall.
+ *
+ * `resume_line_at` is the line's companion TIMESTAMP, the way `lease_started_at` companions
+ * `lease_epoch`: a value without a time is half a fact, and this line is read by an agent that
+ * has just been compacted. It is in WRITE_METADATA so writing it cannot move `updated` - it is a
+ * property OF THE LINE, not progress.
+ *
+ * THE GUARD. A resume line is a single-valued field, so re-claiming a card REPLACES it, and
+ * lanes re-paste: the same text came back twice on one card, carrying "the previous version of
+ * this line was wrong on the first sentence" while reproducing the wrong content, and the
+ * corrections were sitting in NOTES the notice does not show. So the write path refuses a line
+ * that REPEATS the current one when a note has landed since - which is the whole failure, stated
+ * without requiring the correcting note to QUOTE the line it corrects. That first draft of this
+ * guard compared the two texts for containment in either direction and it did not fire, because
+ * a correction usually paraphrases rather than quotes; a guard that needs the note to quote the
+ * line it corrects is a guard that misses.
+ *
+ * The comparison is exact equality on the trimmed text, not a similarity score. Exact equality
+ * cannot reject a genuinely new statement, and a fuzzy overlap would eventually refuse a real
+ * obligation - a guard that cries wolf is the muted-gate problem in a different costume.
+ * It is a refusal at the only write path, so it needs no consumer outside this file: the
+ * enforcement IS the refusal.
  */
 export function setTaskResumeLine(repoRoot, amqRoot, taskId, text, opts = {}) {
-  const res = updateBoardTask(repoRoot, amqRoot, taskId, { resume_line: text }, opts);
+  const located = getBoardTask(repoRoot, amqRoot, taskId);
+  const existing = located?.task || null;
+  if (existing) {
+    const priorAt = Date.parse(existing.resume_line_at || "");
+    const incoming = String(text ?? "").trim();
+    const current = String(existing.resume_line || "").trim();
+    if (Number.isFinite(priorAt) && incoming && incoming === current) {
+      const newer = (existing.notes || []).filter((n) => Date.parse(n?.at || "") > priorAt);
+      if (newer.length > 0) {
+        const last = newer[newer.length - 1];
+        return {
+          ok: false,
+          error: "resume line repeats the current one and a note has landed since it was written",
+          taskId,
+          supersededBy: { at: last?.at, author: last?.author, count: newer.length },
+          hint: "Something has been said about this card since that line was written. Restate the CURRENT obligation, or record the restatement in a note - re-pasting the same line is how a wrong instruction reaches a third reader.",
+          task: existing,
+        };
+      }
+    }
+  }
+  const res = updateBoardTask(
+    repoRoot, amqRoot, taskId,
+    { resume_line: text, resume_line_at: new Date().toISOString() },
+    opts,
+  );
   if (!res.ok) return res;
-  return { ...res, resume_line: res.task?.resume_line ?? text };
+  return { ...res, resume_line: res.task?.resume_line ?? text, resume_line_at: res.task?.resume_line_at ?? null };
 }
 
 export function drainTasks(repoRoot, amqRoot, { me, claim = false, notify = true } = {}) {
